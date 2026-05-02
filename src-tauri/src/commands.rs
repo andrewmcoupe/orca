@@ -614,6 +614,7 @@ fn require_active_workspace<'a>(
 #[tauri::command]
 pub fn create_task(
     app: AppHandle,
+    plan_id: String,
     title: String,
     spec_markdown: String,
     active: State<'_, ActiveWorkspaceState>,
@@ -627,11 +628,9 @@ pub fn create_task(
         workspace_id = aw.id.clone();
 
         let payload = json!({
-            "workspace_id": aw.id,
+            "plan_id": plan_id,
             "title": title,
             "spec_markdown": spec_markdown,
-            "source": "manual",
-            "prd_id": null,
         })
         .to_string();
 
@@ -643,7 +642,7 @@ pub fn create_task(
             0,
             vec![NewEvent {
                 event_type: "TaskCreated".into(),
-                version: 1,
+                version: 2,
                 payload,
             }],
             &make_metadata("user:local"),
@@ -657,6 +656,7 @@ pub fn create_task(
     }
 
     emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
+    emit_projection_updated(&app, Some(&workspace_id), "plan", &plan_id);
     emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
 
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
@@ -668,12 +668,12 @@ pub fn create_task(
 
 #[tauri::command]
 pub fn list_tasks(
+    plan_id: String,
     active: State<'_, ActiveWorkspaceState>,
 ) -> Result<Vec<projections::TaskProjection>, String> {
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
     let aw = require_active_workspace(&mut guard)?;
-    let workspace_id = aw.id.clone();
-    projections::list_tasks(&aw.conn, &workspace_id).map_err(|e| e.to_string())
+    projections::list_tasks_in_plan(&aw.conn, &plan_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

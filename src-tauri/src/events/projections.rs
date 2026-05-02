@@ -170,10 +170,9 @@ CREATE INDEX IF NOT EXISTS idx_plan_projection_workspace ON plan_projection (wor
 CREATE TABLE IF NOT EXISTS task_projection (
     id                  TEXT PRIMARY KEY,
     workspace_id        TEXT NOT NULL,
+    plan_id             TEXT NOT NULL,
     title               TEXT NOT NULL,
     spec_markdown       TEXT NOT NULL,
-    source              TEXT NOT NULL,
-    prd_id              TEXT,
     status              TEXT NOT NULL,        -- created | cancelled | approved | merged | archived
     cancel_reason       TEXT,
     approved_by         TEXT,
@@ -189,6 +188,7 @@ CREATE TABLE IF NOT EXISTS task_projection (
     updated_at          INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_task_projection_workspace ON task_projection (workspace_id);
+CREATE INDEX IF NOT EXISTS idx_task_projection_plan ON task_projection (plan_id);
 
 CREATE TABLE IF NOT EXISTS phase_run_projection (
     id              TEXT PRIMARY KEY,
@@ -414,10 +414,9 @@ pub fn get_plan(conn: &Connection, id: &str) -> rusqlite::Result<Option<PlanProj
 pub struct TaskProjection {
     pub id: String,
     pub workspace_id: String,
+    pub plan_id: String,
     pub title: String,
     pub spec_markdown: String,
-    pub source: String,
-    pub prd_id: Option<String>,
     pub status: String,
     pub cancel_reason: Option<String>,
     pub approved_by: Option<String>,
@@ -462,11 +461,9 @@ pub struct PhaseRunOutputChunk {
 
 #[derive(Debug, Deserialize)]
 struct TaskCreatedPayload {
-    workspace_id: String,
+    plan_id: String,
     title: String,
     spec_markdown: String,
-    source: String,
-    prd_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -520,19 +517,37 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
     match event.event_type.as_str() {
         "TaskCreated" => {
             let p: TaskCreatedPayload = serde_json::from_str(&event.payload)?;
+            // workspace_id is derived from the parent plan; this also enforces that the
+            // referenced plan exists.
+            let workspace_id: String = tx
+                .query_row(
+                    "SELECT workspace_id FROM plan_projection WHERE id = ?1",
+                    params![p.plan_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => ProjectionError::Database(
+                        rusqlite::Error::QueryReturnedNoRows,
+                    ),
+                    other => ProjectionError::Database(other),
+                })?;
             tx.execute(
                 "INSERT INTO task_projection
-                    (id, workspace_id, title, spec_markdown, source, prd_id, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'created', ?7, ?7)",
+                    (id, workspace_id, plan_id, title, spec_markdown, status, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'created', ?6, ?6)",
                 params![
                     event.aggregate_id,
-                    p.workspace_id,
+                    workspace_id,
+                    p.plan_id,
                     p.title,
                     p.spec_markdown,
-                    p.source,
-                    p.prd_id,
                     event.created_at,
                 ],
+            )?;
+            // Cross-aggregate: bump the plan's task_count.
+            tx.execute(
+                "UPDATE plan_projection SET task_count = task_count + 1, updated_at = ?1 WHERE id = ?2",
+                params![event.created_at, p.plan_id],
             )?;
         }
         "TaskSpecRevised" => {
@@ -561,6 +576,13 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
             tx.execute(
                 "UPDATE task_projection SET status = 'merged', merged_commit_sha = ?1, merge_strategy = ?2, updated_at = ?3 WHERE id = ?4",
                 params![p.commit_sha, p.merge_strategy, event.created_at, event.aggregate_id],
+            )?;
+            // Cross-aggregate: bump the plan's done_task_count.
+            tx.execute(
+                "UPDATE plan_projection
+                 SET done_task_count = done_task_count + 1, updated_at = ?1
+                 WHERE id = (SELECT plan_id FROM task_projection WHERE id = ?2)",
+                params![event.created_at, event.aggregate_id],
             )?;
         }
         "TaskArchived" => {
@@ -690,6 +712,13 @@ pub fn apply_phase_run_event(
                 "UPDATE task_projection SET latest_phase_run_id = ?1, updated_at = ?2 WHERE id = ?3",
                 params![event.aggregate_id, event.created_at, p.task_id],
             )?;
+            // Cross-aggregate: bump the plan's running counter.
+            tx.execute(
+                "UPDATE plan_projection
+                 SET running_task_count = running_task_count + 1, updated_at = ?1
+                 WHERE id = (SELECT plan_id FROM task_projection WHERE id = ?2)",
+                params![event.created_at, p.task_id],
+            )?;
         }
         "PhaseRunOutputAppended" => {
             let p: PhaseRunOutputAppendedPayload = serde_json::from_str(&event.payload)?;
@@ -734,6 +763,17 @@ pub fn apply_phase_run_event(
                     event.aggregate_id,
                 ],
             )?;
+            // Cross-aggregate: drop the plan's running counter (clamped at 0).
+            tx.execute(
+                "UPDATE plan_projection
+                 SET running_task_count = MAX(running_task_count - 1, 0), updated_at = ?1
+                 WHERE id = (
+                     SELECT t.plan_id FROM task_projection t
+                     JOIN phase_run_projection pr ON pr.task_id = t.id
+                     WHERE pr.id = ?2
+                 )",
+                params![event.created_at, event.aggregate_id],
+            )?;
         }
         "PhaseRunFailed" => {
             let p: PhaseRunFailedPayload = serde_json::from_str(&event.payload)?;
@@ -746,6 +786,19 @@ pub fn apply_phase_run_event(
                      updated_at = ?3
                  WHERE id = ?4",
                 params![p.error_kind, p.error_message, event.created_at, event.aggregate_id],
+            )?;
+            // Cross-aggregate: running -1, failed +1 on the parent plan.
+            tx.execute(
+                "UPDATE plan_projection
+                 SET running_task_count = MAX(running_task_count - 1, 0),
+                     failed_task_count  = failed_task_count + 1,
+                     updated_at = ?1
+                 WHERE id = (
+                     SELECT t.plan_id FROM task_projection t
+                     JOIN phase_run_projection pr ON pr.task_id = t.id
+                     WHERE pr.id = ?2
+                 )",
+                params![event.created_at, event.aggregate_id],
             )?;
         }
         "GateRan" => {
@@ -769,42 +822,40 @@ pub fn apply_phase_run_event(
     Ok(())
 }
 
-pub fn list_tasks(
+fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
+    Ok(TaskProjection {
+        id: r.get(0)?,
+        workspace_id: r.get(1)?,
+        plan_id: r.get(2)?,
+        title: r.get(3)?,
+        spec_markdown: r.get(4)?,
+        status: r.get(5)?,
+        cancel_reason: r.get(6)?,
+        approved_by: r.get(7)?,
+        merged_commit_sha: r.get(8)?,
+        merge_strategy: r.get(9)?,
+        latest_phase_run_id: r.get(10)?,
+        worktree_path: r.get(11)?,
+        worktree_branch: r.get(12)?,
+        worktree_base_commit: r.get(13)?,
+        worktree_status: r.get(14)?,
+        worktree_removal_reason: r.get(15)?,
+        created_at: r.get(16)?,
+        updated_at: r.get(17)?,
+    })
+}
+
+const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, created_at, updated_at";
+
+pub fn list_tasks_in_plan(
     conn: &Connection,
-    workspace_id: &str,
+    plan_id: &str,
 ) -> rusqlite::Result<Vec<TaskProjection>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, workspace_id, title, spec_markdown, source, prd_id, status, cancel_reason,
-                approved_by, merged_commit_sha, merge_strategy, latest_phase_run_id,
-                worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason,
-                created_at, updated_at
-         FROM task_projection
-         WHERE workspace_id = ?1 AND status != 'archived'
-         ORDER BY created_at DESC",
-    )?;
-    let rows = stmt.query_map(params![workspace_id], |r| {
-        Ok(TaskProjection {
-            id: r.get(0)?,
-            workspace_id: r.get(1)?,
-            title: r.get(2)?,
-            spec_markdown: r.get(3)?,
-            source: r.get(4)?,
-            prd_id: r.get(5)?,
-            status: r.get(6)?,
-            cancel_reason: r.get(7)?,
-            approved_by: r.get(8)?,
-            merged_commit_sha: r.get(9)?,
-            merge_strategy: r.get(10)?,
-            latest_phase_run_id: r.get(11)?,
-            worktree_path: r.get(12)?,
-            worktree_branch: r.get(13)?,
-            worktree_base_commit: r.get(14)?,
-            worktree_status: r.get(15)?,
-            worktree_removal_reason: r.get(16)?,
-            created_at: r.get(17)?,
-            updated_at: r.get(18)?,
-        })
-    })?;
+    let sql = format!(
+        "SELECT {TASK_COLUMNS} FROM task_projection WHERE plan_id = ?1 AND status != 'archived' ORDER BY created_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![plan_id], read_task)?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
@@ -813,36 +864,11 @@ pub fn list_tasks(
 }
 
 pub fn get_task(conn: &Connection, id: &str) -> rusqlite::Result<Option<TaskProjection>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, workspace_id, title, spec_markdown, source, prd_id, status, cancel_reason,
-                approved_by, merged_commit_sha, merge_strategy, latest_phase_run_id,
-                worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason,
-                created_at, updated_at
-         FROM task_projection WHERE id = ?1",
-    )?;
+    let sql = format!("SELECT {TASK_COLUMNS} FROM task_projection WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params![id])?;
     if let Some(r) = rows.next()? {
-        Ok(Some(TaskProjection {
-            id: r.get(0)?,
-            workspace_id: r.get(1)?,
-            title: r.get(2)?,
-            spec_markdown: r.get(3)?,
-            source: r.get(4)?,
-            prd_id: r.get(5)?,
-            status: r.get(6)?,
-            cancel_reason: r.get(7)?,
-            approved_by: r.get(8)?,
-            merged_commit_sha: r.get(9)?,
-            merge_strategy: r.get(10)?,
-            latest_phase_run_id: r.get(11)?,
-            worktree_path: r.get(12)?,
-            worktree_branch: r.get(13)?,
-            worktree_base_commit: r.get(14)?,
-            worktree_status: r.get(15)?,
-            worktree_removal_reason: r.get(16)?,
-            created_at: r.get(17)?,
-            updated_at: r.get(18)?,
-        }))
+        Ok(Some(read_task(r)?))
     } else {
         Ok(None)
     }
