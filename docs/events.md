@@ -67,6 +67,20 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 
 **TaskArchived** — task removed from active view.
 
+**WorktreeCreated** — a git worktree was provisioned for this task. Emitted lazily on the first phase run for the task; subsequent phase runs reuse it.
+- `worktree_path: string` — absolute path on disk
+- `branch_name: string` — branch the worktree is on (e.g. `yourapp/<task_id>`)
+- `base_commit: string` — commit SHA the worktree was created from
+
+**WorktreeRemoved** — the task's worktree was deleted.
+- `worktree_path: string`
+- `reason: "task_merged" | "task_cancelled" | "manual" | "cleanup_orphan"`
+
+**WorktreeRemovalFailed** — removal was attempted but failed (files locked, permissions, etc). The worktree remains on disk; the user can retry from the UI.
+- `worktree_path: string`
+- `error: string`
+- `reason: "task_merged" | "task_cancelled" | "manual" | "cleanup_orphan"`
+
 ### PhaseRun events
 
 **PhaseRunStarted** — a phase began execution.
@@ -76,6 +90,7 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 - `model: string` — e.g. `"claude-sonnet-4-5"`
 - `prompt_template_id: string`
 - `worktree_path: string`
+- `base_commit: string` — worktree HEAD at phase start, used for phase-level diffs
 
 **PhaseRunOutputAppended** — streamed output chunk from the agent. Highest-volume event by far. Chunk at sensible boundaries (not per-token).
 - `chunk: string`
@@ -85,11 +100,12 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 - `tool_name: string`
 - `args: object`
 
-**PhaseRunCompleted** — phase finished successfully.
+**PhaseRunCompleted** — phase finished successfully. The runner auto-commits any worktree changes before this event is appended; the resulting SHA is `head_commit_after`.
 - `exit_code: integer`
 - `summary: string`
 - `files_changed: string[]`
 - `token_usage: { input: integer, output: integer }`
+- `head_commit_after: string` — worktree HEAD after auto-commit (equal to `base_commit` from PhaseRunStarted if nothing changed)
 
 **PhaseRunFailed** — phase ended in error.
 - `error_kind: "timeout" | "subprocess_error" | "provider_error" | "user_cancelled"`

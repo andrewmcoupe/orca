@@ -30,6 +30,7 @@ ulid = "1"
 thiserror = "1"
 which = "6"
 tokio-util = "0.7"
+git2 = { version = "0.19", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

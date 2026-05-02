@@ -5,6 +5,7 @@ mod providers;
 mod recent_events;
 mod subprocess;
 mod workspace_db;
+mod worktree;
 
 mod commands;
 
