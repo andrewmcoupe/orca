@@ -174,6 +174,7 @@ async fn dispatch_phase(
         None,
         Some(is_retry),
         retry_context,
+        None,
     )
     .await
     .map_err(PipelineError::Dispatch)

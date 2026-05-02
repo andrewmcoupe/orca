@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS phase_run_projection (
     input_tokens    INTEGER,
     output_tokens   INTEGER,
     head_commit_after TEXT,                 -- worktree HEAD after the phase committed; null until PhaseRunCompleted lands
+    is_retry_of     TEXT,                    -- prior phase_run_id this is a retry of; null for first attempts
     started_at      INTEGER NOT NULL,
     completed_at    INTEGER,
     updated_at      INTEGER NOT NULL
@@ -466,6 +467,8 @@ pub struct PhaseRunProjection {
     pub output_tokens: Option<i64>,
     #[serde(default)]
     pub head_commit_after: Option<String>,
+    #[serde(default)]
+    pub is_retry_of: Option<String>,
     pub started_at: i64,
     pub completed_at: Option<i64>,
     pub updated_at: i64,
@@ -695,10 +698,17 @@ struct PhaseRunStartedPayload {
     phase: String,
     provider: String,
     model: String,
+    /// Legacy field; some phase runners (test_author/implementer/auditor in M3-M5+) emit
+    /// `prompt_template_hash` instead. Not consumed by the projection — kept as `Option`
+    /// so old events still parse.
+    #[serde(default)]
     #[allow(dead_code)]
-    prompt_template_id: String,
+    prompt_template_id: Option<String>,
+    #[serde(default)]
     #[allow(dead_code)]
-    worktree_path: String,
+    worktree_path: Option<String>,
+    #[serde(default)]
+    is_retry_of: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -753,14 +763,15 @@ pub fn apply_phase_run_event(
             let p: PhaseRunStartedPayload = serde_json::from_str(&event.payload)?;
             tx.execute(
                 "INSERT INTO phase_run_projection
-                    (id, task_id, phase, provider, model, status, started_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?6)",
+                    (id, task_id, phase, provider, model, status, is_retry_of, started_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7, ?7)",
                 params![
                     event.aggregate_id,
                     p.task_id,
                     p.phase,
                     p.provider,
                     p.model,
+                    p.is_retry_of,
                     event.created_at,
                 ],
             )?;
@@ -968,7 +979,7 @@ pub fn list_phase_runs_for_task(
 ) -> rusqlite::Result<Vec<PhaseRunProjection>> {
     let mut stmt = conn.prepare(
         "SELECT id, task_id, phase, provider, model, status, summary, exit_code, error_kind, error_message,
-                files_changed, input_tokens, output_tokens, head_commit_after, started_at, completed_at, updated_at
+                files_changed, input_tokens, output_tokens, head_commit_after, is_retry_of, started_at, completed_at, updated_at
          FROM phase_run_projection
          WHERE task_id = ?1
          ORDER BY started_at ASC",
@@ -989,9 +1000,10 @@ pub fn list_phase_runs_for_task(
             input_tokens: r.get(11)?,
             output_tokens: r.get(12)?,
             head_commit_after: r.get(13)?,
-            started_at: r.get(14)?,
-            completed_at: r.get(15)?,
-            updated_at: r.get(16)?,
+            is_retry_of: r.get(14)?,
+            started_at: r.get(15)?,
+            completed_at: r.get(16)?,
+            updated_at: r.get(17)?,
         })
     })?;
     let mut out = Vec::new();

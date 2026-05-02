@@ -1,5 +1,5 @@
 import { Link, createRoute, useParams } from "@tanstack/react-router";
-import { ArrowLeft } from "@phosphor-icons/react";
+import { ArrowLeft, Play } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Markdown } from "@/components/markdown";
 import { workspaceLayoutRoute } from "./layout";
@@ -10,10 +10,10 @@ import { AuditorVerdictSection } from "@/features/tasks/components/auditor-verdi
 import {
   usePhaseRuns,
   useStartFakePhase,
-  useStartRealPhase,
+  useStartTask,
 } from "@/features/phase-runs/hooks";
-import { PhaseRunCard } from "@/features/phase-runs/components/phase-run-card";
-import { RunRealForm } from "@/features/phase-runs/components/run-real-form";
+import { PipelineCards } from "@/features/phase-runs/components/pipeline-cards";
+import { PhaseRunsTrail } from "@/features/phase-runs/components/phase-runs-trail";
 import { formatRelativeTime } from "@/lib/format";
 import type { Task } from "@/features/tasks/types";
 
@@ -49,7 +49,10 @@ function TaskDetailView({
 }) {
   const phaseRuns = usePhaseRuns(workspaceId, task.id);
   const startFake = useStartFakePhase();
-  const startReal = useStartRealPhase();
+  const startTask = useStartTask();
+
+  const runs = phaseRuns.data ?? [];
+  const anyRunning = runs.some((r) => r.status === "running");
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
@@ -104,18 +107,20 @@ function TaskDetailView({
       <AuditorVerdictSection taskId={task.id} />
 
       <section className="space-y-3">
-        <h2 className="text-muted-foreground text-[11px] font-semibold uppercase tracking-wide">
-          Worktree
-        </h2>
-        <WorktreeSection task={task} />
-      </section>
-
-      <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-muted-foreground text-[11px] font-semibold uppercase tracking-wide">
-            Phase runs
+            Pipeline
           </h2>
           <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              onClick={() => startTask.mutate(task.id)}
+              disabled={startTask.isPending || anyRunning}
+              className="gap-1"
+            >
+              <Play className="size-3" />
+              {anyRunning ? "Running…" : runs.length === 0 ? "Start pipeline" : "Restart"}
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -128,33 +133,33 @@ function TaskDetailView({
             </Button>
           </div>
         </div>
-        <RunRealForm
-          pending={startReal.isPending}
-          onRun={(providerId, options) =>
-            startReal.mutate({
-              taskId: task.id,
-              phase: "implementer",
-              providerId,
-              options,
-            })
-          }
-        />
-        {(startFake.error || startReal.error) && (
+        {(startFake.error || startTask.error) && (
           <p className="text-destructive text-xs">
-            {String(startFake.error ?? startReal.error)}
+            {String(startFake.error ?? startTask.error)}
           </p>
         )}
+        <PipelineCards
+          phaseConfig={task.phase_config}
+          phaseRuns={runs}
+        />
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-muted-foreground text-[11px] font-semibold uppercase tracking-wide">
+          Audit trail
+        </h2>
         {phaseRuns.isLoading ? (
           <p className="text-muted-foreground text-sm">Loading…</p>
-        ) : (phaseRuns.data ?? []).length === 0 ? (
-          <p className="text-muted-foreground text-xs">No phase runs yet.</p>
         ) : (
-          <div className="space-y-3">
-            {(phaseRuns.data ?? []).map((pr) => (
-              <PhaseRunCard key={pr.id} phaseRun={pr} />
-            ))}
-          </div>
+          <PhaseRunsTrail phaseRuns={runs} />
         )}
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-muted-foreground text-[11px] font-semibold uppercase tracking-wide">
+          Worktree
+        </h2>
+        <WorktreeSection task={task} />
       </section>
     </div>
   );

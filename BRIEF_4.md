@@ -443,8 +443,65 @@
   v1 (per the brief's "Out of scope"), but the schema field is plumbed
   through and the dialog could expose it later.
 
-**Next: M10 (pipeline visualisation — phase cards for the full
-configured pipeline, retry trail, prominent verdict section).**
+**Done — M10 (pipeline visualisation):**
+
+- `phase_run_projection` gains an `is_retry_of TEXT` column.
+  `PhaseRunStartedPayload` now reads `is_retry_of` (and `prompt_template_id` /
+  `worktree_path` made optional with `#[serde(default)]` so the post-M3 phase
+  runners that emit `prompt_template_hash` instead still parse cleanly).
+  `PhaseRunProjection` Rust struct + `list_phase_runs_for_task` query updated.
+- `start_real_phase` Tauri command takes an optional `is_retry_of` argument
+  and threads it into `ImplementerInput`. `pass_back_to_implementer` looks up
+  the most recent prior implementer phase_run on the task and passes its id
+  as `is_retry_of`. `pipeline.rs::dispatch_phase` passes `None` (auto-progression
+  is never a retry).
+- Implementer's `started_payload` now emits `is_retry_of` on
+  `PhaseRunStarted`. test_author and auditor never produce retries through
+  this path so they're unchanged.
+- **Heads-up for any per-workspace events.sqlite predating M10**: run
+  `rebuild_projections` once before starting new phase runs so the new
+  `phase_run_projection.is_retry_of` column materialises. Same drill as the
+  M4 `head_commit_after` note.
+- Frontend:
+  - `PhaseRun` type gains `is_retry_of` and `head_commit_after` fields.
+  - `phaseRunsApi.startReal` accepts an optional `isRetryOf` param (kept
+    type-narrowed; not currently used by any UI caller — the backend wires
+    it in `pass_back_to_implementer`).
+  - `useStartTask` hook (calls the existing `start_task` Tauri command).
+  - New `pipeline-cards.tsx` — cards for *every* phase in `task.phase_config`,
+    not just completed ones. Pending = muted dashed border, running = subtle
+    pulse, completed/failed/cancelled have their own colours. Each card shows
+    phase name, status badge, provider/model, and a duration when completed.
+    Clickable cards have a hover state (currently no-op for `onSelectRun` —
+    M10's "phase run detail" route isn't built; clicking a card is reserved
+    for that). Arrows between cards.
+  - New `phase-runs-trail.tsx` — collapsible chronological audit trail of
+    every phase run, including retries. Each row is `#N`, phase, status, and
+    a "↶ retry of #M" link when `is_retry_of` is set; clicking a row expands
+    the existing `PhaseRunCard` (so the streamed output and error message stay
+    one click away).
+  - `task-detail.tsx` rewritten: AuditorVerdictSection ABOVE the pipeline
+    cards (per the brief's "show it prominently as a separate section above
+    the phase cards"); the pipeline section gets a "Start pipeline" /
+    "Restart" primary button calling `start_task` plus the existing
+    "Run (fake)" debug button. Below: collapsed Audit trail. Worktree
+    section moved below.
+  - `RunRealForm` and `useStartRealPhase` are no longer wired up from the
+    task detail view — kept exported for now since direct manual phase
+    invocation could be useful as a debug escape hatch (not strictly
+    decommissioned in this brief).
+- `cargo test --lib` green (57 tests). `pnpm tsc --noEmit` clean.
+
+**M1-M10 of BRIEF_4 are complete.** The app is now an actual orchestrator:
+configurable per-task pipelines, three real phases, structured auditor
+verdicts, gates, editable prompts, the configuration UI for all of it,
+auditor-failure user actions, and a pipeline visualisation that shows the
+configured phases plus the full retry audit trail.
+
+**Outstanding items deliberately deferred per the brief's "Out of scope":**
+automatic retries / retry budgets, codex provider, real merge logic, gate
+auto-detection, PRD ingestion, Linear integration, per-task gate-override UI,
+confidence-threshold gating, and notification on phase completion.
 
 ## Context
 

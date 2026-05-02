@@ -50,6 +50,10 @@ pub struct ImplementerInput {
     /// Auditor's concerns from the prior verdict, formatted as bulleted markdown.
     /// Surfaced to the implementer via the prompt's retry context block.
     pub retry_context: Option<String>,
+    /// The phase_run_id of the prior implementer attempt this run is retrying.
+    /// Persisted on `phase_run_projection.is_retry_of` so the UI can render the
+    /// audit trail of retries.
+    pub is_retry_of: Option<String>,
 }
 
 pub async fn run(
@@ -71,6 +75,7 @@ pub async fn run(
         cancel,
         is_retry,
         retry_context,
+        is_retry_of,
     } = input;
 
     let mut conn = open_workspace_db(&workspace_path).map_err(|e| e.to_string())?;
@@ -121,6 +126,7 @@ pub async fn run(
                 &prompt_template_hash,
                 &prior_phase_commits,
                 is_retry,
+                is_retry_of.as_deref(),
                 "",
                 "",
             );
@@ -168,6 +174,7 @@ pub async fn run(
         &prompt_template_hash,
         &prior_phase_commits,
         is_retry,
+        is_retry_of.as_deref(),
         &worktree_path_str,
         &base_commit,
     );
@@ -410,6 +417,7 @@ fn started_payload(
     prompt_template_hash: &str,
     prior_phase_commits: &std::collections::HashMap<String, String>,
     is_retry: bool,
+    is_retry_of: Option<&str>,
     worktree_path: &str,
     base_commit: &str,
 ) -> String {
@@ -421,6 +429,7 @@ fn started_payload(
         "prompt_template_hash": prompt_template_hash,
         "prior_phase_commits": prior_phase_commits,
         "is_retry": is_retry,
+        "is_retry_of": is_retry_of,
         "worktree_path": worktree_path,
         "base_commit": base_commit,
     })

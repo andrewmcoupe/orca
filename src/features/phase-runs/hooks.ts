@@ -44,6 +44,12 @@ export function useStartRealPhase() {
   });
 }
 
+export function useStartTask() {
+  return useMutation({
+    mutationFn: (taskId: string) => phaseRunsApi.startTask(taskId),
+  });
+}
+
 export function useCancelPhaseRun() {
   return useMutation({
     mutationFn: (phaseRunId: string) => phaseRunsApi.cancel(phaseRunId),

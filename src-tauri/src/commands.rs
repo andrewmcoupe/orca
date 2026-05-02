@@ -963,6 +963,7 @@ pub async fn start_real_phase(
     options: Option<serde_json::Value>,
     is_retry: Option<bool>,
     retry_context: Option<String>,
+    is_retry_of: Option<String>,
 ) -> Result<String, String> {
     if phase != "implementer" && phase != "test_author" && phase != "auditor" {
         return Err(format!(
@@ -1083,6 +1084,7 @@ pub async fn start_real_phase(
                     cancel,
                     is_retry: is_retry.unwrap_or(false),
                     retry_context,
+                    is_retry_of,
                 };
                 phases::implementer::run(app_clone.clone(), tracker, input).await
             }
@@ -1233,7 +1235,7 @@ pub async fn pass_back_to_implementer(
     app: AppHandle,
     task_id: String,
 ) -> Result<String, String> {
-    let retry_context = {
+    let (retry_context, prior_implementer_run_id) = {
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         let aw = require_active_workspace(&mut guard)?;
@@ -1243,7 +1245,17 @@ pub async fn pass_back_to_implementer(
             .into_iter()
             .next()
             .ok_or_else(|| "no auditor verdict for task".to_string())?;
-        format_concerns_for_retry(&latest.summary, &latest.concerns)
+        let runs = projections::list_phase_runs_for_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?;
+        let prior = runs
+            .iter()
+            .rev()
+            .find(|r| r.phase == "implementer")
+            .map(|r| r.id.clone());
+        (
+            format_concerns_for_retry(&latest.summary, &latest.concerns),
+            prior,
+        )
     };
 
     start_real_phase(
@@ -1254,6 +1266,7 @@ pub async fn pass_back_to_implementer(
         None,
         Some(true),
         Some(retry_context),
+        prior_implementer_run_id,
     )
     .await
 }

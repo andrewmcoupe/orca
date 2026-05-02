@@ -10,6 +10,8 @@ export type PhaseRun = {
   error_kind: string | null;
   error_message: string | null;
   files_changed: string | null;
+  is_retry_of: string | null;
+  head_commit_after: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
   started_at: number;
