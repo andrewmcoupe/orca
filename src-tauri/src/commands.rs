@@ -1007,6 +1007,10 @@ pub async fn start_real_phase(
                     provider_path,
                     options,
                     cancel,
+                    // Retry plumbing lands with M8's `pass_back_to_implementer` command.
+                    // Manual `start_real_phase` invocations always start a fresh attempt.
+                    is_retry: false,
+                    retry_context: None,
                 };
                 phases::implementer::run(app_clone.clone(), tracker, input).await
             }

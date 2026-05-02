@@ -146,8 +146,46 @@
   once we know what implementer needs from the new prompt context.
 - `cargo build --lib` clean, `cargo test --lib` green (32 tests).
 
-**Next: M4 (implementer phase updates — switch to prompts module,
-populate `prior_phase_commits`, handle `is_retry`/`retry_context`).**
+**Done — M4 (implementer phase updates):**
+
+- `phases/implementer.rs` now resolves and renders its prompt via the
+  `prompts` module (PhaseType::Implementer), the same way test_author
+  does. Removed the ad-hoc `build_prompt` and the legacy
+  `PROMPT_TEMPLATE_ID = "implementer.v1"` constant.
+- `ImplementerInput` gains `is_retry: bool` and `retry_context:
+  Option<String>` (used by M8's `pass_back_to_implementer`). The current
+  `start_real_phase` dispatcher passes `false` / `None` — manual
+  invocations are always fresh attempts.
+- The `phase` field on the input is preserved for the dispatcher's sake
+  but unused by the runner; the runner emits a constant `PHASE_NAME =
+  "implementer"` on its events instead. Ditto for the commit message,
+  which is now `[phase: implementer] {task_title}` regardless.
+- New `phases/implementer.rs::started_payload` carries
+  `prompt_template_hash`, `prior_phase_commits`, and `is_retry` on
+  `PhaseRunStarted`. (test_author still has its own simpler started
+  payload — it never has prior phases.)
+- `prior_phase_commits` is built from `phase_run_projection` via the
+  new helper `events::projections::prior_phase_commits(conn, task_id)`,
+  which takes the most recent `head_commit_after` for each phase that
+  has at least one completed run on this task.
+- **Schema**: `phase_run_projection` gains a `head_commit_after TEXT`
+  column. `PhaseRunCompleted` applier now persists it.
+  `PhaseRunCompletedPayload` deserializes the field as `Option<String>`
+  (legacy events without the field replay cleanly).
+  `PhaseRunProjection` Rust struct gets the field too.
+- `list_phase_runs_for_task` query updated to read the new column.
+- Existing dev DB note (still relevant): if there's a per-workspace
+  events.sqlite predating M4, run `rebuild_projections` so the
+  `phase_run_projection.head_commit_after` column materialises before
+  starting new phases. Otherwise the applier hits "no such column".
+- The implementer's bundled prompt's `{{#if prior_phase_commits.test_author}}`
+  block now renders correctly: when a test_author phase has run and
+  succeeded for this task, the prompt instructs the implementer to read
+  the failing tests from that commit.
+- `cargo build --lib` clean, `cargo test --lib` green (32 tests).
+
+**Next: M5 (auditor phase — structured output via the provider trait,
+diff computation, AuditorVerdictRendered emission).**
 
 ## Context
 

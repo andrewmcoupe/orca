@@ -11,16 +11,16 @@ use ulid::Ulid;
 
 use crate::events::projections;
 use crate::events::types::{EventMetadata, NewEvent};
+use crate::prompts::{self, PromptContext};
 use crate::providers::{Provider, ProviderEvent};
+use crate::settings::PhaseType;
 use crate::subprocess::{self, ChildTracker, SubprocessError};
 use crate::workspace_db::open_workspace_db;
 use crate::worktree;
 
-use super::runtime::{
-    append_phase_run_step, append_task_step, current_seq, started_payload,
-};
+use super::runtime::{append_phase_run_step, append_task_step, current_seq};
 
-const PROMPT_TEMPLATE_ID: &str = "implementer.v1";
+const PHASE_NAME: &str = "implementer";
 
 fn make_metadata(actor: &str) -> EventMetadata {
     EventMetadata {
@@ -31,19 +31,13 @@ fn make_metadata(actor: &str) -> EventMetadata {
     }
 }
 
-fn build_prompt(spec_markdown: &str) -> String {
-    format!(
-        "You are the implementer. A task spec is given below. Implement it. The codebase \
-         is at the current working directory. Be focused and concise.\n\n--- TASK SPEC ---\n{}\n",
-        spec_markdown
-    )
-}
-
 pub struct ImplementerInput {
     pub workspace_id: String,
     pub workspace_path: String,
     pub task_id: String,
     pub task_title: String,
+    /// Retained for the start_real_phase dispatcher; the runner ignores it and always
+    /// emits PHASE_NAME ("implementer") on its events.
     pub phase: String,
     pub phase_run_id: String,
     pub spec_markdown: String,
@@ -51,6 +45,11 @@ pub struct ImplementerInput {
     pub provider_path: String,
     pub options: Value,
     pub cancel: CancellationToken,
+    /// Set by `pass_back_to_implementer` (M8) when the auditor returned `revise`.
+    pub is_retry: bool,
+    /// Auditor's concerns from the prior verdict, formatted as bulleted markdown.
+    /// Surfaced to the implementer via the prompt's retry context block.
+    pub retry_context: Option<String>,
 }
 
 pub async fn run(
@@ -63,25 +62,47 @@ pub async fn run(
         workspace_path,
         task_id,
         task_title,
-        phase,
+        phase: _phase_arg,
         phase_run_id,
         spec_markdown,
         provider,
         provider_path,
         options,
         cancel,
+        is_retry,
+        retry_context,
     } = input;
 
     let mut conn = open_workspace_db(&workspace_path).map_err(|e| e.to_string())?;
+
+    // Build the prior_phase_commits map up front so it's available both for the prompt
+    // context and the PhaseRunStarted payload.
+    let prior_phase_commits = projections::prior_phase_commits(&conn, &task_id)
+        .map_err(|e| e.to_string())?;
+
+    let workspace_path_buf = std::path::PathBuf::from(&workspace_path);
+    let template = prompts::resolve(&workspace_path_buf, PhaseType::Implementer)
+        .map_err(|e| e.to_string())?;
+    let context = PromptContext {
+        task_title: task_title.clone(),
+        task_spec_markdown: spec_markdown.clone(),
+        acceptance_criteria: spec_markdown.clone(),
+        prior_phase_commits: prior_phase_commits.clone(),
+        is_retry,
+        retry_context: retry_context.clone(),
+        ..Default::default()
+    };
+    let prompt = prompts::render(&template, &context).map_err(|e| e.to_string())?;
+    let prompt_template_hash = prompts::hash(&prompt);
 
     let model = options
         .get("model")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let model_str = if model.is_empty() { provider.id() } else { &model };
 
     // Per-task worktree: reuse if it exists, otherwise create lazily.
-    let workspace_path_buf = std::path::PathBuf::from(&workspace_path);
     let (worktree_dir, base_commit) = match ensure_task_worktree(
         &mut conn,
         &app,
@@ -95,10 +116,11 @@ pub async fn run(
             // in the UI) and PhaseRunFailed back-to-back.
             let started = started_payload(
                 &task_id,
-                &phase,
                 provider.id(),
-                if model.is_empty() { provider.id() } else { &model },
-                PROMPT_TEMPLATE_ID,
+                model_str,
+                &prompt_template_hash,
+                &prior_phase_commits,
+                is_retry,
                 "",
                 "",
             );
@@ -141,10 +163,11 @@ pub async fn run(
     let worktree_path_str = worktree_dir.to_string_lossy().to_string();
     let started = started_payload(
         &task_id,
-        &phase,
         provider.id(),
-        if model.is_empty() { provider.id() } else { &model },
-        PROMPT_TEMPLATE_ID,
+        model_str,
+        &prompt_template_hash,
+        &prior_phase_commits,
+        is_retry,
         &worktree_path_str,
         &base_commit,
     );
@@ -162,7 +185,6 @@ pub async fn run(
         &make_metadata("system:implementer"),
     )?;
 
-    let prompt = build_prompt(&spec_markdown);
     let invocation = provider.build_invocation(&prompt, &options);
 
     let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -234,7 +256,7 @@ pub async fn run(
             // Auto-commit any worktree changes so phase runs always have a deterministic
             // head_commit_after. If commit fails, fall back to base_commit and surface the
             // error in the summary.
-            let commit_message = format!("[phase: {}] {}", phase, task_title);
+            let commit_message = format!("[phase: {}] {}", PHASE_NAME, task_title);
             let (head_commit_after, commit_note) =
                 match worktree::commit_all(&worktree_dir, &commit_message) {
                     Ok(sha) => (sha, None),
@@ -359,6 +381,34 @@ fn ensure_task_worktree(
         &make_metadata("system:implementer"),
     )?;
     Ok((info.path, info.head_commit))
+}
+
+/// PhaseRunStarted payload. Now carries `prompt_template_hash`, `prior_phase_commits`,
+/// and `is_retry_of` (set later when retry plumbing lands; for now just a flag in
+/// `is_retry`). The applier currently only reads the legacy fields, so the additional
+/// fields ride along for replay/audit but don't affect projections yet.
+fn started_payload(
+    task_id: &str,
+    provider: &str,
+    model: &str,
+    prompt_template_hash: &str,
+    prior_phase_commits: &std::collections::HashMap<String, String>,
+    is_retry: bool,
+    worktree_path: &str,
+    base_commit: &str,
+) -> String {
+    json!({
+        "task_id": task_id,
+        "phase": PHASE_NAME,
+        "provider": provider,
+        "model": model,
+        "prompt_template_hash": prompt_template_hash,
+        "prior_phase_commits": prior_phase_commits,
+        "is_retry": is_retry,
+        "worktree_path": worktree_path,
+        "base_commit": base_commit,
+    })
+    .to_string()
 }
 
 fn handle_line(

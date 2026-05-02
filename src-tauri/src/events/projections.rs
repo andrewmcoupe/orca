@@ -206,6 +206,7 @@ CREATE TABLE IF NOT EXISTS phase_run_projection (
     files_changed   TEXT,                 -- JSON array
     input_tokens    INTEGER,
     output_tokens   INTEGER,
+    head_commit_after TEXT,                 -- worktree HEAD after the phase committed; null until PhaseRunCompleted lands
     started_at      INTEGER NOT NULL,
     completed_at    INTEGER,
     updated_at      INTEGER NOT NULL
@@ -463,6 +464,8 @@ pub struct PhaseRunProjection {
     pub files_changed: Option<String>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
+    #[serde(default)]
+    pub head_commit_after: Option<String>,
     pub started_at: i64,
     pub completed_at: Option<i64>,
     pub updated_at: i64,
@@ -716,6 +719,9 @@ struct PhaseRunCompletedPayload {
     summary: String,
     files_changed: Vec<String>,
     token_usage: TokenUsage,
+    /// Recorded by phase runners after auto-commit; absent on legacy events.
+    #[serde(default)]
+    head_commit_after: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -800,15 +806,17 @@ pub fn apply_phase_run_event(
                      files_changed = ?3,
                      input_tokens = ?4,
                      output_tokens = ?5,
-                     completed_at = ?6,
-                     updated_at = ?6
-                 WHERE id = ?7",
+                     head_commit_after = ?6,
+                     completed_at = ?7,
+                     updated_at = ?7
+                 WHERE id = ?8",
                 params![
                     p.summary,
                     p.exit_code,
                     serde_json::to_string(&p.files_changed)?,
                     p.token_usage.input,
                     p.token_usage.output,
+                    p.head_commit_after,
                     event.created_at,
                     event.aggregate_id,
                 ],
@@ -960,7 +968,7 @@ pub fn list_phase_runs_for_task(
 ) -> rusqlite::Result<Vec<PhaseRunProjection>> {
     let mut stmt = conn.prepare(
         "SELECT id, task_id, phase, provider, model, status, summary, exit_code, error_kind, error_message,
-                files_changed, input_tokens, output_tokens, started_at, completed_at, updated_at
+                files_changed, input_tokens, output_tokens, head_commit_after, started_at, completed_at, updated_at
          FROM phase_run_projection
          WHERE task_id = ?1
          ORDER BY started_at ASC",
@@ -980,14 +988,41 @@ pub fn list_phase_runs_for_task(
             files_changed: r.get(10)?,
             input_tokens: r.get(11)?,
             output_tokens: r.get(12)?,
-            started_at: r.get(13)?,
-            completed_at: r.get(14)?,
-            updated_at: r.get(15)?,
+            head_commit_after: r.get(13)?,
+            started_at: r.get(14)?,
+            completed_at: r.get(15)?,
+            updated_at: r.get(16)?,
         })
     })?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Most recent successful `head_commit_after` per phase for the given task. Phases that
+/// have never completed for this task are absent from the map. Used by phase runners to
+/// populate `prior_phase_commits` on `PhaseRunStarted` and the prompt context.
+pub fn prior_phase_commits(
+    conn: &Connection,
+    task_id: &str,
+) -> rusqlite::Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare(
+        "SELECT phase, head_commit_after FROM phase_run_projection
+         WHERE task_id = ?1
+           AND status = 'completed'
+           AND head_commit_after IS NOT NULL
+         ORDER BY completed_at ASC",
+    )?;
+    let rows = stmt.query_map(params![task_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut out = std::collections::HashMap::new();
+    for r in rows {
+        let (phase, sha) = r?;
+        // Latest wins because we iterate in completed_at ASC order.
+        out.insert(phase, sha);
     }
     Ok(out)
 }
