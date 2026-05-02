@@ -1,0 +1,42 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { tasksApi, type CreateTaskInput } from "./api";
+import type { Task } from "./types";
+
+export const taskKeys = {
+  list: (planId: string) => ["task", "list", planId] as const,
+  detail: (taskId: string) => ["task", taskId] as const,
+};
+
+export function useTasksInPlan(planId: string | undefined) {
+  return useQuery<Task[]>({
+    queryKey: planId ? taskKeys.list(planId) : ["task", "list", "__pending__"],
+    queryFn: () => tasksApi.listByPlan(planId!),
+    enabled: !!planId,
+  });
+}
+
+export function useTask(taskId: string | undefined) {
+  return useQuery<Task | null>({
+    queryKey: taskId ? taskKeys.detail(taskId) : ["task", "__pending__"],
+    queryFn: () => tasksApi.get(taskId!),
+    enabled: !!taskId,
+  });
+}
+
+export function useCreateTask() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateTaskInput) => tasksApi.create(input),
+    onSuccess: (task) => {
+      qc.invalidateQueries({ queryKey: taskKeys.list(task.plan_id) });
+      qc.invalidateQueries({ queryKey: ["plan"] });
+    },
+  });
+}
+
+export function useDeleteWorktree() {
+  return useMutation({
+    mutationFn: ({ taskId, force }: { taskId: string; force: boolean }) =>
+      tasksApi.deleteWorktree(taskId, force),
+  });
+}

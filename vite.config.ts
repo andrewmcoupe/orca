@@ -7,6 +7,8 @@ import path from "node:path";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
+// We use code-based routing (see src/router.tsx); the file-based
+// `tanstackRouter` plugin is intentionally not registered.
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
   resolve: {
