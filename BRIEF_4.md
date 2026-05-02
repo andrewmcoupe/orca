@@ -1,5 +1,72 @@
 # Brief for Claude Code: Multi-Phase Pipeline
 
+## Progress so far (resume here)
+
+**Done — M1 (schema and config plumbing), committed on `main` as `a70db4a`:**
+
+- New `src-tauri/src/settings.rs` module: typed `WorkspaceSettings`,
+  `PhaseConfig`, `GateConfig`, `PhaseType` enum. Serde-tolerant —
+  missing pipeline fields materialise bundled defaults via
+  `WorkspaceSettings::from_json_str`. Bundled `PhaseConfig::bundled_default()`
+  is `{ phases: ["implementer", "auditor"], gate_overrides: None }`.
+- `TaskCreated` bumped to **v3** with `phase_config` field. Resolved at
+  create time in `commands::create_task` from a per-task override or
+  the workspace's stored `default_phase_config`. Decision: no upcaster
+  written; the v3 applier deserializes `phase_config` as `Option` and
+  defaults to bundled when absent, so any v2 events on disk replay
+  losslessly. (This diverges slightly from the brief's "wipe again"
+  suggestion — preserved dev data instead.)
+- New events: `TaskBaseCommitRecorded` (Task aggregate; payload
+  `{ commit_sha }`) and `AuditorVerdictRendered` (PhaseRun aggregate;
+  payload `{ phase_run_id, verdict, confidence, summary, concerns }`).
+  Both have appliers in `events/projections.rs`.
+- `task_projection` gains `phase_config TEXT NOT NULL DEFAULT '{}'`
+  and `task_base_commit TEXT` columns. New `auditor_verdict_projection`
+  table keyed by auditor `phase_run_id`, with `get_auditor_verdict`
+  and `list_auditor_verdicts_for_task` reads.
+- `WorkspaceSettingsChanged` applier unchanged (it stores raw JSON);
+  tolerance is at read time via `WorkspaceSettings::from_json_str`.
+  No command exists yet to emit `WorkspaceSettingsChanged` — that
+  comes with M9's settings UI.
+- `recent_events::summarize` extended for `TaskBaseCommitRecorded` and
+  `AuditorVerdictRendered`.
+- `docs/events.md` updated: TaskCreated v3 with PhaseConfig spec, the
+  two new events, expanded `WorkspaceSettingsChanged` settings shape
+  (default_phase_config, gates, phase_gates), PhaseRunStarted gains
+  `prior_phase_commits`, `prompt_template_hash`, `is_retry_of`, GateRan
+  gate_name no longer a closed enum and carries
+  `triggering_phase_run_id`.
+- Frontend `src/features/tasks/types.ts` gains `PhaseType`,
+  `PhaseConfig`, and the new fields on `Task`. `tasksApi.create`
+  accepts an optional `phaseConfig` override.
+
+**Known state to be aware of when starting M2:**
+
+- Existing per-workspace event DB at
+  `/Users/andycoupe/web-dev/orchestrator/.orca/events.sqlite` was
+  **not** wiped. It still has its old `task_projection` shape (no
+  `phase_config` column). Run `rebuild_projections` against that
+  workspace once before creating new tasks, otherwise the v3 applier
+  will hit "no such column: phase_config" on insert.
+- `cargo test --lib` is green (20 tests). `pnpm tsc --noEmit` is clean.
+- `PhaseRunStarted` applier was **not** updated to consume the new
+  optional fields (`prior_phase_commits`, `prompt_template_hash`,
+  `is_retry_of`). The current applier struct only deserializes the
+  fields it uses, so emitting them is a no-op at the projection level
+  — fine for M1, but M3-M5 will need to either store them on
+  `phase_run_projection` or read them off the events directly.
+- `PhaseRunStarted` payload version was **not** bumped. Per the brief
+  the new fields are additive; old events still replay. If a future
+  milestone wants to enforce the new fields, bump there.
+- The `auditor_verdict_projection` reads (`get_auditor_verdict`,
+  `list_auditor_verdicts_for_task`) are currently dead code (compiler
+  warning suppressed) — they wire up in M5/M8/M10 when the auditor
+  emits and the UI reads.
+- No Tauri commands yet for reading/writing workspace settings or for
+  the new prompt/gate concepts — those land in later milestones.
+
+**Next: M2 (prompt files and templating).**
+
 ## Context
 
 The app currently runs a single phase (implementer) per task. This brief turns that into a real pipeline: configurable phases per task, real test-author and auditor phases, gate runners, structured auditor verdicts, editable prompts, and the UI to drive it all.
