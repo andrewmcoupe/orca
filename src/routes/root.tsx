@@ -3,6 +3,7 @@ import { WorkspacesSidebar } from "@/components/layout/sidebar";
 import { EventStreamStrip } from "@/components/layout/event-stream-strip";
 import { useActiveWorkspace } from "@/features/workspaces/hooks";
 import { useProjectionInvalidation } from "@/features/events/hooks";
+import { QuickTaskShortcut } from "@/features/quick-task/quick-task-shortcut";
 
 function RootLayout() {
   useProjectionInvalidation();
@@ -17,6 +18,7 @@ function RootLayout() {
         </main>
       </div>
       <EventStreamStrip activeWorkspaceId={active.data?.id ?? null} />
+      <QuickTaskShortcut />
     </div>
   );
 }
