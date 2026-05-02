@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -67,6 +67,55 @@ type ProjectionUpdated = {
   aggregate_id: string;
 };
 
+type ProviderStatus = {
+  id: string;
+  display_name: string;
+  installed: boolean;
+  version: string | null;
+  authenticated: boolean;
+  path: string | null;
+  error: string | null;
+};
+
+type OptionDecl =
+  | {
+      kind: "bool";
+      id: string;
+      label: string;
+      description: string | null;
+      default: boolean;
+    }
+  | {
+      kind: "select";
+      id: string;
+      label: string;
+      description: string | null;
+      default: string;
+      choices: { value: string; label: string }[];
+    }
+  | {
+      kind: "text";
+      id: string;
+      label: string;
+      description: string | null;
+      default: string;
+    };
+
+type ProviderOptionsSchema = {
+  provider_id: string;
+  schema: OptionDecl[];
+  defaults: Record<string, unknown>;
+};
+
+type RecentEvent = {
+  id: string;
+  aggregate_type: string;
+  aggregate_id: string;
+  event_type: string;
+  summary: string;
+  created_at: number;
+};
+
 // ---------- Global projection_updated listener ----------
 
 function useProjectionInvalidation() {
@@ -83,6 +132,12 @@ function useProjectionInvalidation() {
       queryClient.invalidateQueries({
         queryKey: [aggregate_type, "list", workspace_id],
       });
+      // Recent events strip is its own query — invalidated on every event so it stays fresh.
+      if (aggregate_type !== "recent_events") {
+        queryClient.invalidateQueries({ queryKey: ["recent_events", workspace_id] });
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["recent_events"] });
+      }
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -97,6 +152,7 @@ function App() {
 
   const queryClient = useQueryClient();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
   const workspacesQ = useQuery<Workspace[]>({
     queryKey: ["workspace", "list", null],
@@ -141,11 +197,19 @@ function App() {
     setActiveM.error || rebuildM.error;
 
   return (
-    <main style={{ fontFamily: "system-ui, sans-serif", padding: 16, display: "flex", gap: 24 }}>
+    <div style={{ fontFamily: "system-ui, sans-serif", display: "flex", flexDirection: "column", height: "100vh" }}>
+      <main style={{ padding: 16, display: "flex", gap: 24, flex: 1, overflow: "auto" }}>
       <aside style={{ width: 280 }}>
         <h2>Workspaces</h2>
         <button type="button" onClick={() => addWorkspaceM.mutate()}>
           Add workspace
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowSettings((v) => !v)}
+          style={{ marginLeft: 8 }}
+        >
+          {showSettings ? "Hide settings" : "Settings"}
         </button>
         <button
           type="button"
@@ -188,7 +252,9 @@ function App() {
 
       <section style={{ flex: 1 }}>
         {error && <p style={{ color: "red" }}>{String(error)}</p>}
-        {!activeQ.data ? (
+        {showSettings ? (
+          <SettingsPanel />
+        ) : !activeQ.data ? (
           <p>Select a workspace to begin.</p>
         ) : (
           <WorkspaceView
@@ -198,8 +264,153 @@ function App() {
           />
         )}
       </section>
-    </main>
+      </main>
+      <EventStreamStrip activeWorkspaceId={activeQ.data?.id ?? null} />
+    </div>
   );
+}
+
+function SettingsPanel() {
+  const providersQ = useQuery<ProviderStatus[]>({
+    queryKey: ["providers"],
+    queryFn: () => invoke<ProviderStatus[]>("list_providers"),
+  });
+  const queryClient = useQueryClient();
+  const refreshM = useMutation({
+    mutationFn: () => invoke<ProviderStatus[]>("refresh_providers"),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["providers"], data);
+    },
+  });
+  return (
+    <div>
+      <h2>Settings</h2>
+      <h3>Providers</h3>
+      <button type="button" onClick={() => refreshM.mutate()} disabled={refreshM.isPending}>
+        {refreshM.isPending ? "Refreshing…" : "Refresh"}
+      </button>
+      <ul style={{ listStyle: "none", padding: 0, marginTop: 12 }}>
+        {(providersQ.data ?? []).map((p) => (
+          <li
+            key={p.id}
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 4,
+              padding: 8,
+              marginBottom: 8,
+            }}
+          >
+            <div style={{ fontWeight: 600 }}>
+              {p.display_name}{" "}
+              <span style={{ fontWeight: 400, color: p.installed ? "#080" : "#b00" }}>
+                {p.installed ? "✓ installed" : "✗ not installed"}
+              </span>
+            </div>
+            {p.version && <div style={{ fontSize: 12 }}>Version: {p.version}</div>}
+            {p.path && <div style={{ fontSize: 11, color: "#666" }}>{p.path}</div>}
+            <div style={{ fontSize: 12 }}>
+              Authenticated: {p.authenticated ? "yes" : "unknown"}
+            </div>
+            {p.error && (
+              <div style={{ fontSize: 12, color: "#b00", marginTop: 4 }}>
+                {p.error}{" "}
+                <a
+                  href="https://docs.claude.com/en/docs/claude-code/overview"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Install docs
+                </a>
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function EventStreamStrip({ activeWorkspaceId }: { activeWorkspaceId: string | null }) {
+  const recentQ = useQuery<RecentEvent[]>({
+    queryKey: ["recent_events", activeWorkspaceId],
+    queryFn: () => invoke<RecentEvent[]>("list_recent_events", { limit: 100 }),
+    enabled: !!activeWorkspaceId,
+  });
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const followRef = useRef(true);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !followRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [recentQ.data]);
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+    followRef.current = atBottom;
+  };
+
+  // Newest at the bottom (terminal-style). Backend returns DESC; reverse for display.
+  const events = (recentQ.data ?? []).slice().reverse();
+
+  return (
+    <div
+      ref={scrollRef}
+      onScroll={onScroll}
+      style={{
+        height: 80,
+        overflowY: "auto",
+        borderTop: "1px solid #ddd",
+        background: "#fafafa",
+        fontFamily: "ui-monospace, SFMono-Regular, monospace",
+        fontSize: 11,
+        padding: 4,
+      }}
+    >
+      {!activeWorkspaceId && (
+        <div style={{ color: "#888" }}>No active workspace.</div>
+      )}
+      {events.map((e) => (
+        <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+          <span style={{ color: "#888" }}>{formatTime(e.created_at)}</span>
+          <span
+            style={{
+              background: badgeColor(e.event_type),
+              color: "#fff",
+              padding: "0 4px",
+              borderRadius: 3,
+              minWidth: 110,
+              display: "inline-block",
+              textAlign: "center",
+            }}
+          >
+            {e.event_type}
+          </span>
+          <span>{e.summary}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatTime(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function badgeColor(eventType: string): string {
+  if (eventType.startsWith("Task")) return "#3b82f6";
+  if (eventType === "PhaseRunStarted") return "#10b981";
+  if (eventType === "PhaseRunCompleted") return "#059669";
+  if (eventType === "PhaseRunFailed") return "#dc2626";
+  if (eventType === "PhaseRunOutputAppended") return "#6b7280";
+  if (eventType.startsWith("PhaseRun")) return "#8b5cf6";
+  if (eventType === "GateRan") return "#f59e0b";
+  return "#475569";
 }
 
 function WorkspaceView({
@@ -303,9 +514,18 @@ function TaskDetail({ workspaceId, taskId }: { workspaceId: string; taskId: stri
     queryKey: ["phase_run", "list", workspaceId, taskId],
     queryFn: () => invoke<PhaseRun[]>("list_phase_runs", { taskId }),
   });
-  const start = useMutation({
+  const startFake = useMutation({
     mutationFn: () =>
       invoke<string>("start_fake_phase", { taskId, phase: "implementer" }),
+  });
+  const startReal = useMutation({
+    mutationFn: (vars: { providerId: string; options: Record<string, unknown> }) =>
+      invoke<string>("start_real_phase", {
+        taskId,
+        phase: "implementer",
+        providerId: vars.providerId,
+        options: vars.options,
+      }),
   });
 
   if (!taskQ.data) return <p>Loading task…</p>;
@@ -326,10 +546,15 @@ function TaskDetail({ workspaceId, taskId }: { workspaceId: string; taskId: stri
         {taskQ.data.spec_markdown || "(no spec)"}
       </pre>
 
-      <button type="button" onClick={() => start.mutate()}>
-        Run fake implementer
+      <button type="button" onClick={() => startFake.mutate()}>
+        Run (fake)
       </button>
-      {start.error && <p style={{ color: "red" }}>{String(start.error)}</p>}
+      <RunRealForm
+        onRun={(providerId, options) => startReal.mutate({ providerId, options })}
+        pending={startReal.isPending}
+      />
+      {startFake.error && <p style={{ color: "red" }}>{String(startFake.error)}</p>}
+      {startReal.error && <p style={{ color: "red" }}>{String(startReal.error)}</p>}
 
       <h3>Phase runs</h3>
       {(phasesQ.data ?? []).length === 0 && <p>No phase runs yet.</p>}
@@ -340,11 +565,141 @@ function TaskDetail({ workspaceId, taskId }: { workspaceId: string; taskId: stri
   );
 }
 
+function RunRealForm({
+  onRun,
+  pending,
+}: {
+  onRun: (providerId: string, options: Record<string, unknown>) => void;
+  pending: boolean;
+}) {
+  const providersQ = useQuery<ProviderStatus[]>({
+    queryKey: ["providers"],
+    queryFn: () => invoke<ProviderStatus[]>("list_providers"),
+  });
+
+  const installed = (providersQ.data ?? []).filter((p) => p.installed);
+  const [providerId, setProviderId] = useState<string>("");
+  const effectiveProviderId = providerId || installed[0]?.id || "";
+
+  const optionsQ = useQuery<ProviderOptionsSchema>({
+    queryKey: ["provider_options", effectiveProviderId],
+    queryFn: () =>
+      invoke<ProviderOptionsSchema>("get_provider_options", {
+        providerId: effectiveProviderId,
+      }),
+    enabled: !!effectiveProviderId,
+  });
+
+  const [overrides, setOverrides] = useState<Record<string, unknown>>({});
+  // Reset overrides when switching providers.
+  useEffect(() => {
+    setOverrides({});
+  }, [effectiveProviderId]);
+
+  const merged: Record<string, unknown> = {
+    ...(optionsQ.data?.defaults ?? {}),
+    ...overrides,
+  };
+
+  if (installed.length === 0) {
+    return (
+      <p style={{ color: "#888", marginTop: 8 }}>
+        No installed providers. Open Settings to check.
+      </p>
+    );
+  }
+
+  return (
+    <div style={{ marginLeft: 8, display: "inline-block", verticalAlign: "top" }}>
+      <select
+        value={effectiveProviderId}
+        onChange={(e) => setProviderId(e.target.value)}
+      >
+        {installed.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.display_name}
+          </option>
+        ))}
+      </select>
+      {(optionsQ.data?.schema ?? []).map((decl) => (
+        <ProviderOptionControl
+          key={decl.id}
+          decl={decl}
+          value={merged[decl.id]}
+          onChange={(v) => setOverrides((prev) => ({ ...prev, [decl.id]: v }))}
+        />
+      ))}
+      <button
+        type="button"
+        onClick={() => onRun(effectiveProviderId, merged)}
+        disabled={pending}
+        style={{ marginLeft: 8 }}
+      >
+        Run (real)
+      </button>
+    </div>
+  );
+}
+
+function ProviderOptionControl({
+  decl,
+  value,
+  onChange,
+}: {
+  decl: OptionDecl;
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  const labelStyle = { fontSize: 12, marginLeft: 8 };
+  if (decl.kind === "bool") {
+    return (
+      <label style={labelStyle} title={decl.description ?? undefined}>
+        <input
+          type="checkbox"
+          checked={Boolean(value)}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        {decl.label}
+      </label>
+    );
+  }
+  if (decl.kind === "select") {
+    return (
+      <label style={labelStyle} title={decl.description ?? undefined}>
+        {decl.label}{" "}
+        <select
+          value={typeof value === "string" ? value : decl.default}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          {decl.choices.map((c) => (
+            <option key={c.value} value={c.value}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+  return (
+    <label style={labelStyle} title={decl.description ?? undefined}>
+      {decl.label}{" "}
+      <input
+        type="text"
+        value={typeof value === "string" ? value : decl.default}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </label>
+  );
+}
+
 function PhaseRunCard({ phaseRun }: { phaseRun: PhaseRun }) {
   const outputQ = useQuery<PhaseRunChunk[]>({
     queryKey: ["phase_run", phaseRun.id, "output"],
     queryFn: () =>
       invoke<PhaseRunChunk[]>("list_phase_run_output", { phaseRunId: phaseRun.id }),
+  });
+  const cancel = useMutation({
+    mutationFn: () => invoke<boolean>("cancel_phase_run", { phaseRunId: phaseRun.id }),
   });
   return (
     <div
@@ -360,6 +715,16 @@ function PhaseRunCard({ phaseRun }: { phaseRun: PhaseRun }) {
         <em>{phaseRun.status}</em>
       </div>
       {phaseRun.summary && <div style={{ fontSize: 12 }}>{phaseRun.summary}</div>}
+      {phaseRun.status === "running" && (
+        <button
+          type="button"
+          onClick={() => cancel.mutate()}
+          disabled={cancel.isPending}
+          style={{ marginBottom: 4 }}
+        >
+          Cancel
+        </button>
+      )}
       <pre
         style={{
           background: "#000",

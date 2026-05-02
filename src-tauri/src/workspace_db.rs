@@ -36,6 +36,8 @@ pub fn open_workspace_db(workspace_path: &str) -> std::io::Result<Connection> {
     apply_events_ddl(&conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     apply_workspace_db_projection_ddl(&conn)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    crate::recent_events::apply_ddl(&conn)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     Ok(conn)
 }
 

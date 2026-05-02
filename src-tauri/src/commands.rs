@@ -1,10 +1,11 @@
 use std::process::Command;
-use std::time::Duration;
+use std::sync::Arc;
 
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::events::projections::{
@@ -12,6 +13,10 @@ use crate::events::projections::{
 };
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::events::{append::append_events_in_tx, AppendError};
+use crate::phases::{self, InflightRuns};
+use crate::providers::{self, OptionDecl, ProviderCache, ProviderStatus};
+use crate::recent_events::{self, RecentEventRow};
+use crate::subprocess::ChildTracker;
 use crate::workspace_db::open_workspace_db;
 use crate::{ActiveWorkspace, ActiveWorkspaceState, GlobalDb};
 
@@ -24,7 +29,7 @@ pub struct ProjectionUpdated {
     pub aggregate_id: String,
 }
 
-const PROJECTION_UPDATED_EVENT: &str = "projection_updated";
+pub const PROJECTION_UPDATED_EVENT: &str = "projection_updated";
 
 fn new_command_id() -> String {
     Ulid::new().to_string()
@@ -272,11 +277,13 @@ pub fn create_task(
         .map_err(map_append_err)?;
         for ev in &outcome.events {
             apply_task_event(&tx, ev).map_err(|e| e.to_string())?;
+            recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;
     }
 
     emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
 
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
     let aw = require_active_workspace(&mut guard)?;
@@ -326,53 +333,43 @@ pub fn list_phase_run_output(
 }
 
 // ======================================================================
-// Fake phase flow
+// Provider commands
 // ======================================================================
 
-/// Append a single phase_run event in its own transaction, apply the projection, and emit.
-/// Returns the new seq.
-fn append_phase_run_step(
-    conn: &mut rusqlite::Connection,
-    app: &AppHandle,
-    workspace_id: &str,
-    phase_run_id: &str,
-    expected_seq: i64,
-    new_event: NewEvent,
-    metadata: &EventMetadata,
-) -> Result<i64, String> {
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let outcome = append_events_in_tx(
-        &tx,
-        "phase_run",
-        phase_run_id,
-        expected_seq,
-        vec![new_event],
-        metadata,
-    )
-    .map_err(map_append_err)?;
-
-    let mut top_seq = expected_seq;
-    let mut affected_task: Option<String> = None;
-    for ev in &outcome.events {
-        apply_phase_run_event(&tx, ev).map_err(|e| e.to_string())?;
-        top_seq = ev.seq;
-        // Sniff task_id for the start event so we can also emit a task projection_updated.
-        if ev.event_type == "PhaseRunStarted" {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&ev.payload) {
-                if let Some(tid) = v.get("task_id").and_then(|x| x.as_str()) {
-                    affected_task = Some(tid.to_string());
-                }
-            }
-        }
-    }
-    tx.commit().map_err(|e| e.to_string())?;
-
-    emit_projection_updated(app, Some(workspace_id), "phase_run", phase_run_id);
-    if let Some(tid) = affected_task {
-        emit_projection_updated(app, Some(workspace_id), "task", &tid);
-    }
-    Ok(top_seq)
+#[tauri::command]
+pub fn list_providers(cache: State<'_, ProviderCache>) -> Result<Vec<ProviderStatus>, String> {
+    Ok(cache.0.lock().map_err(|e| e.to_string())?.clone())
 }
+
+#[tauri::command]
+pub fn refresh_providers(cache: State<'_, ProviderCache>) -> Result<Vec<ProviderStatus>, String> {
+    let detected = providers::detect_providers();
+    let mut g = cache.0.lock().map_err(|e| e.to_string())?;
+    *g = detected.clone();
+    Ok(detected)
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderOptionsSchema {
+    pub provider_id: String,
+    pub schema: Vec<OptionDecl>,
+    pub defaults: serde_json::Value,
+}
+
+#[tauri::command]
+pub fn get_provider_options(provider_id: String) -> Result<ProviderOptionsSchema, String> {
+    let p = providers::get(&provider_id)
+        .ok_or_else(|| format!("unknown provider: {}", provider_id))?;
+    Ok(ProviderOptionsSchema {
+        provider_id: p.id().to_string(),
+        schema: p.options_schema(),
+        defaults: p.default_options(),
+    })
+}
+
+// ======================================================================
+// Phase commands
+// ======================================================================
 
 #[tauri::command]
 pub async fn start_fake_phase(
@@ -380,9 +377,6 @@ pub async fn start_fake_phase(
     task_id: String,
     phase: String,
 ) -> Result<String, String> {
-    // Capture the workspace this run is bound to. The fake phase will own its own
-    // connection to that workspace's events.sqlite for its full duration, so switching
-    // the active workspace mid-run doesn't redirect writes or kill the task.
     let (workspace_id, workspace_path) = {
         let active_state = app.state::<ActiveWorkspaceState>();
         let guard = active_state.0.lock().map_err(|e| e.to_string())?;
@@ -393,12 +387,11 @@ pub async fn start_fake_phase(
     };
 
     let phase_run_id = format!("pr_{}", Ulid::new());
-
     let app_clone = app.clone();
     let phase_run_id_clone = phase_run_id.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = run_fake_phase(
+        if let Err(e) = phases::fake::run(
             app_clone,
             workspace_id,
             workspace_path,
@@ -415,88 +408,138 @@ pub async fn start_fake_phase(
     Ok(phase_run_id)
 }
 
-async fn run_fake_phase(
+#[tauri::command]
+pub async fn start_real_phase(
     app: AppHandle,
-    workspace_id: String,
-    workspace_path: String,
     task_id: String,
     phase: String,
+    provider_id: Option<String>,
+    options: Option<serde_json::Value>,
+) -> Result<String, String> {
+    if phase != "implementer" {
+        return Err(format!("only 'implementer' phase is supported, got '{}'", phase));
+    }
+
+    let provider_id = provider_id.unwrap_or_else(|| "claude".to_string());
+    let provider = providers::get(&provider_id)
+        .ok_or_else(|| format!("unknown provider: {}", provider_id))?;
+
+    // Merge user-supplied options over defaults so missing keys still get sensible values.
+    let options = merge_options(provider.default_options(), options.unwrap_or(json!({})));
+
+    let (workspace_id, workspace_path) = {
+        let active_state = app.state::<ActiveWorkspaceState>();
+        let guard = active_state.0.lock().map_err(|e| e.to_string())?;
+        let aw = guard
+            .as_ref()
+            .ok_or_else(|| "no active workspace".to_string())?;
+        (aw.id.clone(), aw.path.clone())
+    };
+
+    let spec_markdown = {
+        let active_state = app.state::<ActiveWorkspaceState>();
+        let mut guard = active_state.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        projections::get_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("task not found: {}", task_id))?
+            .spec_markdown
+    };
+
+    // Resolve the binary path via the cached detection — refresh if the cached entry says
+    // not-installed, in case the user just fixed it.
+    let provider_path = {
+        let cache = app.state::<ProviderCache>();
+        let mut g = cache.0.lock().map_err(|e| e.to_string())?;
+        let needs_refresh = g
+            .iter()
+            .find(|p| p.id == provider_id)
+            .map_or(true, |p| !p.installed);
+        if needs_refresh {
+            *g = providers::detect_providers();
+        }
+        let entry = g
+            .iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| format!("provider '{}' not registered", provider_id))?;
+        if !entry.installed {
+            return Err(entry
+                .error
+                .clone()
+                .unwrap_or_else(|| format!("provider '{}' not installed", provider_id)));
+        }
+        entry
+            .path
+            .clone()
+            .ok_or_else(|| format!("provider '{}' has no path", provider_id))?
+    };
+
+    let phase_run_id = format!("pr_{}", Ulid::new());
+    let cancel = CancellationToken::new();
+
+    let inflight = app.state::<InflightRuns>();
+    inflight.register(&phase_run_id, cancel.clone());
+
+    let app_clone = app.clone();
+    let phase_run_id_clone = phase_run_id.clone();
+    let tracker: Arc<ChildTracker> = app.state::<Arc<ChildTracker>>().inner().clone();
+
+    tokio::spawn(async move {
+        let input = phases::implementer::ImplementerInput {
+            workspace_id,
+            workspace_path,
+            task_id,
+            phase,
+            phase_run_id: phase_run_id_clone.clone(),
+            spec_markdown,
+            provider,
+            provider_path,
+            options,
+            cancel,
+        };
+        if let Err(e) = phases::implementer::run(app_clone.clone(), tracker, input).await {
+            eprintln!("real phase failed: {}", e);
+        }
+        let inflight = app_clone.state::<InflightRuns>();
+        inflight.unregister(&phase_run_id_clone);
+    });
+
+    Ok(phase_run_id)
+}
+
+fn merge_options(
+    mut defaults: serde_json::Value,
+    overrides: serde_json::Value,
+) -> serde_json::Value {
+    if let (Some(d), Some(o)) = (defaults.as_object_mut(), overrides.as_object()) {
+        for (k, v) in o {
+            d.insert(k.clone(), v.clone());
+        }
+    }
+    defaults
+}
+
+#[tauri::command]
+pub fn cancel_phase_run(
     phase_run_id: String,
-) -> Result<(), String> {
-    let mut conn = open_workspace_db(&workspace_path).map_err(|e| e.to_string())?;
+    inflight: State<'_, InflightRuns>,
+) -> Result<bool, String> {
+    Ok(inflight.cancel(&phase_run_id))
+}
 
-    // Started
-    {
-        let payload = json!({
-            "task_id": task_id,
-            "phase": phase,
-            "provider": "claude_code",
-            "model": "claude-sonnet-4-5",
-            "prompt_template_id": "fake.v1",
-            "worktree_path": format!("{}/.orca/worktrees/{}", workspace_path, phase_run_id),
-        })
-        .to_string();
-        append_phase_run_step(
-            &mut conn,
-            &app,
-            &workspace_id,
-            &phase_run_id,
-            0,
-            NewEvent {
-                event_type: "PhaseRunStarted".into(),
-                version: 1,
-                payload,
-            },
-            &make_metadata("system:fake_runner"),
-        )?;
-    }
+// ======================================================================
+// Recent events
+// ======================================================================
 
-    // 5 chunks
-    let mut seq = 1i64;
-    for i in 1..=5 {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let chunk = format!("fake chunk {}/5 for {}\n", i, phase_run_id);
-        let payload = json!({ "chunk": chunk, "chunk_seq": i }).to_string();
-        seq = append_phase_run_step(
-            &mut conn,
-            &app,
-            &workspace_id,
-            &phase_run_id,
-            seq,
-            NewEvent {
-                event_type: "PhaseRunOutputAppended".into(),
-                version: 1,
-                payload,
-            },
-            &make_metadata("system:fake_runner"),
-        )?;
-    }
-
-    // Completed
-    {
-        let payload = json!({
-            "exit_code": 0,
-            "summary": "fake phase completed",
-            "files_changed": [],
-            "token_usage": { "input": 1234, "output": 567 }
-        })
-        .to_string();
-        append_phase_run_step(
-            &mut conn,
-            &app,
-            &workspace_id,
-            &phase_run_id,
-            seq,
-            NewEvent {
-                event_type: "PhaseRunCompleted".into(),
-                version: 1,
-                payload,
-            },
-            &make_metadata("system:fake_runner"),
-        )?;
-    }
-
-    Ok(())
+#[tauri::command]
+pub fn list_recent_events(
+    limit: Option<i64>,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<Vec<RecentEventRow>, String> {
+    let limit = limit.unwrap_or(50).clamp(1, 200);
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    recent_events::list_recent(&aw.conn, limit).map_err(|e| e.to_string())
 }
 
 // ======================================================================
@@ -551,11 +594,30 @@ pub fn rebuild_projections(
                  DROP TABLE IF EXISTS phase_run_tool_call;
                  DROP TABLE IF EXISTS phase_run_output;
                  DROP TABLE IF EXISTS phase_run_projection;
-                 DROP TABLE IF EXISTS task_projection;",
+                 DROP TABLE IF EXISTS task_projection;
+                 DROP TABLE IF EXISTS recent_events;",
             )
             .map_err(|e| e.to_string())?;
             tx.execute_batch(crate::events::projections::TASK_PROJECTION_DDL)
                 .map_err(|e| e.to_string())?;
+            tx.execute_batch(crate::recent_events::RECENT_EVENTS_DDL)
+                .map_err(|e| e.to_string())?;
+            // Re-populate recent_events from the per-workspace event log. Don't double-count
+            // these against events_replayed — the task/phase_run replays below already do.
+            let mut sink = 0i64;
+            replay_into(
+                &tx,
+                "task",
+                |tx, ev| crate::recent_events::record_event(tx, ev).map_err(|e| e.into()),
+                &mut sink,
+            )?;
+            replay_into(
+                &tx,
+                "phase_run",
+                |tx, ev| crate::recent_events::record_event(tx, ev).map_err(|e| e.into()),
+                &mut sink,
+            )?;
+            rebuilt.push("recent_events".into());
 
             if do_task {
                 let count =
