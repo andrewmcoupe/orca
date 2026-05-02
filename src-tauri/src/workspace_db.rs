@@ -26,6 +26,13 @@ pub fn open_workspace_db(workspace_path: &str) -> std::io::Result<Connection> {
     ensure_gitignore_entry(workspace_path)?;
     let path = events_db_path(workspace_path);
     let conn = Connection::open(&path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    // WAL allows the UI's read connection and any background-writer connections to coexist
+    // without blocking each other. busy_timeout backstops the rare case where two writers
+    // contend on the WAL lock briefly.
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     apply_events_ddl(&conn).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     apply_workspace_db_projection_ddl(&conn)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;

@@ -332,7 +332,7 @@ pub fn list_phase_run_output(
 /// Append a single phase_run event in its own transaction, apply the projection, and emit.
 /// Returns the new seq.
 fn append_phase_run_step(
-    aw: &mut ActiveWorkspace,
+    conn: &mut rusqlite::Connection,
     app: &AppHandle,
     workspace_id: &str,
     phase_run_id: &str,
@@ -340,7 +340,7 @@ fn append_phase_run_step(
     new_event: NewEvent,
     metadata: &EventMetadata,
 ) -> Result<i64, String> {
-    let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
     let outcome = append_events_in_tx(
         &tx,
         "phase_run",
@@ -380,25 +380,28 @@ pub async fn start_fake_phase(
     task_id: String,
     phase: String,
 ) -> Result<String, String> {
-    let active_state = app.state::<ActiveWorkspaceState>();
-    let workspace_id = {
+    // Capture the workspace this run is bound to. The fake phase will own its own
+    // connection to that workspace's events.sqlite for its full duration, so switching
+    // the active workspace mid-run doesn't redirect writes or kill the task.
+    let (workspace_id, workspace_path) = {
+        let active_state = app.state::<ActiveWorkspaceState>();
         let guard = active_state.0.lock().map_err(|e| e.to_string())?;
-        guard
+        let aw = guard
             .as_ref()
-            .map(|a| a.id.clone())
-            .ok_or_else(|| "no active workspace".to_string())?
+            .ok_or_else(|| "no active workspace".to_string())?;
+        (aw.id.clone(), aw.path.clone())
     };
 
     let phase_run_id = format!("pr_{}", Ulid::new());
 
     let app_clone = app.clone();
-    let workspace_id_clone = workspace_id.clone();
     let phase_run_id_clone = phase_run_id.clone();
 
     tokio::spawn(async move {
         if let Err(e) = run_fake_phase(
             app_clone,
-            workspace_id_clone,
+            workspace_id,
+            workspace_path,
             task_id,
             phase,
             phase_run_id_clone,
@@ -415,26 +418,26 @@ pub async fn start_fake_phase(
 async fn run_fake_phase(
     app: AppHandle,
     workspace_id: String,
+    workspace_path: String,
     task_id: String,
     phase: String,
     phase_run_id: String,
 ) -> Result<(), String> {
+    let mut conn = open_workspace_db(&workspace_path).map_err(|e| e.to_string())?;
+
     // Started
     {
-        let active_state = app.state::<ActiveWorkspaceState>();
-        let mut guard = active_state.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
         let payload = json!({
             "task_id": task_id,
             "phase": phase,
             "provider": "claude_code",
             "model": "claude-sonnet-4-5",
             "prompt_template_id": "fake.v1",
-            "worktree_path": format!("{}/.orca/worktrees/{}", aw.path, phase_run_id),
+            "worktree_path": format!("{}/.orca/worktrees/{}", workspace_path, phase_run_id),
         })
         .to_string();
         append_phase_run_step(
-            aw,
+            &mut conn,
             &app,
             &workspace_id,
             &phase_run_id,
@@ -452,13 +455,10 @@ async fn run_fake_phase(
     let mut seq = 1i64;
     for i in 1..=5 {
         tokio::time::sleep(Duration::from_millis(500)).await;
-        let active_state = app.state::<ActiveWorkspaceState>();
-        let mut guard = active_state.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
         let chunk = format!("fake chunk {}/5 for {}\n", i, phase_run_id);
         let payload = json!({ "chunk": chunk, "chunk_seq": i }).to_string();
         seq = append_phase_run_step(
-            aw,
+            &mut conn,
             &app,
             &workspace_id,
             &phase_run_id,
@@ -474,9 +474,6 @@ async fn run_fake_phase(
 
     // Completed
     {
-        let active_state = app.state::<ActiveWorkspaceState>();
-        let mut guard = active_state.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
         let payload = json!({
             "exit_code": 0,
             "summary": "fake phase completed",
@@ -485,7 +482,7 @@ async fn run_fake_phase(
         })
         .to_string();
         append_phase_run_step(
-            aw,
+            &mut conn,
             &app,
             &workspace_id,
             &phase_run_id,
