@@ -92,6 +92,8 @@ pub fn append_phase_run_step(
 
     let mut top_seq = expected_seq;
     let mut affected_task: Option<String> = None;
+    let mut fire_on_completed = false;
+    let mut fire_on_auditor_verdict = false;
     for ev in &outcome.events {
         apply_phase_run_event(&tx, ev).map_err(|e| e.to_string())?;
         // Mirror into the recent_events strip projection.
@@ -104,6 +106,12 @@ pub fn append_phase_run_step(
                 }
             }
         }
+        if ev.event_type == "PhaseRunCompleted" {
+            fire_on_completed = true;
+        }
+        if ev.event_type == "AuditorVerdictRendered" {
+            fire_on_auditor_verdict = true;
+        }
     }
     tx.commit().map_err(|e| e.to_string())?;
 
@@ -111,6 +119,30 @@ pub fn append_phase_run_step(
     emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
     if let Some(tid) = affected_task {
         emit_projection_updated(app, Some(workspace_id), "task", &tid);
+    }
+
+    // Pipeline orchestrator hooks. Best-effort: spawned on the tokio runtime so the
+    // sync caller (a phase runner) doesn't block on gates / next-phase dispatch. Errors
+    // are logged; the user can recover via the UI if auto-progression stalls.
+    if fire_on_completed {
+        let app_clone = app.clone();
+        let ws = workspace_id.to_string();
+        let pr = phase_run_id.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = crate::pipeline::on_phase_completed(app_clone, ws, pr).await {
+                eprintln!("pipeline::on_phase_completed failed: {}", e);
+            }
+        });
+    }
+    if fire_on_auditor_verdict {
+        let app_clone = app.clone();
+        let ws = workspace_id.to_string();
+        let pr = phase_run_id.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = crate::pipeline::on_auditor_verdict(app_clone, ws, pr).await {
+                eprintln!("pipeline::on_auditor_verdict failed: {}", e);
+            }
+        });
     }
     Ok(top_seq)
 }

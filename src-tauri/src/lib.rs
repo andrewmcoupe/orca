@@ -2,6 +2,7 @@ mod db;
 mod events;
 mod gates;
 mod phases;
+mod pipeline;
 mod prompts;
 mod providers;
 mod recent_events;
@@ -73,6 +74,7 @@ pub fn run() {
             commands::list_phase_run_output,
             commands::start_fake_phase,
             commands::start_real_phase,
+            commands::start_task,
             commands::cancel_phase_run,
             commands::rebuild_projections,
             commands::list_providers,

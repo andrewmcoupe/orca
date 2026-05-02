@@ -13,7 +13,11 @@ export const phaseRunsApi = {
     phase: string;
     providerId: string;
     options: Record<string, unknown>;
+    isRetry?: boolean;
+    retryContext?: string | null;
   }) => invoke<string>("start_real_phase", params),
+  /** Pipeline entry point — starts the first phase from the task's phase_config. */
+  startTask: (taskId: string) => invoke<string>("start_task", { taskId }),
   cancel: (phaseRunId: string) =>
     invoke<boolean>("cancel_phase_run", { phaseRunId }),
 };

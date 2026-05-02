@@ -904,6 +904,8 @@ pub async fn start_real_phase(
     phase: String,
     provider_id: Option<String>,
     options: Option<serde_json::Value>,
+    is_retry: Option<bool>,
+    retry_context: Option<String>,
 ) -> Result<String, String> {
     if phase != "implementer" && phase != "test_author" && phase != "auditor" {
         return Err(format!(
@@ -1022,10 +1024,8 @@ pub async fn start_real_phase(
                     provider_path,
                     options,
                     cancel,
-                    // Retry plumbing lands with M8's `pass_back_to_implementer` command.
-                    // Manual `start_real_phase` invocations always start a fresh attempt.
-                    is_retry: false,
-                    retry_context: None,
+                    is_retry: is_retry.unwrap_or(false),
+                    retry_context,
                 };
                 phases::implementer::run(app_clone.clone(), tracker, input).await
             }
@@ -1050,6 +1050,14 @@ fn merge_options(
         }
     }
     defaults
+}
+
+/// Pipeline entry point: start the first phase configured on this task.
+#[tauri::command]
+pub async fn start_task(app: AppHandle, task_id: String) -> Result<String, String> {
+    crate::pipeline::start_task(app, task_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
