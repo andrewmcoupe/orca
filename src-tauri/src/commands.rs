@@ -399,6 +399,91 @@ pub fn get_active_workspace(
 }
 
 // ======================================================================
+// Plan auto-completion
+// ======================================================================
+
+/// Returns Some(plan_id) if the plan owning `task_id` has just become eligible for
+/// PlanCompleted: every sibling task is in a terminal state (merged | cancelled |
+/// archived) AND the plan itself is in a non-terminal state (active | paused). Returns
+/// None otherwise — including when the task or plan can't be found, which is a benign
+/// race (e.g. plan archived between commit and check).
+pub fn plan_completion_eligible(
+    conn: &rusqlite::Connection,
+    task_id: &str,
+) -> Result<Option<String>, rusqlite::Error> {
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT t.plan_id, p.status
+             FROM task_projection t
+             JOIN plan_projection p ON p.id = t.plan_id
+             WHERE t.id = ?1",
+            params![task_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let (plan_id, status) = match row {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    if status != "active" && status != "paused" {
+        return Ok(None);
+    }
+    let non_terminal: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM task_projection
+         WHERE plan_id = ?1 AND status NOT IN ('merged', 'cancelled', 'archived')",
+        params![plan_id],
+        |r| r.get(0),
+    )?;
+    if non_terminal == 0 {
+        Ok(Some(plan_id))
+    } else {
+        Ok(None)
+    }
+}
+
+/// After a task has transitioned to a terminal state, check if the parent plan is now
+/// fully terminal and emit `PlanCompleted` as a separate append. Concurrency conflicts
+/// (e.g. user paused/cancelled the plan in the same instant) are logged and ignored —
+/// this is a best-effort projection convenience, not a correctness requirement.
+fn maybe_complete_plan(app: &AppHandle, workspace_id: &str, task_id: &str) {
+    let active = app.state::<ActiveWorkspaceState>();
+    let plan_id = {
+        let mut guard = match active.0.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let aw = match guard.as_mut() {
+            Some(aw) => aw,
+            None => return,
+        };
+        match plan_completion_eligible(&aw.conn, task_id) {
+            Ok(Some(pid)) => pid,
+            Ok(None) => return,
+            Err(e) => {
+                eprintln!("plan_completion_eligible failed for task {}: {}", task_id, e);
+                return;
+            }
+        }
+    };
+
+    let mut guard = match active.0.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let aw = match guard.as_mut() {
+        Some(aw) => aw,
+        None => return,
+    };
+    if let Err(e) = append_plan_event(aw, &plan_id, "PlanCompleted", json!({}), "system:auto_complete") {
+        eprintln!("auto-emit PlanCompleted for {} failed: {}", plan_id, e);
+        return;
+    }
+    drop(guard);
+    emit_projection_updated(app, Some(workspace_id), "plan", &plan_id);
+    emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
+}
+
+// ======================================================================
 // Plan commands (per-workspace)
 // ======================================================================
 
@@ -955,6 +1040,7 @@ pub fn mark_task_merged(
     emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
 
     cleanup_task_worktree(&app, &workspace_id, &workspace_path, &task_id, "task_merged")?;
+    maybe_complete_plan(&app, &workspace_id, &task_id);
     Ok(())
 }
 
@@ -1000,6 +1086,7 @@ pub fn cancel_task(
     emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
 
     cleanup_task_worktree(&app, &workspace_id, &workspace_path, &task_id, "task_cancelled")?;
+    maybe_complete_plan(&app, &workspace_id, &task_id);
     Ok(())
 }
 
@@ -1327,6 +1414,111 @@ pub fn rebuild_projections(
         events_replayed,
         projections_rebuilt: rebuilt,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::projections::apply_workspace_db_projection_ddl;
+    use crate::events::schema::apply_events_ddl;
+    use rusqlite::Connection;
+
+    fn make_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_events_ddl(&conn).unwrap();
+        apply_workspace_db_projection_ddl(&conn).unwrap();
+        conn
+    }
+
+    fn insert_plan(conn: &Connection, id: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO plan_projection
+                (id, workspace_id, title, description, source, source_metadata, status,
+                 task_count, running_task_count, done_task_count, failed_task_count,
+                 created_at, updated_at)
+             VALUES (?1, 'ws', 'p', '', 'manual', NULL, ?2, 0, 0, 0, 0, 0, 0)",
+            params![id, status],
+        )
+        .unwrap();
+    }
+
+    fn insert_task(conn: &Connection, id: &str, plan_id: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO task_projection
+                (id, workspace_id, plan_id, title, spec_markdown, status, created_at, updated_at)
+             VALUES (?1, 'ws', ?2, 't', '', ?3, 0, 0)",
+            params![id, plan_id, status],
+        )
+        .unwrap();
+    }
+
+    fn set_task_status(conn: &Connection, id: &str, status: &str) {
+        conn.execute(
+            "UPDATE task_projection SET status = ?1 WHERE id = ?2",
+            params![status, id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn not_eligible_while_tasks_non_terminal() {
+        let conn = make_db();
+        insert_plan(&conn, "plan_1", "active");
+        insert_task(&conn, "task_a", "plan_1", "created");
+        insert_task(&conn, "task_b", "plan_1", "merged");
+        insert_task(&conn, "task_c", "plan_1", "merged");
+        assert_eq!(plan_completion_eligible(&conn, "task_c").unwrap(), None);
+    }
+
+    #[test]
+    fn eligible_when_last_task_terminates() {
+        let conn = make_db();
+        insert_plan(&conn, "plan_1", "active");
+        insert_task(&conn, "task_a", "plan_1", "merged");
+        insert_task(&conn, "task_b", "plan_1", "cancelled");
+        insert_task(&conn, "task_c", "plan_1", "created");
+        assert_eq!(plan_completion_eligible(&conn, "task_c").unwrap(), None);
+        set_task_status(&conn, "task_c", "merged");
+        assert_eq!(
+            plan_completion_eligible(&conn, "task_c").unwrap(),
+            Some("plan_1".to_string())
+        );
+    }
+
+    #[test]
+    fn not_eligible_when_plan_already_terminal() {
+        let conn = make_db();
+        insert_plan(&conn, "plan_1", "completed");
+        insert_task(&conn, "task_a", "plan_1", "merged");
+        assert_eq!(plan_completion_eligible(&conn, "task_a").unwrap(), None);
+
+        insert_plan(&conn, "plan_2", "cancelled");
+        insert_task(&conn, "task_b", "plan_2", "merged");
+        assert_eq!(plan_completion_eligible(&conn, "task_b").unwrap(), None);
+
+        insert_plan(&conn, "plan_3", "archived");
+        insert_task(&conn, "task_c", "plan_3", "merged");
+        assert_eq!(plan_completion_eligible(&conn, "task_c").unwrap(), None);
+    }
+
+    #[test]
+    fn eligible_when_plan_paused() {
+        // Paused plans still get auto-completed — pausing means "no new work suggested",
+        // not "freeze terminal-state transitions".
+        let conn = make_db();
+        insert_plan(&conn, "plan_1", "paused");
+        insert_task(&conn, "task_a", "plan_1", "merged");
+        assert_eq!(
+            plan_completion_eligible(&conn, "task_a").unwrap(),
+            Some("plan_1".to_string())
+        );
+    }
+
+    #[test]
+    fn missing_task_returns_none() {
+        let conn = make_db();
+        assert_eq!(plan_completion_eligible(&conn, "nope").unwrap(), None);
+    }
 }
 
 type ApplyFn = fn(&rusqlite::Transaction, &crate::events::types::AppendedEvent) -> Result<(), projections::ProjectionError>;
