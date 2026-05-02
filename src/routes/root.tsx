@@ -1,5 +1,5 @@
 import { Outlet, createRootRoute } from "@tanstack/react-router";
-import { TempSidebar } from "@/components/layout/temp-sidebar";
+import { WorkspacesSidebar } from "@/components/layout/sidebar";
 import { EventStreamStrip } from "@/components/layout/event-stream-strip";
 import { useActiveWorkspace } from "@/features/workspaces/hooks";
 import { useProjectionInvalidation } from "@/features/events/hooks";
@@ -11,7 +11,7 @@ function RootLayout() {
   return (
     <div className="bg-background text-foreground flex h-screen flex-col">
       <div className="flex min-h-0 flex-1">
-        <TempSidebar />
+        <WorkspacesSidebar />
         <main className="min-w-0 flex-1 overflow-auto">
           <Outlet />
         </main>
