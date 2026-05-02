@@ -57,6 +57,8 @@ pub fn run() {
             commands::add_workspace,
             commands::list_workspaces,
             commands::remove_workspace,
+            commands::get_workspace_settings,
+            commands::update_workspace_settings,
             commands::set_active_workspace,
             commands::get_active_workspace,
             commands::create_plan,

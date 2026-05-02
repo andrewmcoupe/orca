@@ -12,3 +12,21 @@ export type ActiveWorkspaceInfo = {
   id: string;
   path: string;
 };
+
+export type PhaseType = "test_author" | "implementer" | "auditor";
+
+export type PhaseConfig = {
+  phases: PhaseType[];
+  gate_overrides: Record<string, string[]> | null;
+};
+
+export type GateConfig = {
+  command: string;
+  timeout_seconds: number;
+};
+
+export type WorkspaceSettings = {
+  default_phase_config: PhaseConfig;
+  gates: Record<string, GateConfig>;
+  phase_gates: Record<string, string[]>;
+};

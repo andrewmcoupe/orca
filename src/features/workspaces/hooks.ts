@@ -1,7 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { workspacesApi } from "./api";
-import type { ActiveWorkspaceInfo, Workspace } from "./types";
+import type {
+  ActiveWorkspaceInfo,
+  Workspace,
+  WorkspaceSettings,
+} from "./types";
 
 const WORKSPACE_LIST_KEY = ["workspace", "list", null] as const;
 const ACTIVE_WORKSPACE_KEY = ["active_workspace"] as const;
@@ -54,6 +58,30 @@ export function useSetActiveWorkspace() {
  * The route param is the source of truth — switching routes must rebind
  * the per-workspace event store before queries fire.
  */
+export const workspaceSettingsKey = (workspaceId: string) =>
+  ["workspace", workspaceId, "settings"] as const;
+
+export function useWorkspaceSettings(workspaceId: string | undefined) {
+  return useQuery<WorkspaceSettings>({
+    queryKey: workspaceId
+      ? workspaceSettingsKey(workspaceId)
+      : ["workspace", "__pending__", "settings"],
+    queryFn: () => workspacesApi.getSettings(workspaceId!),
+    enabled: !!workspaceId,
+  });
+}
+
+export function useUpdateWorkspaceSettings(workspaceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (settings: WorkspaceSettings) =>
+      workspacesApi.updateSettings(workspaceId, settings),
+    onSuccess: (settings) => {
+      qc.setQueryData(workspaceSettingsKey(workspaceId), settings);
+    },
+  });
+}
+
 export function useActivateWorkspace(workspaceId: string) {
   const qc = useQueryClient();
   const setActive = useSetActiveWorkspace();

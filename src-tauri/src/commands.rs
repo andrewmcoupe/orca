@@ -183,6 +183,63 @@ pub fn remove_workspace(
     Ok(())
 }
 
+#[tauri::command]
+pub fn get_workspace_settings(
+    workspace_id: String,
+    state: State<'_, GlobalDb>,
+) -> Result<crate::settings::WorkspaceSettings, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let settings_json: String = conn
+        .query_row(
+            "SELECT settings_json FROM workspace_projection WHERE id = ?1",
+            params![workspace_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(crate::settings::WorkspaceSettings::from_json_str(&settings_json))
+}
+
+#[tauri::command]
+pub fn update_workspace_settings(
+    app: AppHandle,
+    workspace_id: String,
+    settings: crate::settings::WorkspaceSettings,
+    state: State<'_, GlobalDb>,
+) -> Result<crate::settings::WorkspaceSettings, String> {
+    let settings_value = serde_json::to_value(&settings).map_err(|e| e.to_string())?;
+    let payload = json!({ "settings": settings_value }).to_string();
+    {
+        let mut conn = state.0.lock().map_err(|e| e.to_string())?;
+        let expected_seq: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) FROM events WHERE aggregate_type = 'workspace' AND aggregate_id = ?1",
+                params![workspace_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let outcome = append_events_in_tx(
+            &tx,
+            "workspace",
+            &workspace_id,
+            expected_seq,
+            vec![NewEvent {
+                event_type: "WorkspaceSettingsChanged".into(),
+                version: 1,
+                payload,
+            }],
+            &make_metadata("user:local"),
+        )
+        .map_err(map_append_err)?;
+        for ev in &outcome.events {
+            apply_workspace_event(&tx, ev).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    emit_projection_updated(&app, None, "workspace", &workspace_id);
+    Ok(settings)
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ActiveWorkspaceInfo {
     pub id: String,

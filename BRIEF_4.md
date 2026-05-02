@@ -385,7 +385,66 @@
   empty case (no summary header when summary is empty). `cargo test
   --lib` green (57 tests, 55 prior + 2 new). `pnpm tsc --noEmit` clean.
 
-**Next: M9 (configuration UI — phase config, gates, prompt editor).**
+**Done — M9 (configuration UI):**
+
+- Backend commands `get_workspace_settings(workspace_id)` and
+  `update_workspace_settings(workspace_id, settings)`. The update path
+  emits `WorkspaceSettingsChanged` v1 on the workspace aggregate
+  (global DB) with the full typed settings JSON; applier persists into
+  `workspace_projection.settings_json`. Existing workspaces with empty
+  `{}` settings still parse via the M1 tolerance code, so the first
+  GET returns bundled defaults until the user saves.
+- Frontend types: `WorkspaceSettings`, `PhaseConfig`, `GateConfig`,
+  `PhaseType` added to `features/workspaces/types.ts` and exported
+  from the workspaces api/hooks. `useWorkspaceSettings` /
+  `useUpdateWorkspaceSettings` hooks (key `["workspace", id,
+  "settings"]`).
+- New `features/prompts/{api,hooks}.ts` wrapping the M2 Tauri
+  commands (`get_prompt`, `save_prompt`, `reset_prompt`).
+- Three settings panels in
+  `features/workspaces/components/`:
+  - `phase-config-panel.tsx` — checkboxes for `test_author` / `auditor`
+    (implementer is fixed-on, order is fixed `[test_author?,
+    implementer, auditor?]` per the brief). Save = update mutation.
+  - `gate-config-panel.tsx` — table of `{ name, command,
+    timeout_seconds }` with add/remove rows, plus a per-phase
+    multiselect of which gates run after each phase. Filters
+    `phase_gates` to drop names that no longer exist on save, blocks
+    saving with duplicate gate names.
+  - `prompts-panel.tsx` — three `<Textarea>`s (one per phase) bound to
+    `usePrompt` / `useSavePrompt` / `useResetPrompt`. Shows
+    customised/bundled badge, lists the variables available to each
+    phase template. Reset is disabled when the prompt is already
+    bundled.
+- `routes/workspace/workspace-settings.tsx` rewritten to host the
+  three panels above + the existing "Remove workspace" danger zone.
+- `features/tasks/components/new-task-dialog.tsx` gains an Advanced
+  disclosure: an "Override phase config for this task" checkbox plus
+  the same fixed-order checkboxes. When unchecked the task inherits
+  the workspace default (resolved server-side at create time, the M1
+  behaviour). When checked, the dialog passes a `PhaseConfig` override
+  through to `tasksApi.create`.
+- `cargo test --lib` green (57 tests, no new tests). `pnpm tsc
+  --noEmit` clean. No new Rust unit tests — the settings round-trip
+  is already covered by `settings.rs` tests, and the new commands are
+  thin wrappers over `append_events_in_tx` + the existing applier.
+
+**Known state for M10 (pipeline visualisation):**
+
+- The new task dialog reads the workspace default phases via
+  `useWorkspaceSettings(activeWs.id)`. M10's pipeline UI on the task
+  detail can read phases off `task.phase_config` directly (already on
+  the `Task` type from M1).
+- `phase_gates` for `test_author` is configurable in the settings UI
+  even though the orchestrator only fires gates after a phase that's
+  actually in a task's phase_config — the panel is workspace-level so
+  it lists all three slots regardless.
+- Gate `gate_overrides` per task is intentionally not in the UI for
+  v1 (per the brief's "Out of scope"), but the schema field is plumbed
+  through and the dialog could expose it later.
+
+**Next: M10 (pipeline visualisation — phase cards for the full
+configured pipeline, retry trail, prominent verdict section).**
 
 ## Context
 
