@@ -83,11 +83,6 @@ function useProjectionInvalidation() {
       queryClient.invalidateQueries({
         queryKey: [aggregate_type, "list", workspace_id],
       });
-      // For phase_run output, key is [phase_run, id, "output"].
-      if (aggregate_type === "phase_run") {
-        queryClient.invalidateQueries({ queryKey: ["phase_run", aggregate_id, "output"] });
-        queryClient.invalidateQueries({ queryKey: ["phase_run", "list", workspace_id] });
-      }
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -247,7 +242,7 @@ function WorkspaceView({
       </div>
       <div style={{ flex: 1 }}>
         {selectedTaskId ? (
-          <TaskDetail taskId={selectedTaskId} />
+          <TaskDetail workspaceId={workspaceId} taskId={selectedTaskId} />
         ) : (
           <p>Select a task.</p>
         )}
@@ -297,13 +292,15 @@ function CreateTaskForm() {
   );
 }
 
-function TaskDetail({ taskId }: { taskId: string }) {
+function TaskDetail({ workspaceId, taskId }: { workspaceId: string; taskId: string }) {
   const taskQ = useQuery<Task | null>({
     queryKey: ["task", taskId],
     queryFn: () => invoke<Task | null>("get_task", { id: taskId }),
   });
+  // Key prefix matches the listener convention [aggregate_type, "list", workspace_id]
+  // so backend-emitted projection_updated events invalidate this query.
   const phasesQ = useQuery<PhaseRun[]>({
-    queryKey: ["phase_run", "list", taskId],
+    queryKey: ["phase_run", "list", workspaceId, taskId],
     queryFn: () => invoke<PhaseRun[]>("list_phase_runs", { taskId }),
   });
   const start = useMutation({
