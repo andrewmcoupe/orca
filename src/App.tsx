@@ -331,6 +331,70 @@ function SettingsPanel() {
           </li>
         ))}
       </ul>
+      <OrphanWorktrees />
+    </div>
+  );
+}
+
+type OrphanWorktree = {
+  path: string;
+  task_id: string | null;
+  branch: string | null;
+  head_commit: string | null;
+  has_uncommitted_changes: boolean;
+};
+
+function OrphanWorktrees() {
+  const orphansQ = useQuery<OrphanWorktree[]>({
+    queryKey: ["orphan_worktrees"],
+    queryFn: () => invoke<OrphanWorktree[]>("list_orphan_worktrees"),
+  });
+  const queryClient = useQueryClient();
+  const removeM = useMutation({
+    mutationFn: async (path: string) => {
+      // No backend command for removing an arbitrary on-disk path yet — the user can rm
+      // these manually. For now we just refresh the list.
+      console.warn("manual orphan removal not implemented; remove from disk:", path);
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["orphan_worktrees"] }),
+  });
+
+  const orphans = orphansQ.data ?? [];
+  return (
+    <div style={{ marginTop: 16 }}>
+      <h3>Orphan worktrees</h3>
+      {orphans.length === 0 ? (
+        <p style={{ color: "#888", fontSize: 12 }}>None.</p>
+      ) : (
+        <ul style={{ listStyle: "none", padding: 0 }}>
+          {orphans.map((o) => (
+            <li
+              key={o.path}
+              style={{
+                border: "1px solid #ddd",
+                borderRadius: 4,
+                padding: 8,
+                marginBottom: 8,
+                fontSize: 12,
+              }}
+            >
+              <div>
+                <code>{o.path}</code>
+              </div>
+              {o.has_uncommitted_changes && (
+                <div style={{ color: "#b00" }}>Has uncommitted changes</div>
+              )}
+              <button
+                type="button"
+                onClick={() => removeM.mutate(o.path)}
+                disabled={removeM.isPending}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -414,6 +478,9 @@ function badgeColor(eventType: string): string {
   if (eventType === "PhaseRunFailed") return "#dc2626";
   if (eventType === "PhaseRunOutputAppended") return "#6b7280";
   if (eventType.startsWith("PhaseRun")) return "#8b5cf6";
+  if (eventType === "WorktreeCreated") return "#0ea5e9";
+  if (eventType === "WorktreeRemoved") return "#64748b";
+  if (eventType === "WorktreeRemovalFailed") return "#dc2626";
   if (eventType === "GateRan") return "#f59e0b";
   return "#475569";
 }
@@ -561,11 +628,89 @@ function TaskDetail({ workspaceId, taskId }: { workspaceId: string; taskId: stri
       {startFake.error && <p style={{ color: "red" }}>{String(startFake.error)}</p>}
       {startReal.error && <p style={{ color: "red" }}>{String(startReal.error)}</p>}
 
+      <WorktreeSection task={taskQ.data} />
+
       <h3>Phase runs</h3>
       {(phasesQ.data ?? []).length === 0 && <p>No phase runs yet.</p>}
       {(phasesQ.data ?? []).map((pr) => (
         <PhaseRunCard key={pr.id} phaseRun={pr} />
       ))}
+    </div>
+  );
+}
+
+function WorktreeSection({ task }: { task: Task }) {
+  const deleteM = useMutation({
+    mutationFn: (force: boolean) =>
+      invoke<void>("delete_worktree", { taskId: task.id, force }),
+  });
+
+  if (!task.worktree_status) {
+    return (
+      <p style={{ color: "#888", fontSize: 12 }}>No worktree yet (created on first run).</p>
+    );
+  }
+
+  if (task.worktree_status === "removed") {
+    return (
+      <p style={{ color: "#888", fontSize: 12 }}>
+        Worktree removed ({task.worktree_removal_reason ?? "unknown"}).
+      </p>
+    );
+  }
+
+  const onDelete = async () => {
+    try {
+      await deleteM.mutateAsync(false);
+    } catch (e) {
+      const msg = String(e);
+      if (msg.includes("uncommitted changes")) {
+        const ok = window.confirm(
+          "This worktree has uncommitted changes. Delete anyway?",
+        );
+        if (ok) {
+          await deleteM.mutateAsync(true).catch(() => {});
+        }
+      }
+    }
+  };
+
+  return (
+    <div
+      style={{
+        border: "1px solid #ddd",
+        borderRadius: 4,
+        padding: 8,
+        margin: "8px 0",
+        fontSize: 12,
+      }}
+    >
+      <div style={{ fontWeight: 600 }}>Worktree</div>
+      <div>
+        Path:{" "}
+        <code
+          style={{ cursor: "pointer" }}
+          title="Click to copy"
+          onClick={() => {
+            if (task.worktree_path) navigator.clipboard.writeText(task.worktree_path);
+          }}
+        >
+          {task.worktree_path}
+        </code>
+      </div>
+      <div>Branch: <code>{task.worktree_branch}</code></div>
+      <div style={{ color: "#666" }}>Base: {task.worktree_base_commit?.slice(0, 8)}</div>
+      <button
+        type="button"
+        onClick={onDelete}
+        disabled={deleteM.isPending}
+        style={{ marginTop: 4 }}
+      >
+        Delete worktree
+      </button>
+      {deleteM.error && !String(deleteM.error).includes("uncommitted changes") && (
+        <span style={{ color: "#b00", marginLeft: 8 }}>{String(deleteM.error)}</span>
+      )}
     </div>
   );
 }
