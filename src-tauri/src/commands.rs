@@ -17,7 +17,9 @@ use crate::{ActiveWorkspace, ActiveWorkspaceState, GlobalDb};
 
 #[derive(Debug, Serialize, Clone)]
 pub struct ProjectionUpdated {
-    pub workspace_id: String,
+    /// Per-workspace aggregates carry the workspace id; workspace-aggregate events
+    /// (which are app-level, not scoped to a workspace) carry null.
+    pub workspace_id: Option<String>,
     pub aggregate_type: String,
     pub aggregate_id: String,
 }
@@ -39,14 +41,14 @@ fn make_metadata(actor: &str) -> EventMetadata {
 
 fn emit_projection_updated(
     app: &AppHandle,
-    workspace_id: &str,
+    workspace_id: Option<&str>,
     aggregate_type: &str,
     aggregate_id: &str,
 ) {
     let _ = app.emit(
         PROJECTION_UPDATED_EVENT,
         ProjectionUpdated {
-            workspace_id: workspace_id.to_string(),
+            workspace_id: workspace_id.map(|s| s.to_string()),
             aggregate_type: aggregate_type.to_string(),
             aggregate_id: aggregate_id.to_string(),
         },
@@ -106,7 +108,7 @@ pub fn add_workspace(
         tx.commit().map_err(|e| e.to_string())?;
     }
 
-    emit_projection_updated(&app, &id, "workspace", &id);
+    emit_projection_updated(&app, None, "workspace", &id);
 
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     projections::get_workspace(&conn, &id)
@@ -172,7 +174,7 @@ pub fn remove_workspace(
         }
     }
 
-    emit_projection_updated(&app, &id, "workspace", &id);
+    emit_projection_updated(&app, None, "workspace", &id);
     Ok(())
 }
 
@@ -274,7 +276,7 @@ pub fn create_task(
         tx.commit().map_err(|e| e.to_string())?;
     }
 
-    emit_projection_updated(&app, &workspace_id, "task", &task_id);
+    emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
 
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
     let aw = require_active_workspace(&mut guard)?;
@@ -365,9 +367,9 @@ fn append_phase_run_step(
     }
     tx.commit().map_err(|e| e.to_string())?;
 
-    emit_projection_updated(app, workspace_id, "phase_run", phase_run_id);
+    emit_projection_updated(app, Some(workspace_id), "phase_run", phase_run_id);
     if let Some(tid) = affected_task {
-        emit_projection_updated(app, workspace_id, "task", &tid);
+        emit_projection_updated(app, Some(workspace_id), "task", &tid);
     }
     Ok(top_seq)
 }
@@ -525,7 +527,6 @@ pub fn rebuild_projections(
     let do_phase_run = aggregate_type.as_deref().map_or(true, |t| t == "phase_run");
 
     // --- Workspace (global db) ---
-    let workspace_id_for_emit;
     if do_workspace {
         let mut conn = global.0.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -541,9 +542,6 @@ pub fn rebuild_projections(
         )?;
         tx.commit().map_err(|e| e.to_string())?;
         rebuilt.push(format!("workspace ({} events)", count));
-        workspace_id_for_emit = "*".to_string();
-    } else {
-        workspace_id_for_emit = "*".to_string();
     }
 
     // --- Per-workspace projections ---
@@ -587,7 +585,7 @@ pub fn rebuild_projections(
     let _ = app.emit(
         PROJECTION_UPDATED_EVENT,
         ProjectionUpdated {
-            workspace_id: workspace_id_for_emit,
+            workspace_id: None,
             aggregate_type: "workspace".into(),
             aggregate_id: "*".into(),
         },

@@ -62,7 +62,7 @@ type PhaseRunChunk = {
 type ActiveWorkspaceInfo = { id: string; path: string };
 
 type ProjectionUpdated = {
-  workspace_id: string;
+  workspace_id: string | null;
   aggregate_type: string;
   aggregate_id: string;
 };
