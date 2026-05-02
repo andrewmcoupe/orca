@@ -233,8 +233,42 @@
 - `cargo build --lib` clean, `cargo test --lib` green (43 tests, 32
   prior + 11 new).
 
-**Next: M6 (gate runner — generic subprocess wrapper that emits
-`GateRan` with `passed`, `output`, `duration_ms`).**
+**Done — M6 (gate runner):**
+
+- New `src-tauri/src/gates.rs` module: `pub async fn run_gate(
+  worktree_path, gate_name, gate_command, timeout, triggering_phase_run_id,
+  tracker) -> Result<GateResult, GateError>`.
+- Commands run via the platform shell (`sh -c` on Unix, `cmd /C` on
+  Windows) so user gate commands can use `&&`, pipes, env-var
+  expansion etc. naturally — important since the brief explicitly
+  wants "user writes `pnpm test` (or `pytest`, or `cargo test`) and it
+  Just Works".
+- Output: combined stdout+stderr accumulated into a single string,
+  capped at 64 KB with a "[gate output truncated]" suffix when the
+  cap is hit.
+- Timeout: a side timer fires `cancel.cancel()` on the existing
+  subprocess cancellation token, and a flag distinguishes timeout-fail
+  from clean non-zero exit. `GateResult` carries `timed_out: bool`.
+- Non-zero exits are NOT errors — they're a normal failed-gate
+  outcome. Only spawn failure produces `Err(GateError::SpawnFailed)`.
+- `GateResult` shape: `{ gate_name, passed, output, duration_ms,
+  exit_code, timed_out, triggering_phase_run_id }`. The orchestrator
+  in M7 will translate this into a `GateRan` event on the phase_run
+  aggregate. `GateError` and `GateResult` are marked
+  `#[allow(dead_code)]` for now — fields wire up in M7.
+- Tests (4): pass on zero exit, fail on non-zero exit, shell chaining
+  (`echo x && echo y`), timeout fires and reports `timed_out=true`
+  with the timeout marker in the output. `cargo test --lib` green
+  (47 tests, 43 prior + 4 new).
+- The events.md schema and `phase_run_gate` projection table already
+  carry `gate_name, passed, output, duration_ms` from prior work — no
+  schema change needed in M6. M1's note about "GateRan...carries
+  `triggering_phase_run_id`" still holds: the runner returns it on
+  GateResult; M7 will include it on the emitted event payload (current
+  applier ignores extra fields, so adding it is additive).
+
+**Next: M7 (pipeline orchestrator — `start_task`, `on_phase_completed`,
+auto-progression, gate hooks, auditor verdict gating).**
 
 ## Context
 

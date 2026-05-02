@@ -1,5 +1,6 @@
 mod db;
 mod events;
+mod gates;
 mod phases;
 mod prompts;
 mod providers;
