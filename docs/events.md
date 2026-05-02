@@ -12,15 +12,19 @@ Design doc for the event-sourced core. **Events are forever; projections are dis
 
 ## Aggregates
 
-Three aggregates. Each has a stable ULID and its own ordered event stream. Cross-aggregate consistency is eventual; within an aggregate, events are strictly ordered by `seq`.
+Four aggregates. Each has a stable ULID and its own ordered event stream. Cross-aggregate consistency is eventual; within an aggregate, events are strictly ordered by `seq`.
 
 ### Workspace
 
 Coarse-grained, rarely emits events. Represents a registered repo and its settings. Lives in the global app db (one row per workspace) and emits the few events listed below.
 
+### Plan
+
+A plan groups related tasks and carries shared context — a PRD, a Linear ticket, or an ad-hoc grouping. Has its own lifecycle independent of tasks: a plan can be paused or cancelled even while tasks are idle. Tasks always belong to exactly one plan; the manual one-off task case is modelled as a single-task plan (see UX shortcut in the route layer).
+
 ### Task
 
-The main aggregate. A task is a unit of work derived from a PRD section or created manually. It owns its lifecycle from creation through merge or cancellation.
+A task is a unit of work belonging to a plan. It owns its lifecycle from creation through merge or cancellation. The PRD section or external ticket that motivated the task lives on the parent Plan, not on the Task itself.
 
 ### PhaseRun
 
@@ -42,14 +46,38 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 **WorkspaceArchived** — workspace removed from active list.
 - `reason: "user_removed" | "path_missing"`
 
-### Task events
+### Plan events
 
-**TaskCreated** — new task entered the system.
+**PlanCreated** — new plan entered the system.
 - `workspace_id: string`
 - `title: string`
+- `description: string` — markdown; the PRD content, Linear ticket body, or short manual description
+- `source: "manual" | "prd_file" | "linear" | "github_issue"` — extensible; only `manual` and `prd_file` are used immediately
+- `source_metadata: object | null` — provider-specific (e.g. `{ external_id: "LIN-123", url: "..." }` for Linear). Null for `manual`.
+
+**PlanDescriptionRevised** — title and/or description edited.
+- `title: string` — full new title
+- `description: string` — full new description
+- `reason: string | null`
+
+**PlanPaused** — plan placed on hold; running tasks continue but no new work is suggested.
+- `reason: string | null`
+
+**PlanResumed** — plan returned to active state from paused.
+
+**PlanCompleted** — auto-derived. Emitted after a `TaskMerged`, `TaskArchived`, or `TaskCancelled` lands and *all* the plan's tasks are now in a terminal state. Records the moment for display purposes; carries no payload fields.
+
+**PlanCancelled** — plan abandoned. Does not cascade to tasks; the user is expected to cancel or archive tasks separately if desired.
+- `reason: string`
+
+**PlanArchived** — plan removed from the active list.
+
+### Task events
+
+**TaskCreated** — new task entered the system. **Version 2.** Version 1 events do not exist in the wild (dev data wiped at the introduction of Plan); no upcaster needed.
+- `plan_id: string` — the parent plan; the workspace is derived from the plan
+- `title: string`
 - `spec_markdown: string`
-- `source: "manual" | "prd_section"`
-- `prd_id: string | null` — set when source is `prd_section`
 
 **TaskSpecRevised** — spec edited after creation.
 - `spec_markdown: string` — full new spec
@@ -162,7 +190,8 @@ Stored projections. The frontend reads projections via simple SQL; the event app
 ### Tables
 
 - **`workspace_projection`** — current state per workspace. One row per workspace. Lives in the global db.
-- **`task_projection`** — one row per task. Columns include current status, latest phase run id, gate pass counts, last updated timestamp.
+- **`plan_projection`** — one row per plan. Columns: `id`, `workspace_id`, `title`, `description`, `source`, `source_metadata`, `status` (`active | paused | completed | cancelled | archived`), `task_count`, `running_task_count`, `done_task_count`, `failed_task_count`, `created_at`, `updated_at`. The four count columns are maintained by the **Task** applier (cross-aggregate projection update; same-transaction with the triggering task event).
+- **`task_projection`** — one row per task. Includes `plan_id`, current status, latest phase run id, gate pass counts, last updated timestamp.
 - **`phase_run_projection`** — one row per phase run. Status, provider, model, summary, token usage, timing.
 - **`phase_run_output`** — denormalized streaming text. Treated as a projection of `PhaseRunOutputAppended` events. The events remain source of truth; this table is for fast reads.
 
