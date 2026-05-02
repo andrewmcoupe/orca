@@ -191,6 +191,7 @@ pub struct ActiveWorkspaceInfo {
 
 #[tauri::command]
 pub fn set_active_workspace(
+    app: AppHandle,
     id: String,
     global: State<'_, GlobalDb>,
     active: State<'_, ActiveWorkspaceState>,
@@ -206,14 +207,184 @@ pub fn set_active_workspace(
     }
 
     let conn = open_workspace_db(&ws.path).map_err(|e| e.to_string())?;
-    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-    *guard = Some(ActiveWorkspace {
-        id: ws.id.clone(),
-        path: ws.path.clone(),
-        conn,
-    });
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        *guard = Some(ActiveWorkspace {
+            id: ws.id.clone(),
+            path: ws.path.clone(),
+            conn,
+        });
+    }
+
+    // Best-effort orphan reconciliation. Failures here must not block activation.
+    if let Err(e) = reconcile_worktrees(&app, &ws.id, &ws.path) {
+        eprintln!("worktree reconciliation failed for {}: {}", ws.path, e);
+    }
 
     Ok(ActiveWorkspaceInfo { id: ws.id, path: ws.path })
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrphanWorktree {
+    pub path: String,
+    pub task_id: Option<String>,
+    pub branch: Option<String>,
+    pub head_commit: Option<String>,
+    pub has_uncommitted_changes: bool,
+}
+
+#[tauri::command]
+pub fn list_orphan_worktrees(
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<Vec<OrphanWorktree>, String> {
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    find_orphans(&aw.conn, &aw.path)
+}
+
+fn find_orphans(
+    conn: &rusqlite::Connection,
+    workspace_path: &str,
+) -> Result<Vec<OrphanWorktree>, String> {
+    let dir = std::path::Path::new(workspace_path).join(".orca").join("worktrees");
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    // Tasks the projection knows about with an active worktree.
+    let mut active_task_ids = std::collections::HashSet::<String>::new();
+    let mut stmt = conn
+        .prepare("SELECT id FROM task_projection WHERE worktree_status = 'active'")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    for r in rows {
+        if let Ok(id) = r {
+            active_task_ids.insert(id);
+        }
+    }
+
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if active_task_ids.contains(&name) {
+            continue;
+        }
+        let dirty = crate::worktree::worktree_status(&path)
+            .map(|s| s.has_uncommitted_changes)
+            .unwrap_or(false);
+        out.push(OrphanWorktree {
+            path: path.to_string_lossy().to_string(),
+            task_id: Some(name),
+            branch: None,
+            head_commit: None,
+            has_uncommitted_changes: dirty,
+        });
+    }
+    Ok(out)
+}
+
+/// On workspace activation, walk the task projection and reconcile each "active" worktree
+/// against disk. Worktrees whose directories are gone get a `WorktreeRemoved` event with
+/// `reason: "cleanup_orphan"`. Worktrees that exist on disk but aren't tracked are logged
+/// (and surfaced via `list_orphan_worktrees`).
+fn reconcile_worktrees(
+    app: &AppHandle,
+    workspace_id: &str,
+    workspace_path: &str,
+) -> Result<(), String> {
+    // Collect tracked tasks whose worktree dir is missing.
+    let stale: Vec<(String, String)> = {
+        let active_state = app.state::<ActiveWorkspaceState>();
+        let mut guard = active_state.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        let mut stmt = aw
+            .conn
+            .prepare(
+                "SELECT id, worktree_path FROM task_projection
+                 WHERE worktree_status = 'active' AND worktree_path IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (task_id, path) = r.map_err(|e| e.to_string())?;
+            if !std::path::Path::new(&path).exists() {
+                out.push((task_id, path));
+            }
+        }
+        out
+    };
+
+    for (task_id, path) in stale {
+        // Best-effort prune of the registration in case the dir is gone but `.git/worktrees`
+        // still has a leftover entry. Errors here are non-fatal.
+        let _ = crate::worktree::remove_worktree(
+            std::path::Path::new(workspace_path),
+            std::path::Path::new(&path),
+            true,
+        );
+
+        let active_state = app.state::<ActiveWorkspaceState>();
+        let mut guard = active_state.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        let seq = current_task_seq(&aw.conn, &task_id)?;
+        let payload = json!({
+            "worktree_path": path,
+            "reason": "cleanup_orphan",
+        })
+        .to_string();
+        let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
+        let outcome = append_events_in_tx(
+            &tx,
+            "task",
+            &task_id,
+            seq,
+            vec![NewEvent {
+                event_type: "WorktreeRemoved".into(),
+                version: 1,
+                payload,
+            }],
+            &make_metadata("system:worktree_reconcile"),
+        )
+        .map_err(map_append_err)?;
+        for ev in &outcome.events {
+            apply_task_event(&tx, ev).map_err(|e| e.to_string())?;
+            recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        drop(guard);
+
+        emit_projection_updated(app, Some(workspace_id), "task", &task_id);
+        emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
+    }
+
+    // Log unknown on-disk worktrees. Don't auto-delete — could be the user investigating.
+    {
+        let active_state = app.state::<ActiveWorkspaceState>();
+        let mut guard = active_state.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        if let Ok(orphans) = find_orphans(&aw.conn, &aw.path) {
+            for o in &orphans {
+                eprintln!("orphan worktree on disk: {}", o.path);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

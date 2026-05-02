@@ -71,6 +71,7 @@ pub fn run() {
             commands::mark_task_merged,
             commands::cancel_task,
             commands::delete_worktree,
+            commands::list_orphan_worktrees,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
