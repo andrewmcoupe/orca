@@ -905,8 +905,11 @@ pub async fn start_real_phase(
     provider_id: Option<String>,
     options: Option<serde_json::Value>,
 ) -> Result<String, String> {
-    if phase != "implementer" {
-        return Err(format!("only 'implementer' phase is supported, got '{}'", phase));
+    if phase != "implementer" && phase != "test_author" {
+        return Err(format!(
+            "only 'implementer' and 'test_author' phases are supported, got '{}'",
+            phase
+        ));
     }
 
     let provider_id = provider_id.unwrap_or_else(|| "claude".to_string());
@@ -973,21 +976,42 @@ pub async fn start_real_phase(
     let phase_run_id_clone = phase_run_id.clone();
     let tracker: Arc<ChildTracker> = app.state::<Arc<ChildTracker>>().inner().clone();
 
+    let phase_for_dispatch = phase.clone();
     tokio::spawn(async move {
-        let input = phases::implementer::ImplementerInput {
-            workspace_id,
-            workspace_path,
-            task_id,
-            task_title,
-            phase,
-            phase_run_id: phase_run_id_clone.clone(),
-            spec_markdown,
-            provider,
-            provider_path,
-            options,
-            cancel,
+        let result = match phase_for_dispatch.as_str() {
+            "test_author" => {
+                let input = phases::test_author::TestAuthorInput {
+                    workspace_id,
+                    workspace_path,
+                    task_id,
+                    task_title,
+                    phase_run_id: phase_run_id_clone.clone(),
+                    spec_markdown,
+                    provider,
+                    provider_path,
+                    options,
+                    cancel,
+                };
+                phases::test_author::run(app_clone.clone(), tracker, input).await
+            }
+            _ => {
+                let input = phases::implementer::ImplementerInput {
+                    workspace_id,
+                    workspace_path,
+                    task_id,
+                    task_title,
+                    phase: phase_for_dispatch,
+                    phase_run_id: phase_run_id_clone.clone(),
+                    spec_markdown,
+                    provider,
+                    provider_path,
+                    options,
+                    cancel,
+                };
+                phases::implementer::run(app_clone.clone(), tracker, input).await
+            }
         };
-        if let Err(e) = phases::implementer::run(app_clone.clone(), tracker, input).await {
+        if let Err(e) = result {
             eprintln!("real phase failed: {}", e);
         }
         let inflight = app_clone.state::<InflightRuns>();

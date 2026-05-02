@@ -7,5 +7,6 @@
 pub mod fake;
 pub mod implementer;
 pub mod runtime;
+pub mod test_author;
 
 pub use runtime::InflightRuns;

@@ -118,7 +118,36 @@
   function. M4 swaps it for `prompts::resolve`/`render`. Left untouched
   in M2 to keep the diff focused.
 
-**Next: M3 (test-author phase).**
+**Done — M3 (test-author phase):**
+
+- New `src-tauri/src/phases/test_author.rs`. Mirrors the structure of
+  `phases/implementer.rs` but: resolves and renders the bundled
+  test-author prompt via `prompts::resolve` + `prompts::render` before
+  the worktree dance (so a templating error fails fast); commits with
+  message `[phase: test_author] {task_title}`; uses
+  `system:test_author` as the actor in event metadata.
+- `PhaseRunStarted` payload includes `prompt_template_hash` (SHA-256 of
+  the rendered prompt) instead of the legacy `prompt_template_id`. The
+  applier struct in `events/projections.rs` only deserializes the
+  fields it cares about, so this is forward-compatible without an
+  applier change. Implementer still emits the legacy
+  `prompt_template_id` — M4 will switch it over.
+- Empty-commit guard: relies on `worktree::commit_all`, which already
+  detects an unchanged tree and returns the parent commit SHA without
+  creating a commit. Surfaced uniformly across both phases.
+- `start_real_phase` now accepts `phase = "test_author"` and dispatches
+  to the right runner. Other phase names still error out.
+- Test-author has no prior phase commits and no diff, so its
+  `PromptContext` is just `{ task_title, task_spec_markdown,
+  acceptance_criteria }`; everything else is `Default`.
+- Did NOT factor out a shared subprocess-phase helper between
+  test_author and implementer yet — most of the runner is duplicated.
+  M4 is the natural moment to extract a `runner::run_subprocess_phase`
+  once we know what implementer needs from the new prompt context.
+- `cargo build --lib` clean, `cargo test --lib` green (32 tests).
+
+**Next: M4 (implementer phase updates — switch to prompts module,
+populate `prior_phase_commits`, handle `is_retry`/`retry_context`).**
 
 ## Context
 
