@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import "./App.css";
+import { Button } from "./components/ui/button";
 
 // ---------- Types ----------
 
@@ -126,24 +127,31 @@ type RecentEvent = {
 function useProjectionInvalidation() {
   const queryClient = useQueryClient();
   useEffect(() => {
-    const unlisten = listen<ProjectionUpdated>("projection_updated", (event) => {
-      const { aggregate_type, aggregate_id, workspace_id } = event.payload;
-      // Wildcard rebuild_projections payload — invalidate everything.
-      if (aggregate_id === "*") {
-        queryClient.invalidateQueries();
-        return;
-      }
-      queryClient.invalidateQueries({ queryKey: [aggregate_type, aggregate_id] });
-      queryClient.invalidateQueries({
-        queryKey: [aggregate_type, "list", workspace_id],
-      });
-      // Recent events strip is its own query — invalidated on every event so it stays fresh.
-      if (aggregate_type !== "recent_events") {
-        queryClient.invalidateQueries({ queryKey: ["recent_events", workspace_id] });
-      } else {
-        queryClient.invalidateQueries({ queryKey: ["recent_events"] });
-      }
-    });
+    const unlisten = listen<ProjectionUpdated>(
+      "projection_updated",
+      (event) => {
+        const { aggregate_type, aggregate_id, workspace_id } = event.payload;
+        // Wildcard rebuild_projections payload — invalidate everything.
+        if (aggregate_id === "*") {
+          queryClient.invalidateQueries();
+          return;
+        }
+        queryClient.invalidateQueries({
+          queryKey: [aggregate_type, aggregate_id],
+        });
+        queryClient.invalidateQueries({
+          queryKey: [aggregate_type, "list", workspace_id],
+        });
+        // Recent events strip is its own query — invalidated on every event so it stays fresh.
+        if (aggregate_type !== "recent_events") {
+          queryClient.invalidateQueries({
+            queryKey: ["recent_events", workspace_id],
+          });
+        } else {
+          queryClient.invalidateQueries({ queryKey: ["recent_events"] });
+        }
+      },
+    );
     return () => {
       unlisten.then((fn) => fn());
     };
@@ -182,7 +190,8 @@ function App() {
   });
 
   const setActiveM = useMutation({
-    mutationFn: (id: string) => invoke<ActiveWorkspaceInfo>("set_active_workspace", { id }),
+    mutationFn: (id: string) =>
+      invoke<ActiveWorkspaceInfo>("set_active_workspace", { id }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["active_workspace"] });
       queryClient.invalidateQueries({ queryKey: ["task", "list"] });
@@ -191,84 +200,107 @@ function App() {
   });
 
   const rebuildM = useMutation({
-    mutationFn: () => invoke<{ events_replayed: number; projections_rebuilt: string[] }>(
-      "rebuild_projections",
-      {},
-    ),
+    mutationFn: () =>
+      invoke<{ events_replayed: number; projections_rebuilt: string[] }>(
+        "rebuild_projections",
+        {},
+      ),
   });
 
   const error =
-    workspacesQ.error || activeQ.error || addWorkspaceM.error || removeWorkspaceM.error ||
-    setActiveM.error || rebuildM.error;
+    workspacesQ.error ||
+    activeQ.error ||
+    addWorkspaceM.error ||
+    removeWorkspaceM.error ||
+    setActiveM.error ||
+    rebuildM.error;
 
   return (
-    <div style={{ fontFamily: "system-ui, sans-serif", display: "flex", flexDirection: "column", height: "100vh" }}>
-      <main style={{ padding: 16, display: "flex", gap: 24, flex: 1, overflow: "auto" }}>
-      <aside style={{ width: 280 }}>
-        <h2>Workspaces</h2>
-        <button type="button" onClick={() => addWorkspaceM.mutate()}>
-          Add workspace
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowSettings((v) => !v)}
-          style={{ marginLeft: 8 }}
-        >
-          {showSettings ? "Hide settings" : "Settings"}
-        </button>
-        <button
-          type="button"
-          onClick={() => rebuildM.mutate()}
-          style={{ marginLeft: 8 }}
-          title="Rebuild all projections from events"
-        >
-          Rebuild projections
-        </button>
-        {rebuildM.data && (
-          <p style={{ fontSize: 12 }}>
-            Replayed {rebuildM.data.events_replayed} events; rebuilt:{" "}
-            {rebuildM.data.projections_rebuilt.join(", ")}
-          </p>
-        )}
-        <ul style={{ listStyle: "none", padding: 0 }}>
-          {(workspacesQ.data ?? []).map((ws) => {
-            const isActive = activeQ.data?.id === ws.id;
-            return (
-              <li key={ws.id} style={{ marginBottom: 8 }}>
-                <button
-                  type="button"
-                  onClick={() => setActiveM.mutate(ws.id)}
-                  style={{
-                    fontWeight: isActive ? "bold" : "normal",
-                    background: isActive ? "#cdf" : undefined,
-                  }}
-                >
-                  {ws.name}
-                </button>
-                <div style={{ fontSize: 11, color: "#666" }}>{ws.path}</div>
-                <button type="button" onClick={() => removeWorkspaceM.mutate(ws.id)}>
-                  Remove
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </aside>
+    <div
+      style={{
+        fontFamily: "system-ui, sans-serif",
+        display: "flex",
+        flexDirection: "column",
+        height: "100vh",
+      }}
+    >
+      <main
+        style={{
+          padding: 16,
+          display: "flex",
+          gap: 24,
+          flex: 1,
+          overflow: "auto",
+        }}
+      >
+        <aside style={{ width: 280 }}>
+          <h2>Workspaces</h2>
+          <Button type="button" onClick={() => addWorkspaceM.mutate()}>
+            Add workspace
+          </Button>
+          <button
+            type="button"
+            onClick={() => setShowSettings((v) => !v)}
+            style={{ marginLeft: 8 }}
+          >
+            {showSettings ? "Hide settings" : "Settings"}
+          </button>
+          <button
+            type="button"
+            onClick={() => rebuildM.mutate()}
+            style={{ marginLeft: 8 }}
+            title="Rebuild all projections from events"
+          >
+            Rebuild projections
+          </button>
+          {rebuildM.data && (
+            <p style={{ fontSize: 12 }}>
+              Replayed {rebuildM.data.events_replayed} events; rebuilt:{" "}
+              {rebuildM.data.projections_rebuilt.join(", ")}
+            </p>
+          )}
+          <ul style={{ listStyle: "none", padding: 0 }}>
+            {(workspacesQ.data ?? []).map((ws) => {
+              const isActive = activeQ.data?.id === ws.id;
+              return (
+                <li key={ws.id} style={{ marginBottom: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => setActiveM.mutate(ws.id)}
+                    style={{
+                      fontWeight: isActive ? "bold" : "normal",
+                      background: isActive ? "#cdf" : undefined,
+                    }}
+                  >
+                    {ws.name}
+                  </button>
+                  <div style={{ fontSize: 11, color: "#666" }}>{ws.path}</div>
+                  <button
+                    type="button"
+                    onClick={() => removeWorkspaceM.mutate(ws.id)}
+                  >
+                    Remove
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </aside>
 
-      <section style={{ flex: 1 }}>
-        {error && <p style={{ color: "red" }}>{String(error)}</p>}
-        {showSettings ? (
-          <SettingsPanel />
-        ) : !activeQ.data ? (
-          <p>Select a workspace to begin.</p>
-        ) : (
-          <WorkspaceView
-            workspaceId={activeQ.data.id}
-            selectedTaskId={selectedTaskId}
-            onSelectTask={setSelectedTaskId}
-          />
-        )}
-      </section>
+        <section style={{ flex: 1 }}>
+          {error && <p style={{ color: "red" }}>{String(error)}</p>}
+          {showSettings ? (
+            <SettingsPanel />
+          ) : !activeQ.data ? (
+            <p>Select a workspace to begin.</p>
+          ) : (
+            <WorkspaceView
+              workspaceId={activeQ.data.id}
+              selectedTaskId={selectedTaskId}
+              onSelectTask={setSelectedTaskId}
+            />
+          )}
+        </section>
       </main>
       <EventStreamStrip activeWorkspaceId={activeQ.data?.id ?? null} />
     </div>
@@ -291,7 +323,11 @@ function SettingsPanel() {
     <div>
       <h2>Settings</h2>
       <h3>Providers</h3>
-      <button type="button" onClick={() => refreshM.mutate()} disabled={refreshM.isPending}>
+      <button
+        type="button"
+        onClick={() => refreshM.mutate()}
+        disabled={refreshM.isPending}
+      >
         {refreshM.isPending ? "Refreshing…" : "Refresh"}
       </button>
       <ul style={{ listStyle: "none", padding: 0, marginTop: 12 }}>
@@ -307,12 +343,21 @@ function SettingsPanel() {
           >
             <div style={{ fontWeight: 600 }}>
               {p.display_name}{" "}
-              <span style={{ fontWeight: 400, color: p.installed ? "#080" : "#b00" }}>
+              <span
+                style={{
+                  fontWeight: 400,
+                  color: p.installed ? "#080" : "#b00",
+                }}
+              >
                 {p.installed ? "✓ installed" : "✗ not installed"}
               </span>
             </div>
-            {p.version && <div style={{ fontSize: 12 }}>Version: {p.version}</div>}
-            {p.path && <div style={{ fontSize: 11, color: "#666" }}>{p.path}</div>}
+            {p.version && (
+              <div style={{ fontSize: 12 }}>Version: {p.version}</div>
+            )}
+            {p.path && (
+              <div style={{ fontSize: 11, color: "#666" }}>{p.path}</div>
+            )}
             <div style={{ fontSize: 12 }}>
               Authenticated: {p.authenticated ? "yes" : "unknown"}
             </div>
@@ -354,9 +399,13 @@ function OrphanWorktrees() {
     mutationFn: async (path: string) => {
       // No backend command for removing an arbitrary on-disk path yet — the user can rm
       // these manually. For now we just refresh the list.
-      console.warn("manual orphan removal not implemented; remove from disk:", path);
+      console.warn(
+        "manual orphan removal not implemented; remove from disk:",
+        path,
+      );
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["orphan_worktrees"] }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["orphan_worktrees"] }),
   });
 
   const orphans = orphansQ.data ?? [];
@@ -399,7 +448,11 @@ function OrphanWorktrees() {
   );
 }
 
-function EventStreamStrip({ activeWorkspaceId }: { activeWorkspaceId: string | null }) {
+function EventStreamStrip({
+  activeWorkspaceId,
+}: {
+  activeWorkspaceId: string | null;
+}) {
   const recentQ = useQuery<RecentEvent[]>({
     queryKey: ["recent_events", activeWorkspaceId],
     queryFn: () => invoke<RecentEvent[]>("list_recent_events", { limit: 100 }),
@@ -443,7 +496,10 @@ function EventStreamStrip({ activeWorkspaceId }: { activeWorkspaceId: string | n
         <div style={{ color: "#888" }}>No active workspace.</div>
       )}
       {events.map((e) => (
-        <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+        <div
+          key={e.id}
+          style={{ display: "flex", gap: 8, alignItems: "baseline" }}
+        >
           <span style={{ color: "#888" }}>{formatTime(e.created_at)}</span>
           <span
             style={{
@@ -517,7 +573,9 @@ function WorkspaceView({
                 }}
               >
                 {t.title}{" "}
-                <span style={{ fontSize: 11, color: "#888" }}>({t.status})</span>
+                <span style={{ fontSize: 11, color: "#888" }}>
+                  ({t.status})
+                </span>
               </button>
             </li>
           ))}
@@ -568,14 +626,18 @@ function CreateTaskForm() {
         style={{ display: "block", width: "100%", marginBottom: 4 }}
       />
       <button type="submit">Create task</button>
-      {create.error && (
-        <p style={{ color: "red" }}>{String(create.error)}</p>
-      )}
+      {create.error && <p style={{ color: "red" }}>{String(create.error)}</p>}
     </form>
   );
 }
 
-function TaskDetail({ workspaceId, taskId }: { workspaceId: string; taskId: string }) {
+function TaskDetail({
+  workspaceId,
+  taskId,
+}: {
+  workspaceId: string;
+  taskId: string;
+}) {
   const taskQ = useQuery<Task | null>({
     queryKey: ["task", taskId],
     queryFn: () => invoke<Task | null>("get_task", { id: taskId }),
@@ -591,7 +653,10 @@ function TaskDetail({ workspaceId, taskId }: { workspaceId: string; taskId: stri
       invoke<string>("start_fake_phase", { taskId, phase: "implementer" }),
   });
   const startReal = useMutation({
-    mutationFn: (vars: { providerId: string; options: Record<string, unknown> }) =>
+    mutationFn: (vars: {
+      providerId: string;
+      options: Record<string, unknown>;
+    }) =>
       invoke<string>("start_real_phase", {
         taskId,
         phase: "implementer",
@@ -622,11 +687,17 @@ function TaskDetail({ workspaceId, taskId }: { workspaceId: string; taskId: stri
         Run (fake)
       </button>
       <RunRealForm
-        onRun={(providerId, options) => startReal.mutate({ providerId, options })}
+        onRun={(providerId, options) =>
+          startReal.mutate({ providerId, options })
+        }
         pending={startReal.isPending}
       />
-      {startFake.error && <p style={{ color: "red" }}>{String(startFake.error)}</p>}
-      {startReal.error && <p style={{ color: "red" }}>{String(startReal.error)}</p>}
+      {startFake.error && (
+        <p style={{ color: "red" }}>{String(startFake.error)}</p>
+      )}
+      {startReal.error && (
+        <p style={{ color: "red" }}>{String(startReal.error)}</p>
+      )}
 
       <WorktreeSection task={taskQ.data} />
 
@@ -647,7 +718,9 @@ function WorktreeSection({ task }: { task: Task }) {
 
   if (!task.worktree_status) {
     return (
-      <p style={{ color: "#888", fontSize: 12 }}>No worktree yet (created on first run).</p>
+      <p style={{ color: "#888", fontSize: 12 }}>
+        No worktree yet (created on first run).
+      </p>
     );
   }
 
@@ -692,14 +765,19 @@ function WorktreeSection({ task }: { task: Task }) {
           style={{ cursor: "pointer" }}
           title="Click to copy"
           onClick={() => {
-            if (task.worktree_path) navigator.clipboard.writeText(task.worktree_path);
+            if (task.worktree_path)
+              navigator.clipboard.writeText(task.worktree_path);
           }}
         >
           {task.worktree_path}
         </code>
       </div>
-      <div>Branch: <code>{task.worktree_branch}</code></div>
-      <div style={{ color: "#666" }}>Base: {task.worktree_base_commit?.slice(0, 8)}</div>
+      <div>
+        Branch: <code>{task.worktree_branch}</code>
+      </div>
+      <div style={{ color: "#666" }}>
+        Base: {task.worktree_base_commit?.slice(0, 8)}
+      </div>
       <button
         type="button"
         onClick={onDelete}
@@ -708,9 +786,12 @@ function WorktreeSection({ task }: { task: Task }) {
       >
         Delete worktree
       </button>
-      {deleteM.error && !String(deleteM.error).includes("uncommitted changes") && (
-        <span style={{ color: "#b00", marginLeft: 8 }}>{String(deleteM.error)}</span>
-      )}
+      {deleteM.error &&
+        !String(deleteM.error).includes("uncommitted changes") && (
+          <span style={{ color: "#b00", marginLeft: 8 }}>
+            {String(deleteM.error)}
+          </span>
+        )}
     </div>
   );
 }
@@ -760,7 +841,9 @@ function RunRealForm({
   }
 
   return (
-    <div style={{ marginLeft: 8, display: "inline-block", verticalAlign: "top" }}>
+    <div
+      style={{ marginLeft: 8, display: "inline-block", verticalAlign: "top" }}
+    >
       <select
         value={effectiveProviderId}
         onChange={(e) => setProviderId(e.target.value)}
@@ -846,10 +929,13 @@ function PhaseRunCard({ phaseRun }: { phaseRun: PhaseRun }) {
   const outputQ = useQuery<PhaseRunChunk[]>({
     queryKey: ["phase_run", phaseRun.id, "output"],
     queryFn: () =>
-      invoke<PhaseRunChunk[]>("list_phase_run_output", { phaseRunId: phaseRun.id }),
+      invoke<PhaseRunChunk[]>("list_phase_run_output", {
+        phaseRunId: phaseRun.id,
+      }),
   });
   const cancel = useMutation({
-    mutationFn: () => invoke<boolean>("cancel_phase_run", { phaseRunId: phaseRun.id }),
+    mutationFn: () =>
+      invoke<boolean>("cancel_phase_run", { phaseRunId: phaseRun.id }),
   });
   return (
     <div
@@ -861,10 +947,12 @@ function PhaseRunCard({ phaseRun }: { phaseRun: PhaseRun }) {
       }}
     >
       <div style={{ fontSize: 13 }}>
-        <strong>{phaseRun.phase}</strong> · {phaseRun.provider} / {phaseRun.model} ·{" "}
-        <em>{phaseRun.status}</em>
+        <strong>{phaseRun.phase}</strong> · {phaseRun.provider} /{" "}
+        {phaseRun.model} · <em>{phaseRun.status}</em>
       </div>
-      {phaseRun.summary && <div style={{ fontSize: 12 }}>{phaseRun.summary}</div>}
+      {phaseRun.summary && (
+        <div style={{ fontSize: 12 }}>{phaseRun.summary}</div>
+      )}
       {phaseRun.status === "running" && (
         <button
           type="button"
