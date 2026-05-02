@@ -1,6 +1,8 @@
+use crate::events::projections::apply_workspace_projection_ddl;
+use crate::events::schema::apply_events_ddl;
+use directories::ProjectDirs;
 use rusqlite::Connection;
 use std::path::PathBuf;
-use directories::ProjectDirs;
 
 pub fn db_path() -> PathBuf {
     let dirs = ProjectDirs::from("com", "yourname", "appname")
@@ -10,16 +12,13 @@ pub fn db_path() -> PathBuf {
     data_dir.join("app.sqlite")
 }
 
+/// Initialize the global app database.
+///
+/// Holds: the workspace-aggregate event stream and `workspace_projection` (the read model
+/// for workspace registrations). Per-workspace events live in `<repo>/.orca/events.sqlite`.
 pub fn init() -> rusqlite::Result<Connection> {
     let conn = Connection::open(db_path())?;
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS workspaces (
-            id TEXT PRIMARY KEY,
-            path TEXT NOT NULL UNIQUE,
-            name TEXT NOT NULL,
-            added_at INTEGER NOT NULL,
-            last_opened_at INTEGER
-        );"
-    )?;
+    apply_events_ddl(&conn)?;
+    apply_workspace_projection_ddl(&conn)?;
     Ok(conn)
 }
