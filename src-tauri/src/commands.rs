@@ -529,6 +529,291 @@ pub fn cancel_phase_run(
 }
 
 // ======================================================================
+// Worktree commands
+// ======================================================================
+
+#[tauri::command]
+pub fn mark_task_merged(
+    app: AppHandle,
+    task_id: String,
+    commit_sha: Option<String>,
+    merge_strategy: Option<String>,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    // Stub for the merge trigger. Real merge logic comes in a later phase; for now this
+    // command lets us exercise the WorktreeRemoved-on-merge cleanup path from the UI.
+    let workspace_id;
+    let workspace_path;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+        workspace_path = aw.path.clone();
+
+        let payload = json!({
+            "commit_sha": commit_sha.unwrap_or_else(|| "<stub>".into()),
+            "merge_strategy": merge_strategy.unwrap_or_else(|| "squash".into()),
+        })
+        .to_string();
+        let seq = current_task_seq(&aw.conn, &task_id)?;
+        let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
+        let outcome = append_events_in_tx(
+            &tx,
+            "task",
+            &task_id,
+            seq,
+            vec![NewEvent {
+                event_type: "TaskMerged".into(),
+                version: 1,
+                payload,
+            }],
+            &make_metadata("user:local"),
+        )
+        .map_err(map_append_err)?;
+        for ev in &outcome.events {
+            apply_task_event(&tx, ev).map_err(|e| e.to_string())?;
+            recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
+
+    cleanup_task_worktree(&app, &workspace_id, &workspace_path, &task_id, "task_merged")?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_task(
+    app: AppHandle,
+    task_id: String,
+    reason: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    let workspace_id;
+    let workspace_path;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+        workspace_path = aw.path.clone();
+
+        let payload = json!({ "reason": reason }).to_string();
+        let seq = current_task_seq(&aw.conn, &task_id)?;
+        let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
+        let outcome = append_events_in_tx(
+            &tx,
+            "task",
+            &task_id,
+            seq,
+            vec![NewEvent {
+                event_type: "TaskCancelled".into(),
+                version: 1,
+                payload,
+            }],
+            &make_metadata("user:local"),
+        )
+        .map_err(map_append_err)?;
+        for ev in &outcome.events {
+            apply_task_event(&tx, ev).map_err(|e| e.to_string())?;
+            recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
+
+    cleanup_task_worktree(&app, &workspace_id, &workspace_path, &task_id, "task_cancelled")?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_worktree(
+    app: AppHandle,
+    task_id: String,
+    force: bool,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    let workspace_id;
+    let workspace_path;
+    let task;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+        workspace_path = aw.path.clone();
+        task = projections::get_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("task not found: {}", task_id))?;
+    }
+
+    let path_str = task
+        .worktree_path
+        .clone()
+        .ok_or_else(|| "task has no worktree".to_string())?;
+    if task.worktree_status.as_deref() != Some("active") {
+        return Err("task worktree is not active".into());
+    }
+    let path = std::path::PathBuf::from(&path_str);
+
+    if !force {
+        // Surface a typed error so the UI can prompt the user. Use git2 to check status.
+        if path.exists() {
+            if let Ok(status) = crate::worktree::worktree_status(&path) {
+                if status.has_uncommitted_changes {
+                    return Err("worktree has uncommitted changes; pass force=true to delete".into());
+                }
+            }
+        }
+    }
+
+    perform_worktree_removal(
+        &app,
+        &workspace_id,
+        &workspace_path,
+        &task_id,
+        &path,
+        force,
+        "manual",
+    );
+    Ok(())
+}
+
+fn current_task_seq(conn: &rusqlite::Connection, task_id: &str) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(seq), 0) FROM events WHERE aggregate_type = 'task' AND aggregate_id = ?1",
+        params![task_id],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Best-effort cleanup of a task's worktree triggered by merge/cancel. Reads the task's
+/// projection, removes the worktree if active, and appends WorktreeRemoved (or
+/// WorktreeRemovalFailed) on the task aggregate. Failures are non-fatal — the caller has
+/// already committed its own state-changing event.
+fn cleanup_task_worktree(
+    app: &AppHandle,
+    workspace_id: &str,
+    workspace_path: &str,
+    task_id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let active = app.state::<ActiveWorkspaceState>();
+    let task = {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        match projections::get_task(&aw.conn, task_id).map_err(|e| e.to_string())? {
+            Some(t) => t,
+            None => return Ok(()),
+        }
+    };
+    if task.worktree_status.as_deref() != Some("active") {
+        return Ok(());
+    }
+    let path_str = match task.worktree_path {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+    perform_worktree_removal(
+        app,
+        workspace_id,
+        workspace_path,
+        task_id,
+        &std::path::PathBuf::from(&path_str),
+        true,
+        reason,
+    );
+    Ok(())
+}
+
+/// Run the on-disk worktree removal and append the corresponding event on the task
+/// aggregate. Always force-removes since the caller has already gated on dirty status.
+fn perform_worktree_removal(
+    app: &AppHandle,
+    workspace_id: &str,
+    workspace_path: &str,
+    task_id: &str,
+    worktree_path: &std::path::Path,
+    force: bool,
+    reason: &str,
+) {
+    let result = crate::worktree::remove_worktree(
+        std::path::Path::new(workspace_path),
+        worktree_path,
+        force,
+    );
+
+    let active = app.state::<ActiveWorkspaceState>();
+    let mut guard = match active.0.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let aw = match guard.as_mut() {
+        Some(aw) => aw,
+        None => return,
+    };
+
+    let seq = match current_task_seq(&aw.conn, task_id) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let (event_type, payload) = match &result {
+        Ok(_) => (
+            "WorktreeRemoved",
+            json!({
+                "worktree_path": worktree_path.to_string_lossy(),
+                "reason": reason,
+            })
+            .to_string(),
+        ),
+        Err(e) => (
+            "WorktreeRemovalFailed",
+            json!({
+                "worktree_path": worktree_path.to_string_lossy(),
+                "error": e.to_string(),
+                "reason": reason,
+            })
+            .to_string(),
+        ),
+    };
+
+    let tx = match aw.conn.transaction() {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let outcome = append_events_in_tx(
+        &tx,
+        "task",
+        task_id,
+        seq,
+        vec![NewEvent {
+            event_type: event_type.into(),
+            version: 1,
+            payload,
+        }],
+        &make_metadata("system:worktree_cleanup"),
+    );
+    let outcome = match outcome {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    for ev in &outcome.events {
+        let _ = apply_task_event(&tx, ev);
+        let _ = recent_events::record_event(&tx, ev);
+    }
+    let _ = tx.commit();
+
+    drop(guard);
+
+    emit_projection_updated(app, Some(workspace_id), "task", task_id);
+    emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
+}
+
+// ======================================================================
 // Recent events
 // ======================================================================
 
