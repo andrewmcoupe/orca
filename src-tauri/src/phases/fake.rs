@@ -37,7 +37,8 @@ pub async fn run(
         "claude_code",
         "claude-sonnet-4-5",
         "fake.v1",
-        &format!("{}/.orca/worktrees/{}", workspace_path, phase_run_id),
+        &format!("{}/.orca/worktrees/{}", workspace_path, task_id),
+        "",
     );
     append_phase_run_step(
         &mut conn,

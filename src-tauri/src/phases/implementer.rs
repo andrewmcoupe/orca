@@ -9,12 +9,16 @@ use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
+use crate::events::projections;
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::providers::{Provider, ProviderEvent};
 use crate::subprocess::{self, ChildTracker, SubprocessError};
 use crate::workspace_db::open_workspace_db;
+use crate::worktree;
 
-use super::runtime::{append_phase_run_step, started_payload};
+use super::runtime::{
+    append_phase_run_step, append_task_step, current_seq, started_payload,
+};
 
 const PROMPT_TEMPLATE_ID: &str = "implementer.v1";
 
@@ -39,6 +43,7 @@ pub struct ImplementerInput {
     pub workspace_id: String,
     pub workspace_path: String,
     pub task_id: String,
+    pub task_title: String,
     pub phase: String,
     pub phase_run_id: String,
     pub spec_markdown: String,
@@ -57,6 +62,7 @@ pub async fn run(
         workspace_id,
         workspace_path,
         task_id,
+        task_title,
         phase,
         phase_run_id,
         spec_markdown,
@@ -74,14 +80,73 @@ pub async fn run(
         .unwrap_or("")
         .to_string();
 
+    // Per-task worktree: reuse if it exists, otherwise create lazily.
+    let workspace_path_buf = std::path::PathBuf::from(&workspace_path);
+    let (worktree_dir, base_commit) = match ensure_task_worktree(
+        &mut conn,
+        &app,
+        &workspace_id,
+        &workspace_path_buf,
+        &task_id,
+    ) {
+        Ok(pair) => pair,
+        Err(err) => {
+            // Worktree creation failed: still emit PhaseRunStarted (so the run is visible
+            // in the UI) and PhaseRunFailed back-to-back.
+            let started = started_payload(
+                &task_id,
+                &phase,
+                provider.id(),
+                if model.is_empty() { provider.id() } else { &model },
+                PROMPT_TEMPLATE_ID,
+                "",
+                "",
+            );
+            append_phase_run_step(
+                &mut conn,
+                &app,
+                &workspace_id,
+                &phase_run_id,
+                0,
+                NewEvent {
+                    event_type: "PhaseRunStarted".into(),
+                    version: 1,
+                    payload: started,
+                },
+                &make_metadata("system:implementer"),
+            )?;
+            let payload = json!({
+                "error_kind": "worktree_creation_failed",
+                "error_message": err,
+            })
+            .to_string();
+            append_phase_run_step(
+                &mut conn,
+                &app,
+                &workspace_id,
+                &phase_run_id,
+                1,
+                NewEvent {
+                    event_type: "PhaseRunFailed".into(),
+                    version: 1,
+                    payload,
+                },
+                &make_metadata("system:implementer"),
+            )?;
+            return Ok(());
+        }
+    };
+
     // Started.
+    let worktree_path_str = worktree_dir.to_string_lossy().to_string();
     let started = started_payload(
         &task_id,
         &phase,
         provider.id(),
         if model.is_empty() { provider.id() } else { &model },
         PROMPT_TEMPLATE_ID,
-        &workspace_path,
+        &worktree_path_str,
+        &base_commit,
     );
     append_phase_run_step(
         &mut conn,
@@ -104,7 +169,7 @@ pub async fn run(
     let chunk_tx_cb = chunk_tx.clone();
 
     let cancel_for_proc = cancel.clone();
-    let workspace_path_clone = workspace_path.clone();
+    let cwd_for_proc = worktree_dir.clone();
     let tracker_clone = Arc::clone(&tracker);
     let args_owned = invocation.args.clone();
     let stdin = invocation.stdin.clone();
@@ -116,7 +181,7 @@ pub async fn run(
         subprocess::run_streaming(
             &provider_path_clone,
             &args_refs,
-            Path::new(&workspace_path_clone),
+            cwd_for_proc.as_path(),
             env,
             stdin,
             cancel_for_proc,
@@ -166,12 +231,29 @@ pub async fn run(
 
     match proc_result {
         Ok(result) => {
-            let summary = format!("Process completed with exit code {}", result.exit_code);
+            // Auto-commit any worktree changes so phase runs always have a deterministic
+            // head_commit_after. If commit fails, fall back to base_commit and surface the
+            // error in the summary.
+            let commit_message = format!("[phase: {}] {}", phase, task_title);
+            let (head_commit_after, commit_note) =
+                match worktree::commit_all(&worktree_dir, &commit_message) {
+                    Ok(sha) => (sha, None),
+                    Err(e) => (base_commit.clone(), Some(format!("auto-commit failed: {}", e))),
+                };
+
+            let summary = match commit_note {
+                Some(note) => format!(
+                    "Process completed with exit code {} ({})",
+                    result.exit_code, note
+                ),
+                None => format!("Process completed with exit code {}", result.exit_code),
+            };
             let payload = json!({
                 "exit_code": result.exit_code,
                 "summary": summary,
                 "files_changed": [],
-                "token_usage": { "input": 0, "output": 0 }
+                "token_usage": { "input": 0, "output": 0 },
+                "head_commit_after": head_commit_after,
             })
             .to_string();
             append_phase_run_step(
@@ -231,6 +313,52 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Reuse the task's existing worktree if one is registered in the projection, otherwise
+/// create a fresh one and emit `WorktreeCreated` on the task aggregate. Returns
+/// `(worktree_path, base_commit)`.
+fn ensure_task_worktree(
+    conn: &mut rusqlite::Connection,
+    app: &AppHandle,
+    workspace_id: &str,
+    workspace_path: &Path,
+    task_id: &str,
+) -> Result<(std::path::PathBuf, String), String> {
+    if let Some(task) = projections::get_task(conn, task_id).map_err(|e| e.to_string())? {
+        if task.worktree_status.as_deref() == Some("active") {
+            if let (Some(p), Some(base)) = (task.worktree_path, task.worktree_base_commit) {
+                let path = std::path::PathBuf::from(p);
+                if path.exists() {
+                    return Ok((path, base));
+                }
+            }
+        }
+    }
+
+    let info = worktree::create_worktree(workspace_path, task_id, "")
+        .map_err(|e| e.to_string())?;
+    let payload = json!({
+        "worktree_path": info.path.to_string_lossy(),
+        "branch_name": info.branch,
+        "base_commit": info.head_commit,
+    })
+    .to_string();
+    let seq = current_seq(conn, "task", task_id)?;
+    append_task_step(
+        conn,
+        app,
+        workspace_id,
+        task_id,
+        seq,
+        NewEvent {
+            event_type: "WorktreeCreated".into(),
+            version: 1,
+            payload,
+        },
+        &make_metadata("system:implementer"),
+    )?;
+    Ok((info.path, info.head_commit))
 }
 
 fn handle_line(

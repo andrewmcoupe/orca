@@ -30,6 +30,11 @@ type Task = {
   merged_commit_sha: string | null;
   merge_strategy: string | null;
   latest_phase_run_id: string | null;
+  worktree_path: string | null;
+  worktree_branch: string | null;
+  worktree_base_commit: string | null;
+  worktree_status: string | null;
+  worktree_removal_reason: string | null;
   created_at: number;
   updated_at: number;
 };

@@ -76,6 +76,11 @@ pub fn summarize(event: &AppendedEvent) -> String {
         "TaskApproved" => format!("Task approved by {}", s("by")),
         "TaskMerged" => format!("Task merged ({})", s("merge_strategy")),
         "TaskArchived" => "Task archived".into(),
+        "WorktreeCreated" => format!("Worktree created on {}", s("branch_name")),
+        "WorktreeRemoved" => format!("Worktree removed ({})", s("reason")),
+        "WorktreeRemovalFailed" => {
+            format!("Worktree removal failed ({}): {}", s("reason"), s("error"))
+        }
         "PhaseRunStarted" => format!(
             "Phase run started: {} ({})",
             s("phase"),

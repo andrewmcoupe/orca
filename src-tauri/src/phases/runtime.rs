@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::{ProjectionUpdated, PROJECTION_UPDATED_EVENT};
-use crate::events::projections::apply_phase_run_event;
+use crate::events::projections::{apply_phase_run_event, apply_task_event};
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::events::{append::append_events_in_tx, AppendError};
 
@@ -126,6 +126,7 @@ pub fn started_payload(
     model: &str,
     prompt_template_id: &str,
     worktree_path: &str,
+    base_commit: &str,
 ) -> String {
     json!({
         "task_id": task_id,
@@ -134,6 +135,56 @@ pub fn started_payload(
         "model": model,
         "prompt_template_id": prompt_template_id,
         "worktree_path": worktree_path,
+        "base_commit": base_commit,
     })
     .to_string()
+}
+
+/// Append one task event in its own transaction, run the projection applier, commit, then
+/// emit `projection_updated`. Returns the new latest seq for the task aggregate.
+pub fn append_task_step(
+    conn: &mut Connection,
+    app: &AppHandle,
+    workspace_id: &str,
+    task_id: &str,
+    expected_seq: i64,
+    new_event: NewEvent,
+    metadata: &EventMetadata,
+) -> Result<i64, String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let outcome = append_events_in_tx(
+        &tx,
+        "task",
+        task_id,
+        expected_seq,
+        vec![new_event],
+        metadata,
+    )
+    .map_err(map_append_err)?;
+
+    let mut top_seq = expected_seq;
+    for ev in &outcome.events {
+        apply_task_event(&tx, ev).map_err(|e| e.to_string())?;
+        crate::recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
+        top_seq = ev.seq;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+
+    emit_projection_updated(app, Some(workspace_id), "task", task_id);
+    emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
+    Ok(top_seq)
+}
+
+/// Look up the current seq for an aggregate (0 if no events yet).
+pub fn current_seq(
+    conn: &Connection,
+    aggregate_type: &str,
+    aggregate_id: &str,
+) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(seq), 0) FROM events WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+        rusqlite::params![aggregate_type, aggregate_id],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
 }

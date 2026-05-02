@@ -436,14 +436,14 @@ pub async fn start_real_phase(
         (aw.id.clone(), aw.path.clone())
     };
 
-    let spec_markdown = {
+    let (spec_markdown, task_title) = {
         let active_state = app.state::<ActiveWorkspaceState>();
         let mut guard = active_state.0.lock().map_err(|e| e.to_string())?;
         let aw = require_active_workspace(&mut guard)?;
-        projections::get_task(&aw.conn, &task_id)
+        let task = projections::get_task(&aw.conn, &task_id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("task not found: {}", task_id))?
-            .spec_markdown
+            .ok_or_else(|| format!("task not found: {}", task_id))?;
+        (task.spec_markdown, task.title)
     };
 
     // Resolve the binary path via the cached detection — refresh if the cached entry says
@@ -489,6 +489,7 @@ pub async fn start_real_phase(
             workspace_id,
             workspace_path,
             task_id,
+            task_title,
             phase,
             phase_run_id: phase_run_id_clone.clone(),
             spec_markdown,

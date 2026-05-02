@@ -161,6 +161,11 @@ CREATE TABLE IF NOT EXISTS task_projection (
     merged_commit_sha   TEXT,
     merge_strategy      TEXT,
     latest_phase_run_id TEXT,
+    worktree_path       TEXT,                 -- absolute path while a worktree exists
+    worktree_branch     TEXT,
+    worktree_base_commit TEXT,
+    worktree_status     TEXT,                 -- 'active' | 'removed' | NULL if never created
+    worktree_removal_reason TEXT,
     created_at          INTEGER NOT NULL,
     updated_at          INTEGER NOT NULL
 );
@@ -233,6 +238,11 @@ pub struct TaskProjection {
     pub merged_commit_sha: Option<String>,
     pub merge_strategy: Option<String>,
     pub latest_phase_run_id: Option<String>,
+    pub worktree_path: Option<String>,
+    pub worktree_branch: Option<String>,
+    pub worktree_base_commit: Option<String>,
+    pub worktree_status: Option<String>,
+    pub worktree_removal_reason: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -296,6 +306,30 @@ struct TaskMergedPayload {
     merge_strategy: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct WorktreeCreatedPayload {
+    worktree_path: String,
+    branch_name: String,
+    base_commit: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorktreeRemovedPayload {
+    #[allow(dead_code)]
+    worktree_path: String,
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorktreeRemovalFailedPayload {
+    #[allow(dead_code)]
+    worktree_path: String,
+    #[allow(dead_code)]
+    error: String,
+    #[allow(dead_code)]
+    reason: String,
+}
+
 pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), ProjectionError> {
     match event.event_type.as_str() {
         "TaskCreated" => {
@@ -346,6 +380,46 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
         "TaskArchived" => {
             tx.execute(
                 "UPDATE task_projection SET status = 'archived', updated_at = ?1 WHERE id = ?2",
+                params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        "WorktreeCreated" => {
+            let p: WorktreeCreatedPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE task_projection
+                 SET worktree_path = ?1,
+                     worktree_branch = ?2,
+                     worktree_base_commit = ?3,
+                     worktree_status = 'active',
+                     worktree_removal_reason = NULL,
+                     updated_at = ?4
+                 WHERE id = ?5",
+                params![
+                    p.worktree_path,
+                    p.branch_name,
+                    p.base_commit,
+                    event.created_at,
+                    event.aggregate_id,
+                ],
+            )?;
+        }
+        "WorktreeRemoved" => {
+            let p: WorktreeRemovedPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE task_projection
+                 SET worktree_status = 'removed',
+                     worktree_removal_reason = ?1,
+                     updated_at = ?2
+                 WHERE id = ?3",
+                params![p.reason, event.created_at, event.aggregate_id],
+            )?;
+        }
+        "WorktreeRemovalFailed" => {
+            // No-op on the projection: the worktree is still considered active. Surfaced via
+            // the recent_events strip and (eventually) a UI affordance to retry.
+            let _: WorktreeRemovalFailedPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE task_projection SET updated_at = ?1 WHERE id = ?2",
                 params![event.created_at, event.aggregate_id],
             )?;
         }
@@ -515,7 +589,9 @@ pub fn list_tasks(
 ) -> rusqlite::Result<Vec<TaskProjection>> {
     let mut stmt = conn.prepare(
         "SELECT id, workspace_id, title, spec_markdown, source, prd_id, status, cancel_reason,
-                approved_by, merged_commit_sha, merge_strategy, latest_phase_run_id, created_at, updated_at
+                approved_by, merged_commit_sha, merge_strategy, latest_phase_run_id,
+                worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason,
+                created_at, updated_at
          FROM task_projection
          WHERE workspace_id = ?1 AND status != 'archived'
          ORDER BY created_at DESC",
@@ -534,8 +610,13 @@ pub fn list_tasks(
             merged_commit_sha: r.get(9)?,
             merge_strategy: r.get(10)?,
             latest_phase_run_id: r.get(11)?,
-            created_at: r.get(12)?,
-            updated_at: r.get(13)?,
+            worktree_path: r.get(12)?,
+            worktree_branch: r.get(13)?,
+            worktree_base_commit: r.get(14)?,
+            worktree_status: r.get(15)?,
+            worktree_removal_reason: r.get(16)?,
+            created_at: r.get(17)?,
+            updated_at: r.get(18)?,
         })
     })?;
     let mut out = Vec::new();
@@ -548,7 +629,9 @@ pub fn list_tasks(
 pub fn get_task(conn: &Connection, id: &str) -> rusqlite::Result<Option<TaskProjection>> {
     let mut stmt = conn.prepare(
         "SELECT id, workspace_id, title, spec_markdown, source, prd_id, status, cancel_reason,
-                approved_by, merged_commit_sha, merge_strategy, latest_phase_run_id, created_at, updated_at
+                approved_by, merged_commit_sha, merge_strategy, latest_phase_run_id,
+                worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason,
+                created_at, updated_at
          FROM task_projection WHERE id = ?1",
     )?;
     let mut rows = stmt.query(params![id])?;
@@ -566,8 +649,13 @@ pub fn get_task(conn: &Connection, id: &str) -> rusqlite::Result<Option<TaskProj
             merged_commit_sha: r.get(9)?,
             merge_strategy: r.get(10)?,
             latest_phase_run_id: r.get(11)?,
-            created_at: r.get(12)?,
-            updated_at: r.get(13)?,
+            worktree_path: r.get(12)?,
+            worktree_branch: r.get(13)?,
+            worktree_base_commit: r.get(14)?,
+            worktree_status: r.get(15)?,
+            worktree_removal_reason: r.get(16)?,
+            created_at: r.get(17)?,
+            updated_at: r.get(18)?,
         }))
     } else {
         Ok(None)

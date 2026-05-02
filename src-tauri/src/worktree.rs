@@ -1,5 +1,5 @@
 //! Git worktree primitives. Per-task worktrees live at
-//! `<repo_root>/.yourapp/worktrees/<task_id>/` on a branch named `yourapp/<task_id>`.
+//! `<repo_root>/.orca/worktrees/<task_id>/` on a branch named `orca/<task_id>`.
 //!
 //! All git operations go through `git2` rather than shelling out to `git`.
 
@@ -56,20 +56,20 @@ impl From<std::io::Error> for WorktreeError {
 }
 
 pub fn branch_name_for(task_id: &str) -> String {
-    format!("yourapp/{}", task_id)
+    format!("orca/{}", task_id)
 }
 
 pub fn worktree_path_for(repo_root: &Path, task_id: &str) -> PathBuf {
-    repo_root.join(".yourapp").join("worktrees").join(task_id)
+    repo_root.join(".orca").join("worktrees").join(task_id)
 }
 
 fn worktree_internal_name(task_id: &str) -> String {
     // git2 stores worktrees under `.git/worktrees/<name>/`. Avoid `/` in the name.
-    format!("yourapp-{}", task_id)
+    format!("orca-{}", task_id)
 }
 
-/// Create a worktree at `<repo_root>/.yourapp/worktrees/<task_id>/` on a new branch
-/// `yourapp/<task_id>` cut from the current HEAD of `repo_root`.
+/// Create a worktree at `<repo_root>/.orca/worktrees/<task_id>/` on a new branch
+/// `orca/<task_id>` cut from the current HEAD of `repo_root`.
 pub fn create_worktree(
     repo_root: &Path,
     task_id: &str,
@@ -128,7 +128,7 @@ pub fn create_worktree(
 /// Remove a worktree: delete its working directory and prune the registration. If `force`
 /// is false and the worktree has uncommitted changes, returns `RepoNotClean`.
 ///
-/// Also deletes the associated `yourapp/<task_id>` branch on success.
+/// Also deletes the associated `orca/<task_id>` branch on success.
 pub fn remove_worktree(
     repo_root: &Path,
     worktree_path: &Path,
@@ -303,7 +303,7 @@ pub fn commit_all(worktree_path: &Path, message: &str) -> Result<String, Worktre
 
     let sig = repo
         .signature()
-        .or_else(|_| git2::Signature::now("yourapp", "yourapp@local"))?;
+        .or_else(|_| git2::Signature::now("orca", "orca@local"))?;
     let parents: Vec<&git2::Commit> = parent_commit.iter().collect();
     let oid = repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
     Ok(oid.to_string())
@@ -332,8 +332,8 @@ mod tests {
         let repo = init_repo();
         let info = create_worktree(repo.path(), "01TASK", "main").unwrap();
         assert!(info.path.exists());
-        assert_eq!(info.branch, "yourapp/01TASK");
-        assert!(info.path.starts_with(repo.path().join(".yourapp/worktrees")));
+        assert_eq!(info.branch, "orca/01TASK");
+        assert!(info.path.starts_with(repo.path().join(".orca/worktrees")));
 
         let canon = std::fs::canonicalize(&info.path).unwrap();
         let listed = list_worktrees(repo.path()).unwrap();
