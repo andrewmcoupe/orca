@@ -1,6 +1,7 @@
 mod db;
 mod events;
 mod phases;
+mod prompts;
 mod providers;
 mod recent_events;
 mod settings;
@@ -81,6 +82,9 @@ pub fn run() {
             commands::cancel_task,
             commands::delete_worktree,
             commands::list_orphan_worktrees,
+            commands::get_prompt,
+            commands::save_prompt,
+            commands::reset_prompt,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

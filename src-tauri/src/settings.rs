@@ -24,6 +24,15 @@ impl PhaseType {
             PhaseType::Auditor => "auditor",
         }
     }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "test_author" => Some(PhaseType::TestAuthor),
+            "implementer" => Some(PhaseType::Implementer),
+            "auditor" => Some(PhaseType::Auditor),
+            _ => None,
+        }
+    }
 }
 
 /// Phase configuration for a single task (or workspace default). The phase types are a

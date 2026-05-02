@@ -1305,6 +1305,65 @@ fn perform_worktree_removal(
 }
 
 // ======================================================================
+// Prompt commands
+// ======================================================================
+
+#[derive(Debug, Serialize)]
+pub struct ResolvedPrompt {
+    pub phase: String,
+    pub content: String,
+    pub is_customised: bool,
+}
+
+fn parse_phase_arg(phase: &str) -> Result<crate::settings::PhaseType, String> {
+    crate::settings::PhaseType::parse(phase)
+        .ok_or_else(|| format!("unknown phase: {}", phase))
+}
+
+#[tauri::command]
+pub fn get_prompt(
+    phase: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<ResolvedPrompt, String> {
+    let phase_t = parse_phase_arg(&phase)?;
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    let workspace_path = std::path::PathBuf::from(&aw.path);
+    let content = crate::prompts::resolve(&workspace_path, phase_t).map_err(|e| e.to_string())?;
+    let is_customised = crate::prompts::is_customised(&workspace_path, phase_t);
+    Ok(ResolvedPrompt {
+        phase: phase_t.as_str().to_string(),
+        content,
+        is_customised,
+    })
+}
+
+#[tauri::command]
+pub fn save_prompt(
+    phase: String,
+    content: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    let phase_t = parse_phase_arg(&phase)?;
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    let workspace_path = std::path::PathBuf::from(&aw.path);
+    crate::prompts::save(&workspace_path, phase_t, &content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn reset_prompt(
+    phase: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    let phase_t = parse_phase_arg(&phase)?;
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    let workspace_path = std::path::PathBuf::from(&aw.path);
+    crate::prompts::reset(&workspace_path, phase_t).map_err(|e| e.to_string())
+}
+
+// ======================================================================
 // Recent events
 // ======================================================================
 

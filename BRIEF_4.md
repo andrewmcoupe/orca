@@ -65,7 +65,60 @@
 - No Tauri commands yet for reading/writing workspace settings or for
   the new prompt/gate concepts — those land in later milestones.
 
-**Next: M2 (prompt files and templating).**
+**Done — M2 (prompt files and templating):**
+
+- New `src-tauri/src/prompts/` module with `resolve`, `render`, `hash`,
+  `save`, `reset`, `is_customised`, `prompt_file_path`, `bundled_default`,
+  `ensure_prompts_dir`. Templating via `handlebars` crate; hash is hex
+  SHA-256 (`sha2`).
+- Bundled defaults at `src-tauri/src/prompts/defaults/{test_author,implementer,auditor}.md`,
+  embedded at compile time via `include_str!`. Each file leads with a
+  Handlebars comment block listing the available variables. Implementer's
+  default includes the `prior_phase_commits.test_author` conditional block;
+  the auditor's default includes the `git_diff` block at the end. The
+  user's "validated" prompt bodies were not provided in the brief — wrote
+  reasonable working defaults; user can edit per-workspace via the M9 UI.
+- `PromptContext` matches the brief's shape exactly: `task_title`,
+  `task_spec_markdown`, `acceptance_criteria`, `prior_phase_commits`,
+  `git_diff: Option<String>`, `is_retry: bool`, `retry_context: Option<String>`.
+  `Default` impl provided so phases that don't use every field can build
+  the context easily.
+- `Handlebars` configured with `set_strict_mode(false)` (missing vars
+  render empty, matching the brief's tolerance) and `no_escape` (auditor
+  diffs contain `<` `>` `&` and must not be HTML-escaped).
+- `<workspace>/.orca/prompts/` is created on workspace activation —
+  `open_workspace_db` calls `prompts::ensure_prompts_dir`. Prompt path
+  uses `WORKSPACE_DIR` (`.orca`); the brief's `.yourapp/` was a placeholder.
+- Tauri commands: `get_prompt(phase)`, `save_prompt(phase, content)`,
+  `reset_prompt(phase)`. All operate on the active workspace
+  (consistent with how every other per-workspace command works in this
+  codebase — the brief's `(workspace_id, phase)` signature was advisory).
+  `get_prompt` returns `{ phase, content, is_customised }`.
+- `PhaseType::parse(&str) -> Option<Self>` added so commands can take the
+  phase as a string.
+- Tests (12, all green): variable substitution, `{{#if}}` blocks, nested
+  `prior_phase_commits.test_author` resolution, no-HTML-escaping for
+  diffs, full implementer + auditor template renders, hash stability /
+  uniqueness / format, resolve fallback to bundled, save→resolve
+  round-trip, reset removes file + idempotent on missing file, all
+  bundled defaults non-empty.
+- `cargo build --lib` clean, `cargo test --lib` green (32 tests, 20
+  prior + 12 new).
+- New crate deps: `handlebars = "5"`, `sha2 = "0.10"`.
+
+**Known state for M3 (test-author phase):**
+
+- No frontend `promptsApi` yet — added in M9 alongside the editor UI.
+- The `prompt_template_hash` field on `PhaseRunStarted` is still produced
+  by phase runners themselves; M3-M5 will switch from
+  `PROMPT_TEMPLATE_ID = "implementer.v1"` (hardcoded in
+  `phases/implementer.rs`) to `prompts::resolve(...)` →
+  `prompts::render(...)` → `prompts::hash(...)` and emit the hash.
+- The implementer phase still uses its own ad-hoc `build_prompt`
+  function. M4 swaps it for `prompts::resolve`/`render`. Left untouched
+  in M2 to keep the diff focused.
+
+**Next: M3 (test-author phase).**
 
 ## Context
 

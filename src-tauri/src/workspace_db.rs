@@ -23,6 +23,7 @@ pub fn events_db_path(workspace_path: &str) -> PathBuf {
 pub fn open_workspace_db(workspace_path: &str) -> std::io::Result<Connection> {
     let dir = workspace_dir(workspace_path);
     fs::create_dir_all(&dir)?;
+    crate::prompts::ensure_prompts_dir(Path::new(workspace_path))?;
     ensure_gitignore_entry(workspace_path)?;
     let path = events_db_path(workspace_path);
     let conn = Connection::open(&path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
