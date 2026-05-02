@@ -34,7 +34,6 @@ function WorkspaceLayout() {
 
 export const workspaceLayoutRoute = createRoute({
   getParentRoute: () => rootRoute,
-  id: "workspace-layout",
   path: "/workspace/$workspaceId",
   component: WorkspaceLayout,
 });
