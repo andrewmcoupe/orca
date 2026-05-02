@@ -148,6 +148,25 @@ pub fn get_workspace(conn: &Connection, id: &str) -> rusqlite::Result<Option<Wor
 // ---------- Task & PhaseRun (per-workspace db) ----------
 
 pub const TASK_PROJECTION_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS plan_projection (
+    id                  TEXT PRIMARY KEY,
+    workspace_id        TEXT NOT NULL,
+    title               TEXT NOT NULL,
+    description         TEXT NOT NULL,
+    source              TEXT NOT NULL,        -- manual | prd_file | linear | github_issue
+    source_metadata     TEXT,                 -- JSON object or NULL
+    status              TEXT NOT NULL,        -- active | paused | completed | cancelled | archived
+    pause_reason        TEXT,
+    cancel_reason       TEXT,
+    task_count              INTEGER NOT NULL DEFAULT 0,
+    running_task_count      INTEGER NOT NULL DEFAULT 0,
+    done_task_count         INTEGER NOT NULL DEFAULT 0,
+    failed_task_count       INTEGER NOT NULL DEFAULT 0,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plan_projection_workspace ON plan_projection (workspace_id);
+
 CREATE TABLE IF NOT EXISTS task_projection (
     id                  TEXT PRIMARY KEY,
     workspace_id        TEXT NOT NULL,
@@ -222,6 +241,173 @@ CREATE TABLE IF NOT EXISTS phase_run_gate (
 
 pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(TASK_PROJECTION_DDL)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanProjection {
+    pub id: String,
+    pub workspace_id: String,
+    pub title: String,
+    pub description: String,
+    pub source: String,
+    pub source_metadata: Option<serde_json::Value>,
+    pub status: String,
+    pub pause_reason: Option<String>,
+    pub cancel_reason: Option<String>,
+    pub task_count: i64,
+    pub running_task_count: i64,
+    pub done_task_count: i64,
+    pub failed_task_count: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlanCreatedPayload {
+    workspace_id: String,
+    title: String,
+    description: String,
+    source: String,
+    source_metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlanDescriptionRevisedPayload {
+    title: String,
+    description: String,
+    #[allow(dead_code)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlanPausedPayload {
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlanCancelledPayload {
+    reason: String,
+}
+
+pub fn apply_plan_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), ProjectionError> {
+    match event.event_type.as_str() {
+        "PlanCreated" => {
+            let p: PlanCreatedPayload = serde_json::from_str(&event.payload)?;
+            let metadata_str = p
+                .source_metadata
+                .as_ref()
+                .map(|v| v.to_string());
+            tx.execute(
+                "INSERT INTO plan_projection
+                    (id, workspace_id, title, description, source, source_metadata, status,
+                     task_count, running_task_count, done_task_count, failed_task_count,
+                     created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', 0, 0, 0, 0, ?7, ?7)",
+                params![
+                    event.aggregate_id,
+                    p.workspace_id,
+                    p.title,
+                    p.description,
+                    p.source,
+                    metadata_str,
+                    event.created_at,
+                ],
+            )?;
+        }
+        "PlanDescriptionRevised" => {
+            let p: PlanDescriptionRevisedPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE plan_projection SET title = ?1, description = ?2, updated_at = ?3 WHERE id = ?4",
+                params![p.title, p.description, event.created_at, event.aggregate_id],
+            )?;
+        }
+        "PlanPaused" => {
+            let p: PlanPausedPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE plan_projection SET status = 'paused', pause_reason = ?1, updated_at = ?2 WHERE id = ?3",
+                params![p.reason, event.created_at, event.aggregate_id],
+            )?;
+        }
+        "PlanResumed" => {
+            tx.execute(
+                "UPDATE plan_projection SET status = 'active', pause_reason = NULL, updated_at = ?1 WHERE id = ?2",
+                params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        "PlanCompleted" => {
+            tx.execute(
+                "UPDATE plan_projection SET status = 'completed', updated_at = ?1 WHERE id = ?2",
+                params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        "PlanCancelled" => {
+            let p: PlanCancelledPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE plan_projection SET status = 'cancelled', cancel_reason = ?1, updated_at = ?2 WHERE id = ?3",
+                params![p.reason, event.created_at, event.aggregate_id],
+            )?;
+        }
+        "PlanArchived" => {
+            tx.execute(
+                "UPDATE plan_projection SET status = 'archived', updated_at = ?1 WHERE id = ?2",
+                params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        other => return Err(ProjectionError::UnknownEventType(other.to_string())),
+    }
+    Ok(())
+}
+
+fn read_plan(r: &rusqlite::Row) -> rusqlite::Result<PlanProjection> {
+    let metadata_str: Option<String> = r.get(5)?;
+    let source_metadata = metadata_str
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .unwrap_or(None);
+    Ok(PlanProjection {
+        id: r.get(0)?,
+        workspace_id: r.get(1)?,
+        title: r.get(2)?,
+        description: r.get(3)?,
+        source: r.get(4)?,
+        source_metadata,
+        status: r.get(6)?,
+        pause_reason: r.get(7)?,
+        cancel_reason: r.get(8)?,
+        task_count: r.get(9)?,
+        running_task_count: r.get(10)?,
+        done_task_count: r.get(11)?,
+        failed_task_count: r.get(12)?,
+        created_at: r.get(13)?,
+        updated_at: r.get(14)?,
+    })
+}
+
+const PLAN_COLUMNS: &str = "id, workspace_id, title, description, source, source_metadata, status, pause_reason, cancel_reason, task_count, running_task_count, done_task_count, failed_task_count, created_at, updated_at";
+
+pub fn list_plans(conn: &Connection, workspace_id: &str) -> rusqlite::Result<Vec<PlanProjection>> {
+    let sql = format!(
+        "SELECT {PLAN_COLUMNS} FROM plan_projection WHERE workspace_id = ?1 ORDER BY updated_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![workspace_id], read_plan)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+pub fn get_plan(conn: &Connection, id: &str) -> rusqlite::Result<Option<PlanProjection>> {
+    let sql = format!("SELECT {PLAN_COLUMNS} FROM plan_projection WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params![id])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(read_plan(r)?))
+    } else {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

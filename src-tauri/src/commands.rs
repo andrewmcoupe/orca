@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::events::projections::{
-    self, apply_phase_run_event, apply_task_event, apply_workspace_event,
+    self, apply_phase_run_event, apply_plan_event, apply_task_event, apply_workspace_event,
 };
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::events::{append::append_events_in_tx, AppendError};
@@ -396,6 +396,209 @@ pub fn get_active_workspace(
         id: a.id.clone(),
         path: a.path.clone(),
     }))
+}
+
+// ======================================================================
+// Plan commands (per-workspace)
+// ======================================================================
+
+fn current_plan_seq(conn: &rusqlite::Connection, plan_id: &str) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(seq), 0) FROM events WHERE aggregate_type = 'plan' AND aggregate_id = ?1",
+        params![plan_id],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn append_plan_event(
+    aw: &mut ActiveWorkspace,
+    plan_id: &str,
+    event_type: &str,
+    payload: serde_json::Value,
+    actor: &str,
+) -> Result<(), String> {
+    let seq = current_plan_seq(&aw.conn, plan_id)?;
+    let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
+    let outcome = append_events_in_tx(
+        &tx,
+        "plan",
+        plan_id,
+        seq,
+        vec![NewEvent {
+            event_type: event_type.into(),
+            version: 1,
+            payload: payload.to_string(),
+        }],
+        &make_metadata(actor),
+    )
+    .map_err(map_append_err)?;
+    for ev in &outcome.events {
+        apply_plan_event(&tx, ev).map_err(|e| e.to_string())?;
+        recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn create_plan(
+    app: AppHandle,
+    title: String,
+    description: String,
+    source: String,
+    source_metadata: Option<serde_json::Value>,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<projections::PlanProjection, String> {
+    let plan_id = format!("plan_{}", Ulid::new());
+    let workspace_id;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+        let payload = json!({
+            "workspace_id": aw.id,
+            "title": title,
+            "description": description,
+            "source": source,
+            "source_metadata": source_metadata,
+        });
+        append_plan_event(aw, &plan_id, "PlanCreated", payload, "user:local")?;
+    }
+    emit_projection_updated(&app, Some(&workspace_id), "plan", &plan_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
+
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    projections::get_plan(&aw.conn, &plan_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "plan not found after insert".into())
+}
+
+#[tauri::command]
+pub fn revise_plan(
+    app: AppHandle,
+    plan_id: String,
+    title: String,
+    description: String,
+    reason: Option<String>,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<projections::PlanProjection, String> {
+    let workspace_id;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+        append_plan_event(
+            aw,
+            &plan_id,
+            "PlanDescriptionRevised",
+            json!({ "title": title, "description": description, "reason": reason }),
+            "user:local",
+        )?;
+    }
+    emit_projection_updated(&app, Some(&workspace_id), "plan", &plan_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
+
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    projections::get_plan(&aw.conn, &plan_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "plan not found".into())
+}
+
+#[tauri::command]
+pub fn pause_plan(
+    app: AppHandle,
+    plan_id: String,
+    reason: Option<String>,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    let workspace_id;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+        append_plan_event(aw, &plan_id, "PlanPaused", json!({ "reason": reason }), "user:local")?;
+    }
+    emit_projection_updated(&app, Some(&workspace_id), "plan", &plan_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn resume_plan(
+    app: AppHandle,
+    plan_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    let workspace_id;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+        append_plan_event(aw, &plan_id, "PlanResumed", json!({}), "user:local")?;
+    }
+    emit_projection_updated(&app, Some(&workspace_id), "plan", &plan_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_plan(
+    app: AppHandle,
+    plan_id: String,
+    reason: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    let workspace_id;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+        append_plan_event(aw, &plan_id, "PlanCancelled", json!({ "reason": reason }), "user:local")?;
+    }
+    emit_projection_updated(&app, Some(&workspace_id), "plan", &plan_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn archive_plan(
+    app: AppHandle,
+    plan_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    let workspace_id;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+        append_plan_event(aw, &plan_id, "PlanArchived", json!({}), "user:local")?;
+    }
+    emit_projection_updated(&app, Some(&workspace_id), "plan", &plan_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_plans(
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<Vec<projections::PlanProjection>, String> {
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    let workspace_id = aw.id.clone();
+    projections::list_plans(&aw.conn, &workspace_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_plan(
+    id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<Option<projections::PlanProjection>, String> {
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    projections::get_plan(&aw.conn, &id).map_err(|e| e.to_string())
 }
 
 // ======================================================================
@@ -1020,6 +1223,7 @@ pub fn rebuild_projections(
     let mut rebuilt = Vec::new();
 
     let do_workspace = aggregate_type.as_deref().map_or(true, |t| t == "workspace");
+    let do_plan = aggregate_type.as_deref().map_or(true, |t| t == "plan");
     let do_task = aggregate_type.as_deref().map_or(true, |t| t == "task");
     let do_phase_run = aggregate_type.as_deref().map_or(true, |t| t == "phase_run");
 
@@ -1042,7 +1246,7 @@ pub fn rebuild_projections(
     }
 
     // --- Per-workspace projections ---
-    if do_task || do_phase_run {
+    if do_plan || do_task || do_phase_run {
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         if let Some(aw) = guard.as_mut() {
             let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
@@ -1052,6 +1256,7 @@ pub fn rebuild_projections(
                  DROP TABLE IF EXISTS phase_run_output;
                  DROP TABLE IF EXISTS phase_run_projection;
                  DROP TABLE IF EXISTS task_projection;
+                 DROP TABLE IF EXISTS plan_projection;
                  DROP TABLE IF EXISTS recent_events;",
             )
             .map_err(|e| e.to_string())?;
@@ -1060,8 +1265,14 @@ pub fn rebuild_projections(
             tx.execute_batch(crate::recent_events::RECENT_EVENTS_DDL)
                 .map_err(|e| e.to_string())?;
             // Re-populate recent_events from the per-workspace event log. Don't double-count
-            // these against events_replayed — the task/phase_run replays below already do.
+            // these against events_replayed — the plan/task/phase_run replays below already do.
             let mut sink = 0i64;
+            replay_into(
+                &tx,
+                "plan",
+                |tx, ev| crate::recent_events::record_event(tx, ev).map_err(|e| e.into()),
+                &mut sink,
+            )?;
             replay_into(
                 &tx,
                 "task",
@@ -1076,6 +1287,11 @@ pub fn rebuild_projections(
             )?;
             rebuilt.push("recent_events".into());
 
+            if do_plan {
+                let count =
+                    replay_into(&tx, "plan", apply_plan_event_wrapper, &mut events_replayed)?;
+                rebuilt.push(format!("plan ({} events)", count));
+            }
             if do_task {
                 let count =
                     replay_into(&tx, "task", apply_task_event_wrapper, &mut events_replayed)?;
@@ -1120,6 +1336,12 @@ fn apply_workspace_event_wrapper(
     ev: &crate::events::types::AppendedEvent,
 ) -> Result<(), projections::ProjectionError> {
     apply_workspace_event(tx, ev)
+}
+fn apply_plan_event_wrapper(
+    tx: &rusqlite::Transaction,
+    ev: &crate::events::types::AppendedEvent,
+) -> Result<(), projections::ProjectionError> {
+    apply_plan_event(tx, ev)
 }
 fn apply_task_event_wrapper(
     tx: &rusqlite::Transaction,
