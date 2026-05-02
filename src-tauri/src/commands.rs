@@ -1172,6 +1172,152 @@ pub fn cancel_task(
 }
 
 #[tauri::command]
+pub async fn pass_back_to_implementer(
+    app: AppHandle,
+    task_id: String,
+) -> Result<String, String> {
+    let retry_context = {
+        let active = app.state::<ActiveWorkspaceState>();
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        let verdicts = projections::list_auditor_verdicts_for_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?;
+        let latest = verdicts
+            .into_iter()
+            .next()
+            .ok_or_else(|| "no auditor verdict for task".to_string())?;
+        format_concerns_for_retry(&latest.summary, &latest.concerns)
+    };
+
+    start_real_phase(
+        app,
+        task_id,
+        "implementer".to_string(),
+        None,
+        None,
+        Some(true),
+        Some(retry_context),
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn reject_task(
+    app: AppHandle,
+    task_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    cancel_task(app, task_id, "auditor_rejected".to_string(), active)
+}
+
+#[tauri::command]
+pub fn approve_task_anyway(
+    app: AppHandle,
+    task_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    let workspace_id;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+
+        let payload = json!({ "by": "user:local" }).to_string();
+        let seq = current_task_seq(&aw.conn, &task_id)?;
+        let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
+        let outcome = append_events_in_tx(
+            &tx,
+            "task",
+            &task_id,
+            seq,
+            vec![NewEvent {
+                event_type: "TaskApproved".into(),
+                version: 1,
+                payload,
+            }],
+            &make_metadata("user:local"),
+        )
+        .map_err(map_append_err)?;
+        for ev in &outcome.events {
+            apply_task_event(&tx, ev).map_err(|e| e.to_string())?;
+            recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_in_editor(
+    task_id: String,
+    path: String,
+    line: u32,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    let worktree_path = {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        let task = projections::get_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("task not found: {}", task_id))?;
+        task.worktree_path
+            .ok_or_else(|| "task has no worktree".to_string())?
+    };
+    let abs = std::path::PathBuf::from(&worktree_path).join(&path);
+    Command::new("code")
+        .arg("--goto")
+        .arg(format!("{}:{}", abs.to_string_lossy(), line))
+        .spawn()
+        .map_err(|e| format!("failed to launch editor: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_latest_auditor_verdict_for_task(
+    task_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<Option<projections::AuditorVerdictProjection>, String> {
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    let verdicts = projections::list_auditor_verdicts_for_task(&aw.conn, &task_id)
+        .map_err(|e| e.to_string())?;
+    Ok(verdicts.into_iter().next())
+}
+
+fn format_concerns_for_retry(summary: &str, concerns: &serde_json::Value) -> String {
+    let mut out = String::new();
+    if !summary.trim().is_empty() {
+        out.push_str("Auditor summary:\n");
+        out.push_str(summary.trim());
+        out.push_str("\n\n");
+    }
+    out.push_str("Concerns to address:\n");
+    if let Some(arr) = concerns.as_array() {
+        for c in arr {
+            let severity = c.get("severity").and_then(|v| v.as_str()).unwrap_or("");
+            let category = c.get("category").and_then(|v| v.as_str()).unwrap_or("");
+            let rationale = c.get("rationale").and_then(|v| v.as_str()).unwrap_or("");
+            let anchor = c
+                .get("anchor")
+                .and_then(|a| {
+                    let path = a.get("path").and_then(|v| v.as_str())?;
+                    let line = a.get("line").and_then(|v| v.as_i64())?;
+                    Some(format!(" ({}:{})", path, line))
+                })
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "- [{}] {}{}: {}\n",
+                severity, category, anchor, rationale
+            ));
+        }
+    }
+    out
+}
+
+#[tauri::command]
 pub fn delete_worktree(
     app: AppHandle,
     task_id: String,
@@ -1658,6 +1804,38 @@ mod tests {
     fn missing_task_returns_none() {
         let conn = make_db();
         assert_eq!(plan_completion_eligible(&conn, "nope").unwrap(), None);
+    }
+
+    #[test]
+    fn format_concerns_includes_summary_severity_anchor_and_rationale() {
+        let concerns = serde_json::json!([
+            {
+                "category": "tests",
+                "severity": "blocking",
+                "anchor": { "path": "src/foo.rs", "line": 42 },
+                "rationale": "missing assertion",
+                "reference_proposition_id": null
+            },
+            {
+                "category": "style",
+                "severity": "advisory",
+                "anchor": null,
+                "rationale": "prefer let-else",
+                "reference_proposition_id": null
+            }
+        ]);
+        let out = format_concerns_for_retry("Looks close but two issues.", &concerns);
+        assert!(out.contains("Auditor summary:"));
+        assert!(out.contains("Looks close but two issues."));
+        assert!(out.contains("[blocking] tests (src/foo.rs:42): missing assertion"));
+        assert!(out.contains("[advisory] style: prefer let-else"));
+    }
+
+    #[test]
+    fn format_concerns_handles_empty() {
+        let out = format_concerns_for_retry("", &serde_json::json!([]));
+        assert!(out.contains("Concerns to address:"));
+        assert!(!out.contains("Auditor summary:"));
     }
 }
 

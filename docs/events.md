@@ -161,6 +161,7 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 
 **AuditorVerdictRendered** — emitted by the auditor phase runner immediately after its `PhaseRunCompleted`. The two events are kept separate so that "the auditor finished" and "the auditor decided X" are independently observable: replaying events, an auditor run that crashed mid-render is still visible as a completed run with no verdict. The pipeline orchestrator reads the verdict to decide what to do next.
 - `phase_run_id: string` — the auditor phase run that produced this verdict
+- `task_id: string` — the task whose worktree was audited (denormalised so the verdict projection can be keyed and queried by task without joining back through the phase run)
 - `verdict: "approve" | "revise" | "reject"`
 - `confidence: number` — 0.0 to 1.0
 - `summary: string`

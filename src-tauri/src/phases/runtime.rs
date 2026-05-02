@@ -111,6 +111,13 @@ pub fn append_phase_run_step(
         }
         if ev.event_type == "AuditorVerdictRendered" {
             fire_on_auditor_verdict = true;
+            // Surface the verdict to task-scoped queries (the verdict projection is
+            // task-keyed even though the event lives on the phase_run aggregate).
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&ev.payload) {
+                if let Some(tid) = v.get("task_id").and_then(|x| x.as_str()) {
+                    affected_task = Some(tid.to_string());
+                }
+            }
         }
     }
     tx.commit().map_err(|e| e.to_string())?;

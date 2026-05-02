@@ -267,8 +267,125 @@
   GateResult; M7 will include it on the emitted event payload (current
   applier ignores extra fields, so adding it is additive).
 
-**Next: M7 (pipeline orchestrator — `start_task`, `on_phase_completed`,
-auto-progression, gate hooks, auditor verdict gating).**
+**Done — M7 (pipeline orchestrator), committed as `f1f7858`:**
+
+- New `src-tauri/src/pipeline.rs` module. Public surface:
+  - `start_task(app, task_id) -> Result<String, PipelineError>` — reads
+    the task's resolved `phase_config`, dispatches the first phase. Also
+    exposed as the `start_task` Tauri command.
+  - `on_phase_completed(app, workspace_id, phase_run_id)` — hook fired
+    after `PhaseRunCompleted` lands. Identifies the phase, runs gates,
+    dispatches the next phase. Auditor short-circuits here (its
+    progression is owned by the verdict hook).
+  - `on_auditor_verdict(app, workspace_id, phase_run_id)` — hook fired
+    after `AuditorVerdictRendered` lands. Runs auditor gates, then
+    stops; the user takes the next action via the M8 UI regardless of
+    verdict (approve / revise / reject all stop auto-progression — the
+    brief explicitly says approve "stops; user can approve and merge").
+- Pure decision helpers, fully unit-tested without a live workspace:
+  - `decide_next_phase(config, completed) -> Option<PhaseType>` — index
+    lookup, returns next; `None` if completed phase isn't in the config
+    (defensive — don't progress an off-config phase) or is the last.
+  - `gates_for_phase(settings, task_phase_config, phase) ->
+    Vec<(name, command, timeout_seconds)>` — task-level
+    `gate_overrides[phase]` wins over workspace `phase_gates[phase]`;
+    gate names not present in `settings.gates` are silently skipped (UI
+    can flag unresolved names later).
+- Wiring lives in `phases/runtime.rs::append_phase_run_step`: after
+  the tx commits, the loop scans the just-appended events and
+  `tokio::spawn`s the matching pipeline hook. Sync caller doesn't
+  block; spawn errors are logged. Phase runners already execute inside
+  a tokio task so the runtime context is available.
+- Gate execution path: `pipeline::run_gates_for_phase` opens a fresh
+  per-workspace DB connection (the active connection is held by phase
+  runners), invokes `gates::run_gate` per gate, appends a `GateRan`
+  event per result via `append_phase_run_step`. Spawn failure is
+  treated as a failed gate with the error in `output`. Any failure
+  stops further gates and progression.
+- `commands::start_real_phase` gains optional `is_retry: Option<bool>`
+  and `retry_context: Option<String>` so the orchestrator and M8's
+  `pass_back_to_implementer` route through the same dispatcher
+  (provider detection, options merge, inflight registration). Frontend
+  `phaseRunsApi.startReal` exposes both as optional.
+- Frontend `phaseRunsApi.startTask(taskId)` added.
+- Tests (8 new): `decide_next_phase` (4 cases — implementer→auditor,
+  test_author→implementer, last-phase→None, off-config→None) and
+  `gates_for_phase` (4 cases — workspace default, task override wins,
+  unknown gate names skipped, empty when no gates configured).
+- `cargo test --lib` green (55 tests, 47 prior + 8 new).
+  `pnpm tsc --noEmit` clean.
+
+**Known state for M8 (auditor failure UI actions):**
+
+- `pipeline::on_auditor_verdict` doesn't currently *read* the verdict —
+  it just runs gates and stops. M8's three commands
+  (`pass_back_to_implementer`, `reject_task`, `approve_task_anyway`)
+  are user-triggered, so the orchestrator never needs to branch on
+  verdict for auto-progression. If the user clicks "pass back to
+  implementer" the command should call `start_real_phase` with
+  `phase = "implementer"`, `is_retry = true`, and `retry_context =
+  <formatted concerns>` — the existing dispatch path is already wired.
+- `auditor_verdict_projection` reads (`get_auditor_verdict`,
+  `list_auditor_verdicts_for_task`) are still dead-code; M8 will
+  surface them via `get_latest_auditor_verdict_for_task` (or similar)
+  Tauri commands that the verdict UI consumes.
+- `PipelineError::Dispatch` carries the underlying error string; if
+  M8 wants typed errors crossing the boundary, we can promote it.
+
+**Done — M8 (auditor failure UI actions):**
+
+- Three new Tauri commands in `commands.rs`:
+  - `pass_back_to_implementer(task_id)` — reads the latest auditor
+    verdict via `list_auditor_verdicts_for_task`, formats summary +
+    concerns into a `retry_context` string, then calls
+    `start_real_phase` with `phase = "implementer"`, `is_retry = true`.
+    Errors with "no auditor verdict for task" if there isn't one.
+  - `reject_task(task_id)` — thin wrapper over `cancel_task` with
+    `reason = "auditor_rejected"`. Triggers the same `TaskCancelled`
+    event + worktree cleanup path the manual cancel uses.
+  - `approve_task_anyway(task_id)` — emits `TaskApproved` with
+    `by = "user:local"`. Does NOT clean up the worktree (approval is
+    not a terminal state — merge still has to happen via
+    `mark_task_merged`, which already handles cleanup).
+- New read command `get_latest_auditor_verdict_for_task(task_id)` —
+  returns the most recent `AuditorVerdictProjection` for a task, or
+  null. Drives the verdict UI.
+- New helper command `open_in_editor(task_id, path, line)` — resolves
+  the task's worktree path, joins the relative path, and spawns
+  `code --goto <abs>:<line>`. Used for the clickable concern anchors.
+- `AuditorVerdictRendered` payload now also carries `task_id`. The
+  applier already keys the projection by `task_id`, but emitting it on
+  the event makes the runtime hook able to also fire a `task` aggregate
+  `projection_updated` notification (so task-scoped queries refetch on
+  verdict landing). Doc updated in `docs/events.md`. Old payloads on
+  disk still replay — the applier reads `task_id` off the parent
+  `phase_run_projection.task_id` row, not the payload.
+- `phases/runtime.rs::append_phase_run_step` now sets `affected_task`
+  from the verdict payload too (was only `PhaseRunStarted` before),
+  so the post-commit Tauri emit reaches the task's verdict query.
+- Frontend:
+  - New `auditor-verdict-section.tsx` component shown above the
+    worktree section on the task detail view. Renders only when a
+    verdict exists. Verdict badge (approve/revise/reject), confidence
+    percentage, summary, concerns list with severity badges and
+    file:line anchor buttons. Action buttons (Pass back, Approve
+    anyway, Reject) only render for `revise` / `reject` verdicts —
+    `approve` shows the verdict but no actions.
+  - `AuditorVerdict`, `AuditorConcern`, `AuditorConcernAnchor`,
+    `AuditorVerdictKind` added to `features/tasks/types.ts`.
+  - `tasksApi` extended with `passBackToImplementer`, `reject`,
+    `approveAnyway`, `getLatestAuditorVerdict`, `openInEditor`.
+  - `useLatestAuditorVerdict`, `usePassBackToImplementer`,
+    `useRejectTask`, `useApproveTaskAnyway` hooks added. Verdict
+    query key is `["task", taskId, "latestAuditorVerdict"]` so the
+    existing global `projection_updated` listener (which invalidates
+    `["task", taskId]` prefix matches) refreshes it.
+- Tests (2 new): `format_concerns_for_retry` covers the happy path
+  (severity, anchor, rationale formatting + summary header) and the
+  empty case (no summary header when summary is empty). `cargo test
+  --lib` green (57 tests, 55 prior + 2 new). `pnpm tsc --noEmit` clean.
+
+**Next: M9 (configuration UI — phase config, gates, prompt editor).**
 
 ## Context
 

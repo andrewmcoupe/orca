@@ -290,6 +290,7 @@ pub async fn run(
 
     let verdict_payload = json!({
         "phase_run_id": phase_run_id,
+        "task_id": task_id,
         "verdict": verdict.verdict,
         "confidence": verdict.confidence,
         "summary": verdict.summary,

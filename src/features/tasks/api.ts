@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { PhaseConfig, Task } from "./types";
+import type { AuditorVerdict, PhaseConfig, Task } from "./types";
 
 export type CreateTaskInput = {
   planId: string;
@@ -30,4 +30,15 @@ export const tasksApi = {
     invoke<void>("cancel_task", { taskId, reason }),
   deleteWorktree: (taskId: string, force: boolean) =>
     invoke<void>("delete_worktree", { taskId, force }),
+  passBackToImplementer: (taskId: string) =>
+    invoke<string>("pass_back_to_implementer", { taskId }),
+  reject: (taskId: string) => invoke<void>("reject_task", { taskId }),
+  approveAnyway: (taskId: string) =>
+    invoke<void>("approve_task_anyway", { taskId }),
+  getLatestAuditorVerdict: (taskId: string) =>
+    invoke<AuditorVerdict | null>("get_latest_auditor_verdict_for_task", {
+      taskId,
+    }),
+  openInEditor: (taskId: string, path: string, line: number) =>
+    invoke<void>("open_in_editor", { taskId, path, line }),
 };

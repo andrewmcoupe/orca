@@ -6,6 +6,7 @@ import { workspaceLayoutRoute } from "./layout";
 import { useTask } from "@/features/tasks/hooks";
 import { TaskStatusBadge } from "@/features/tasks/presentation";
 import { WorktreeSection } from "@/features/tasks/components/worktree-section";
+import { AuditorVerdictSection } from "@/features/tasks/components/auditor-verdict-section";
 import {
   usePhaseRuns,
   useStartFakePhase,
@@ -99,6 +100,8 @@ function TaskDetailView({
           </div>
         </section>
       ) : null}
+
+      <AuditorVerdictSection taskId={task.id} />
 
       <section className="space-y-3">
         <h2 className="text-muted-foreground text-[11px] font-semibold uppercase tracking-wide">

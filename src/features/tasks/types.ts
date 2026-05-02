@@ -14,6 +14,31 @@ export type PhaseConfig = {
   gate_overrides: Record<string, string[]> | null;
 };
 
+export type AuditorVerdictKind = "approve" | "revise" | "reject";
+
+export type AuditorConcernAnchor = {
+  path: string;
+  line: number;
+};
+
+export type AuditorConcern = {
+  category: string;
+  severity: "blocking" | "advisory" | string;
+  anchor: AuditorConcernAnchor | null;
+  rationale: string;
+  reference_proposition_id: string | null;
+};
+
+export type AuditorVerdict = {
+  phase_run_id: string;
+  task_id: string;
+  verdict: AuditorVerdictKind | string;
+  confidence: number;
+  summary: string;
+  concerns: AuditorConcern[];
+  created_at: number;
+};
+
 export type Task = {
   id: string;
   workspace_id: string;

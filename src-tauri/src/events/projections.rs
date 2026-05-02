@@ -1076,6 +1076,7 @@ fn read_verdict(r: &rusqlite::Row) -> rusqlite::Result<AuditorVerdictProjection>
     })
 }
 
+#[allow(dead_code)]
 pub fn get_auditor_verdict(
     conn: &Connection,
     phase_run_id: &str,

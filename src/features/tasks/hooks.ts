@@ -1,11 +1,41 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { tasksApi, type CreateTaskInput } from "./api";
-import type { Task } from "./types";
+import type { AuditorVerdict, Task } from "./types";
 
 export const taskKeys = {
   list: (planId: string) => ["task", "list", planId] as const,
   detail: (taskId: string) => ["task", taskId] as const,
+  latestVerdict: (taskId: string) =>
+    ["task", taskId, "latestAuditorVerdict"] as const,
 };
+
+export function useLatestAuditorVerdict(taskId: string | undefined) {
+  return useQuery<AuditorVerdict | null>({
+    queryKey: taskId
+      ? taskKeys.latestVerdict(taskId)
+      : ["task", "__pending__", "latestAuditorVerdict"],
+    queryFn: () => tasksApi.getLatestAuditorVerdict(taskId!),
+    enabled: !!taskId,
+  });
+}
+
+export function usePassBackToImplementer() {
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.passBackToImplementer(taskId),
+  });
+}
+
+export function useRejectTask() {
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.reject(taskId),
+  });
+}
+
+export function useApproveTaskAnyway() {
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.approveAnyway(taskId),
+  });
+}
 
 export function useTasksInPlan(planId: string | undefined) {
   return useQuery<Task[]>({
