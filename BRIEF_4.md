@@ -184,8 +184,57 @@
   the failing tests from that commit.
 - `cargo build --lib` clean, `cargo test --lib` green (32 tests).
 
-**Next: M5 (auditor phase — structured output via the provider trait,
-diff computation, AuditorVerdictRendered emission).**
+**Done — M5 (auditor phase):**
+
+- New `phases/auditor.rs`. Reads the task's `task_base_commit` (set by
+  `TaskBaseCommitRecorded` — see below), computes
+  `worktree::diff_against_base(...)`, truncates to 50 KB via
+  `worktree::truncate_diff(...)`, and renders the auditor prompt with
+  `git_diff` + `prior_phase_commits` populated.
+- The provider trait stays streaming-only for v1. The auditor's
+  `invoke_and_parse` runs the same subprocess flow as the other phase
+  runners, accumulates the streamed text, then attempts to extract a
+  verdict JSON object. Three parse strategies, in order: whole text →
+  fenced ```json``` block → largest balanced top-level `{...}`. On
+  failure, the auditor retries the subprocess once with a clarifying
+  suffix asking for JSON only. After two failed attempts it emits
+  `PhaseRunFailed` with `error_kind = "auditor_parse_error"` and the
+  truncated raw response in `error_message`.
+- On success: empty-commit guard via `worktree::commit_all` (the
+  auditor may modify code as part of review), then `PhaseRunCompleted`
+  with `head_commit_after`, then `AuditorVerdictRendered` with
+  `{ phase_run_id, verdict, confidence, summary, concerns }` matching
+  the M1 schema. The applier for `AuditorVerdictRendered` is the one
+  added in M1.
+- New helpers in `worktree.rs`:
+  - `diff_against_base(worktree_path, base_sha) -> String` — git2
+    tree-to-tree patch text.
+  - `truncate_diff(diff, max_bytes, base_sha) -> String` — UTF-8-safe
+    truncation with the brief's "...diff truncated, X bytes total. The
+    full diff can be inspected by running `git diff
+    {base_commit}..HEAD` in the worktree." marker appended.
+- `TaskBaseCommitRecorded` now actually fires. Both implementer and
+  test_author runners emit it immediately after `WorktreeCreated`,
+  with `commit_sha = info.head_commit`. Idempotent in practice because
+  the worktree is created exactly once per task. The auditor reads
+  `task.task_base_commit` (falling back to `worktree_base_commit` for
+  pre-M5 tasks) as the diff anchor.
+- `start_real_phase` dispatcher accepts `phase = "auditor"` and routes
+  to the new runner. Other phase names still error.
+- The auditor doesn't accept retry plumbing — auditor retries are
+  handled by the pipeline (M7) re-emitting a fresh phase run, not by
+  passing context through the runner.
+- Tests (11 new):
+  - `parse_verdict` strategies (4 happy paths + garbage + braces inside
+    strings).
+  - `truncate_for_error_caps_length`.
+  - Worktree diff tests (added file shows up, empty when unchanged,
+    truncate marker, passthrough when small).
+- `cargo build --lib` clean, `cargo test --lib` green (43 tests, 32
+  prior + 11 new).
+
+**Next: M6 (gate runner — generic subprocess wrapper that emits
+`GateRan` with `passed`, `output`, `duration_ms`).**
 
 ## Context
 

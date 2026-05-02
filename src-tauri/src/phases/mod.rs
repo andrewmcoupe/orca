@@ -4,6 +4,7 @@
 //! `PhaseRunCompleted` (or `PhaseRunFailed`) through `append_events`, with projection
 //! updates and `projection_updated` Tauri events fired in the usual way.
 
+pub mod auditor;
 pub mod fake;
 pub mod implementer;
 pub mod runtime;

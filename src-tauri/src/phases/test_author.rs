@@ -348,7 +348,7 @@ fn ensure_task_worktree(
     })
     .to_string();
     let seq = current_seq(conn, "task", task_id)?;
-    append_task_step(
+    let next_seq = append_task_step(
         conn,
         app,
         workspace_id,
@@ -358,6 +358,20 @@ fn ensure_task_worktree(
             event_type: "WorktreeCreated".into(),
             version: 1,
             payload,
+        },
+        &make_metadata("system:test_author"),
+    )?;
+    let base_payload = json!({ "commit_sha": info.head_commit }).to_string();
+    append_task_step(
+        conn,
+        app,
+        workspace_id,
+        task_id,
+        next_seq,
+        NewEvent {
+            event_type: "TaskBaseCommitRecorded".into(),
+            version: 1,
+            payload: base_payload,
         },
         &make_metadata("system:test_author"),
     )?;

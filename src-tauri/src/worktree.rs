@@ -309,6 +309,61 @@ pub fn commit_all(worktree_path: &Path, message: &str) -> Result<String, Worktre
     Ok(oid.to_string())
 }
 
+/// Produce a unified-diff text of `base_commit_sha..HEAD` for the given worktree, in
+/// `git diff` format. Returns the empty string if the trees are identical.
+pub fn diff_against_base(
+    worktree_path: &Path,
+    base_commit_sha: &str,
+) -> Result<String, WorktreeError> {
+    let repo = Repository::open(worktree_path)?;
+
+    let base_oid = git2::Oid::from_str(base_commit_sha)
+        .map_err(|e| WorktreeError::GitError(format!("invalid base sha: {}", e)))?;
+    let base_tree = repo.find_commit(base_oid)?.tree()?;
+    let head_tree = repo
+        .head()?
+        .peel_to_commit()?
+        .tree()?;
+
+    let mut opts = git2::DiffOptions::new();
+    opts.context_lines(3).include_untracked(false);
+    let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&head_tree), Some(&mut opts))?;
+
+    let mut out = String::new();
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        match line.origin() {
+            '+' | '-' | ' ' => out.push(line.origin()),
+            _ => {}
+        }
+        if let Ok(s) = std::str::from_utf8(line.content()) {
+            out.push_str(s);
+        }
+        true
+    })?;
+    Ok(out)
+}
+
+/// Truncate a diff at `max_bytes`, appending a note that points at the worktree command
+/// to inspect the full diff. Returns the input unchanged if it's already small enough.
+pub fn truncate_diff(diff: &str, max_bytes: usize, base_commit_sha: &str) -> String {
+    if diff.len() <= max_bytes {
+        return diff.to_string();
+    }
+    // Cut on a UTF-8 boundary to avoid producing invalid output.
+    let mut cut = max_bytes;
+    while cut > 0 && !diff.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let total = diff.len();
+    format!(
+        "{}\n...diff truncated, {} bytes total. The full diff can be inspected by \
+         running `git diff {}..HEAD` in the worktree.\n",
+        &diff[..cut],
+        total,
+        base_commit_sha,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,5 +447,42 @@ mod tests {
         // Idempotent when nothing changed.
         let after2 = commit_all(&info.path, "[phase: implementer] test").unwrap();
         assert_eq!(after, after2);
+    }
+
+    #[test]
+    fn diff_against_base_shows_added_file() {
+        let repo = init_repo();
+        let info = create_worktree(repo.path(), "01DIFF", "main").unwrap();
+        let base = info.head_commit.clone();
+        std::fs::write(info.path.join("hello.txt"), "hi\n").unwrap();
+        commit_all(&info.path, "[phase: test_author] add hello").unwrap();
+        let diff = diff_against_base(&info.path, &base).unwrap();
+        assert!(diff.contains("hello.txt"));
+        assert!(diff.contains("+hi"));
+    }
+
+    #[test]
+    fn diff_against_base_empty_when_unchanged() {
+        let repo = init_repo();
+        let info = create_worktree(repo.path(), "01NOP", "main").unwrap();
+        let diff = diff_against_base(&info.path, &info.head_commit).unwrap();
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn truncate_diff_appends_marker_when_over_limit() {
+        let big = "a".repeat(2000);
+        let out = truncate_diff(&big, 100, "deadbeef");
+        assert!(out.len() < big.len() + 200);
+        assert!(out.contains("...diff truncated"));
+        assert!(out.contains("git diff deadbeef..HEAD"));
+        assert!(out.contains("2000 bytes total"));
+    }
+
+    #[test]
+    fn truncate_diff_passthrough_when_under_limit() {
+        let small = "tiny";
+        let out = truncate_diff(small, 100, "x");
+        assert_eq!(out, small);
     }
 }

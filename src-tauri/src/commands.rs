@@ -905,9 +905,9 @@ pub async fn start_real_phase(
     provider_id: Option<String>,
     options: Option<serde_json::Value>,
 ) -> Result<String, String> {
-    if phase != "implementer" && phase != "test_author" {
+    if phase != "implementer" && phase != "test_author" && phase != "auditor" {
         return Err(format!(
-            "only 'implementer' and 'test_author' phases are supported, got '{}'",
+            "only 'implementer', 'test_author', and 'auditor' phases are supported, got '{}'",
             phase
         ));
     }
@@ -993,6 +993,21 @@ pub async fn start_real_phase(
                     cancel,
                 };
                 phases::test_author::run(app_clone.clone(), tracker, input).await
+            }
+            "auditor" => {
+                let input = phases::auditor::AuditorInput {
+                    workspace_id,
+                    workspace_path,
+                    task_id,
+                    task_title,
+                    phase_run_id: phase_run_id_clone.clone(),
+                    spec_markdown,
+                    provider,
+                    provider_path,
+                    options,
+                    cancel,
+                };
+                phases::auditor::run(app_clone.clone(), tracker, input).await
             }
             _ => {
                 let input = phases::implementer::ImplementerInput {
