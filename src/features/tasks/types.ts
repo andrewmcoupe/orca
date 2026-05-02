@@ -7,6 +7,13 @@ export type TaskStatus =
   | "archived"
   | "failed";
 
+export type PhaseType = "test_author" | "implementer" | "auditor";
+
+export type PhaseConfig = {
+  phases: PhaseType[];
+  gate_overrides: Record<string, string[]> | null;
+};
+
 export type Task = {
   id: string;
   workspace_id: string;
@@ -24,6 +31,8 @@ export type Task = {
   worktree_base_commit: string | null;
   worktree_status: string | null;
   worktree_removal_reason: string | null;
+  phase_config: PhaseConfig;
+  task_base_commit: string | null;
   created_at: number;
   updated_at: number;
 };

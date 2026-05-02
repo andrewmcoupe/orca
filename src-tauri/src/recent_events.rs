@@ -78,6 +78,11 @@ pub fn summarize(event: &AppendedEvent) -> String {
         "PlanCancelled" => format!("Plan cancelled: {}", s("reason")),
         "PlanArchived" => "Plan archived".into(),
         "TaskCreated" => format!("Task created: {}", s("title")),
+        "TaskBaseCommitRecorded" => {
+            let sha = s("commit_sha");
+            let short = sha.chars().take(7).collect::<String>();
+            format!("Task base commit recorded: {}", short)
+        }
         "TaskSpecRevised" => "Task spec revised".into(),
         "TaskCancelled" => format!("Task cancelled: {}", s("reason")),
         "TaskApproved" => format!("Task approved by {}", s("by")),
@@ -107,6 +112,11 @@ pub fn summarize(event: &AppendedEvent) -> String {
             s("error_kind"),
             s("error_message")
         ),
+        "AuditorVerdictRendered" => {
+            let verdict = s("verdict");
+            let confidence = payload.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            format!("Auditor verdict: {} ({:.0}%)", verdict, confidence * 100.0)
+        }
         "GateRan" => {
             let passed = payload
                 .get("passed")

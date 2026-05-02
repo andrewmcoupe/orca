@@ -41,7 +41,20 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 - `name: string` — display name (defaults to repo dir name)
 
 **WorkspaceSettingsChanged** — settings updated.
-- `settings: object` — full new settings snapshot (not a diff — simpler to reason about)
+- `settings: object` — full new settings snapshot (not a diff — simpler to reason about). Pipeline-relevant fields:
+  - `default_phase_config: PhaseConfig` — phase config that new tasks inherit at creation time. Bundled default: `{ phases: ["implementer", "auditor"], gate_overrides: null }`.
+  - `gates: { [name]: { command: string, timeout_seconds: integer } }` — named gate definitions. Bundled default: empty.
+  - `phase_gates: { [phase_name]: string[] }` — which gates run after which phases. Bundled default: empty.
+
+  Readers parse settings tolerantly: missing pipeline fields materialise as bundled defaults rather than failing. Other settings keys (theme, etc.) are preserved verbatim.
+
+`PhaseConfig`:
+```
+{
+  phases: ("test_author" | "implementer" | "auditor")[],   // ordered list
+  gate_overrides: { [phase_name]: string[] } | null         // per-phase gate name overrides; null = use workspace default
+}
+```
 
 **WorkspaceArchived** — workspace removed from active list.
 - `reason: "user_removed" | "path_missing"`
@@ -74,10 +87,14 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 
 ### Task events
 
-**TaskCreated** — new task entered the system. **Version 2.** Version 1 events do not exist in the wild (dev data wiped at the introduction of Plan); no upcaster needed.
+**TaskCreated** — new task entered the system. **Version 3.** Version 1 never existed in the wild; v2 has no upcaster (the v3 applier tolerantly defaults the new field, so any v2 events that do exist replay against v3 without loss).
 - `plan_id: string` — the parent plan; the workspace is derived from the plan
 - `title: string`
 - `spec_markdown: string`
+- `phase_config: PhaseConfig` — the phase config for this task. Resolved at task-creation time (events are immutable: the config at creation is the config that stuck). Inherits the workspace's `default_phase_config` if no per-task override was supplied.
+
+**TaskBaseCommitRecorded** — the commit the task's worktree was created from. This is the diff anchor for "the diff for this task" (used by the auditor and by UI-level diff views). Emitted when the worktree is provisioned for the task; conceptually a Task-level fact, kept on the Task aggregate so it survives worktree recreation.
+- `commit_sha: string`
 
 **TaskSpecRevised** — spec edited after creation.
 - `spec_markdown: string` — full new spec
@@ -116,9 +133,12 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 - `phase: "test_author" | "implementer" | "auditor"`
 - `provider: string` — e.g. `"claude_code"`, `"codex"`
 - `model: string` — e.g. `"claude-sonnet-4-5"`
-- `prompt_template_id: string`
+- `prompt_template_id: string` — legacy; carried for backwards compatibility. New code should rely on `prompt_template_hash`.
+- `prompt_template_hash: string` — content hash of the rendered prompt at execution time. Lets us compare runs that nominally used the same template but resolved to different content (because variables differed, or because the user edited the template between runs).
 - `worktree_path: string`
 - `base_commit: string` — worktree HEAD at phase start, used for phase-level diffs
+- `prior_phase_commits: { [phase_name]: string }` — map of phase type to `head_commit_after` for prior completed phases on this task. Lets a phase reference what an earlier phase produced (e.g. the implementer reads tests from the test-author's commit). Optional; populated by the phase runner.
+- `is_retry_of: string | null` — the `phase_run_id` this is a retry of, when applicable. Forms an audit trail when the user passes a task back to the implementer after an auditor verdict.
 
 **PhaseRunOutputAppended** — streamed output chunk from the agent. Highest-volume event by far. Chunk at sensible boundaries (not per-token).
 - `chunk: string`
@@ -139,11 +159,19 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 - `error_kind: "timeout" | "subprocess_error" | "provider_error" | "user_cancelled"`
 - `error_message: string`
 
+**AuditorVerdictRendered** — emitted by the auditor phase runner immediately after its `PhaseRunCompleted`. The two events are kept separate so that "the auditor finished" and "the auditor decided X" are independently observable: replaying events, an auditor run that crashed mid-render is still visible as a completed run with no verdict. The pipeline orchestrator reads the verdict to decide what to do next.
+- `phase_run_id: string` — the auditor phase run that produced this verdict
+- `verdict: "approve" | "revise" | "reject"`
+- `confidence: number` — 0.0 to 1.0
+- `summary: string`
+- `concerns: Array<{ category: string, severity: "blocking" | "advisory", anchor: { path: string, line: integer } | null, rationale: string, reference_proposition_id: string | null }>`
+
 **GateRan** — a quality gate executed against this phase run's output.
-- `gate_name: "typecheck" | "test" | "lint"`
+- `gate_name: string` — name of a gate defined in the workspace's `gates` settings (no longer a closed enum — gates are configurable commands)
 - `passed: boolean`
 - `output: string`
 - `duration_ms: integer`
+- `triggering_phase_run_id: string` — the phase run whose completion triggered this gate
 
 > **Open question:** GateRan currently lives on PhaseRun. It might belong on Task — gates run against the task's worktree state, not the phase run per se. See open questions section.
 
@@ -191,9 +219,10 @@ Stored projections. The frontend reads projections via simple SQL; the event app
 
 - **`workspace_projection`** — current state per workspace. One row per workspace. Lives in the global db.
 - **`plan_projection`** — one row per plan. Columns: `id`, `workspace_id`, `title`, `description`, `source`, `source_metadata`, `status` (`active | paused | completed | cancelled | archived`), `task_count`, `running_task_count`, `done_task_count`, `failed_task_count`, `created_at`, `updated_at`. The four count columns are maintained by the **Task** applier (cross-aggregate projection update; same-transaction with the triggering task event).
-- **`task_projection`** — one row per task. Includes `plan_id`, current status, latest phase run id, gate pass counts, last updated timestamp.
+- **`task_projection`** — one row per task. Includes `plan_id`, current status, latest phase run id, gate pass counts, last updated timestamp, the resolved `phase_config` JSON, and `task_base_commit` (the diff anchor from `TaskBaseCommitRecorded`).
 - **`phase_run_projection`** — one row per phase run. Status, provider, model, summary, token usage, timing.
 - **`phase_run_output`** — denormalized streaming text. Treated as a projection of `PhaseRunOutputAppended` events. The events remain source of truth; this table is for fast reads.
+- **`auditor_verdict_projection`** — one row per `AuditorVerdictRendered` event, keyed by the auditor `phase_run_id`. Stores verdict, confidence, summary, and concerns JSON for fast UI reads.
 
 Projections can be dropped and rebuilt from events at any time. A `rebuild_projections` Tauri command exists from day one — it's a development necessity, not a debugging tool.
 

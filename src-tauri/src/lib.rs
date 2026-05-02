@@ -3,6 +3,7 @@ mod events;
 mod phases;
 mod providers;
 mod recent_events;
+mod settings;
 mod subprocess;
 mod workspace_db;
 mod worktree;

@@ -184,6 +184,8 @@ CREATE TABLE IF NOT EXISTS task_projection (
     worktree_base_commit TEXT,
     worktree_status     TEXT,                 -- 'active' | 'removed' | NULL if never created
     worktree_removal_reason TEXT,
+    phase_config        TEXT NOT NULL DEFAULT '{}', -- resolved phase config JSON for this task
+    task_base_commit    TEXT,                 -- diff anchor for the task (TaskBaseCommitRecorded)
     created_at          INTEGER NOT NULL,
     updated_at          INTEGER NOT NULL
 );
@@ -237,6 +239,17 @@ CREATE TABLE IF NOT EXISTS phase_run_gate (
     created_at      INTEGER NOT NULL,
     PRIMARY KEY (phase_run_id, seq)
 );
+
+CREATE TABLE IF NOT EXISTS auditor_verdict_projection (
+    phase_run_id    TEXT PRIMARY KEY,         -- the auditor PhaseRun whose verdict this is
+    task_id         TEXT NOT NULL,
+    verdict         TEXT NOT NULL,            -- approve | revise | reject
+    confidence      REAL NOT NULL,
+    summary         TEXT NOT NULL,
+    concerns_json   TEXT NOT NULL,            -- JSON array of concern objects
+    created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auditor_verdict_task ON auditor_verdict_projection (task_id);
 "#;
 
 pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<()> {
@@ -428,6 +441,9 @@ pub struct TaskProjection {
     pub worktree_base_commit: Option<String>,
     pub worktree_status: Option<String>,
     pub worktree_removal_reason: Option<String>,
+    /// Resolved phase config JSON for this task (the value at create time — events are immutable).
+    pub phase_config: serde_json::Value,
+    pub task_base_commit: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -464,6 +480,24 @@ struct TaskCreatedPayload {
     plan_id: String,
     title: String,
     spec_markdown: String,
+    /// Resolved at task-creation time. Optional in deserialization so v2 events on disk
+    /// (which lack the field) replay cleanly with bundled defaults.
+    #[serde(default)]
+    phase_config: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskBaseCommitRecordedPayload {
+    commit_sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditorVerdictRenderedPayload {
+    phase_run_id: String,
+    verdict: String,
+    confidence: f64,
+    summary: String,
+    concerns: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -531,16 +565,25 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                     ),
                     other => ProjectionError::Database(other),
                 })?;
+            // Phase config: events are immutable, so we serialize whatever was on the
+            // event. Old v2 events (no phase_config field) get the bundled default
+            // baked into the projection — this is the one place "old data tolerance"
+            // lives in the applier.
+            let phase_config_json = match p.phase_config {
+                Some(v) => v.to_string(),
+                None => serde_json::to_string(&crate::settings::PhaseConfig::bundled_default())?,
+            };
             tx.execute(
                 "INSERT INTO task_projection
-                    (id, workspace_id, plan_id, title, spec_markdown, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'created', ?6, ?6)",
+                    (id, workspace_id, plan_id, title, spec_markdown, status, phase_config, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'created', ?6, ?7, ?7)",
                 params![
                     event.aggregate_id,
                     workspace_id,
                     p.plan_id,
                     p.title,
                     p.spec_markdown,
+                    phase_config_json,
                     event.created_at,
                 ],
             )?;
@@ -589,6 +632,13 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
             tx.execute(
                 "UPDATE task_projection SET status = 'archived', updated_at = ?1 WHERE id = ?2",
                 params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        "TaskBaseCommitRecorded" => {
+            let p: TaskBaseCommitRecordedPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE task_projection SET task_base_commit = ?1, updated_at = ?2 WHERE id = ?3",
+                params![p.commit_sha, event.created_at, event.aggregate_id],
             )?;
         }
         "WorktreeCreated" => {
@@ -801,6 +851,31 @@ pub fn apply_phase_run_event(
                 params![event.created_at, event.aggregate_id],
             )?;
         }
+        "AuditorVerdictRendered" => {
+            let p: AuditorVerdictRenderedPayload = serde_json::from_str(&event.payload)?;
+            // Look up the auditor's task_id via the phase run projection for indexing.
+            let task_id: String = tx
+                .query_row(
+                    "SELECT task_id FROM phase_run_projection WHERE id = ?1",
+                    params![p.phase_run_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default();
+            tx.execute(
+                "INSERT OR REPLACE INTO auditor_verdict_projection
+                    (phase_run_id, task_id, verdict, confidence, summary, concerns_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    p.phase_run_id,
+                    task_id,
+                    p.verdict,
+                    p.confidence,
+                    p.summary,
+                    p.concerns.to_string(),
+                    event.created_at,
+                ],
+            )?;
+        }
         "GateRan" => {
             let p: GateRanPayload = serde_json::from_str(&event.payload)?;
             tx.execute(
@@ -823,6 +898,9 @@ pub fn apply_phase_run_event(
 }
 
 fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
+    let phase_config_str: String = r.get(16)?;
+    let phase_config = serde_json::from_str(&phase_config_str)
+        .unwrap_or_else(|_| serde_json::json!({}));
     Ok(TaskProjection {
         id: r.get(0)?,
         workspace_id: r.get(1)?,
@@ -840,12 +918,14 @@ fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
         worktree_base_commit: r.get(13)?,
         worktree_status: r.get(14)?,
         worktree_removal_reason: r.get(15)?,
-        created_at: r.get(16)?,
-        updated_at: r.get(17)?,
+        phase_config,
+        task_base_commit: r.get(17)?,
+        created_at: r.get(18)?,
+        updated_at: r.get(19)?,
     })
 }
 
-const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, created_at, updated_at";
+const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, phase_config, task_base_commit, created_at, updated_at";
 
 pub fn list_tasks_in_plan(
     conn: &Connection,
@@ -927,6 +1007,65 @@ pub fn list_phase_run_output(
             created_at: r.get(2)?,
         })
     })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditorVerdictProjection {
+    pub phase_run_id: String,
+    pub task_id: String,
+    pub verdict: String,
+    pub confidence: f64,
+    pub summary: String,
+    /// JSON array of concerns; the frontend parses these.
+    pub concerns: serde_json::Value,
+    pub created_at: i64,
+}
+
+fn read_verdict(r: &rusqlite::Row) -> rusqlite::Result<AuditorVerdictProjection> {
+    let concerns_str: String = r.get(5)?;
+    let concerns =
+        serde_json::from_str(&concerns_str).unwrap_or(serde_json::Value::Array(Vec::new()));
+    Ok(AuditorVerdictProjection {
+        phase_run_id: r.get(0)?,
+        task_id: r.get(1)?,
+        verdict: r.get(2)?,
+        confidence: r.get(3)?,
+        summary: r.get(4)?,
+        concerns,
+        created_at: r.get(6)?,
+    })
+}
+
+pub fn get_auditor_verdict(
+    conn: &Connection,
+    phase_run_id: &str,
+) -> rusqlite::Result<Option<AuditorVerdictProjection>> {
+    let mut stmt = conn.prepare(
+        "SELECT phase_run_id, task_id, verdict, confidence, summary, concerns_json, created_at
+         FROM auditor_verdict_projection WHERE phase_run_id = ?1",
+    )?;
+    let mut rows = stmt.query(params![phase_run_id])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(read_verdict(r)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn list_auditor_verdicts_for_task(
+    conn: &Connection,
+    task_id: &str,
+) -> rusqlite::Result<Vec<AuditorVerdictProjection>> {
+    let mut stmt = conn.prepare(
+        "SELECT phase_run_id, task_id, verdict, confidence, summary, concerns_json, created_at
+         FROM auditor_verdict_projection WHERE task_id = ?1 ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map(params![task_id], read_verdict)?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);

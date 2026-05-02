@@ -702,10 +702,39 @@ pub fn create_task(
     plan_id: String,
     title: String,
     spec_markdown: String,
+    phase_config: Option<serde_json::Value>,
+    global: State<'_, GlobalDb>,
     active: State<'_, ActiveWorkspaceState>,
 ) -> Result<projections::TaskProjection, String> {
     let task_id = format!("task_{}", Ulid::new());
     let workspace_id;
+
+    // Resolve phase_config at create time. Per-task override wins; otherwise inherit
+    // the workspace default (from the workspace's stored settings, parsed tolerantly).
+    // Events are immutable: whatever ends up here is the config that sticks.
+    let resolved_phase_config: serde_json::Value = {
+        if let Some(pc) = phase_config {
+            pc
+        } else {
+            let conn = global.0.lock().map_err(|e| e.to_string())?;
+            let active_guard = active.0.lock().map_err(|e| e.to_string())?;
+            let workspace_id_for_settings = active_guard
+                .as_ref()
+                .ok_or_else(|| "no active workspace".to_string())?
+                .id
+                .clone();
+            drop(active_guard);
+            let settings_json: String = conn
+                .query_row(
+                    "SELECT settings_json FROM workspace_projection WHERE id = ?1",
+                    params![workspace_id_for_settings],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|_| "{}".to_string());
+            let settings = crate::settings::WorkspaceSettings::from_json_str(&settings_json);
+            serde_json::to_value(settings.default_phase_config).map_err(|e| e.to_string())?
+        }
+    };
 
     {
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
@@ -716,6 +745,7 @@ pub fn create_task(
             "plan_id": plan_id,
             "title": title,
             "spec_markdown": spec_markdown,
+            "phase_config": resolved_phase_config,
         })
         .to_string();
 
@@ -727,7 +757,7 @@ pub fn create_task(
             0,
             vec![NewEvent {
                 event_type: "TaskCreated".into(),
-                version: 2,
+                version: 3,
                 payload,
             }],
             &make_metadata("user:local"),
