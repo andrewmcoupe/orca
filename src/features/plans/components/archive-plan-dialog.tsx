@@ -1,4 +1,3 @@
-import { useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -8,16 +7,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
-  useCancelPlan,
+  useArchivePlan,
   usePlanCascadePreview,
 } from "@/features/plans/hooks";
 import { CascadePreview } from "./cascade-preview";
 import type { Plan } from "@/features/plans/types";
 
-export function CancelPlanDialog({
+export function ArchivePlanDialog({
   plan,
   open,
   onOpenChange,
@@ -26,15 +23,11 @@ export function CancelPlanDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const [reason, setReason] = useState("");
-  const cancel = useCancelPlan();
+  const archive = useArchivePlan();
   const preview = usePlanCascadePreview(plan.id, open);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!reason.trim()) return;
-    await cancel.mutateAsync({ planId: plan.id, reason: reason.trim() });
-    setReason("");
+  const submit = async () => {
+    await archive.mutateAsync(plan.id);
     onOpenChange(false);
   };
 
@@ -42,19 +35,16 @@ export function CancelPlanDialog({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) {
-          setReason("");
-          cancel.reset();
-        }
+        if (!next) archive.reset();
         onOpenChange(next);
       }}
     >
       <DialogContent className="sm:max-w-lg">
-        <form onSubmit={submit} className="space-y-4">
+        <div className="space-y-4">
           <DialogHeader>
-            <DialogTitle>Cancel plan</DialogTitle>
+            <DialogTitle>Archive plan</DialogTitle>
             <DialogDescription>
-              Cancelling halts every non-terminal task on this plan and stops
+              Archiving halts every non-terminal task on this plan and stops
               any phase runs in flight.
             </DialogDescription>
           </DialogHeader>
@@ -65,19 +55,8 @@ export function CancelPlanDialog({
             emptyHint="No active tasks on this plan."
           />
 
-          <div className="space-y-1.5">
-            <Label htmlFor="cancel-reason">Reason</Label>
-            <Input
-              id="cancel-reason"
-              autoFocus
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="Why is this being cancelled?"
-              required
-            />
-          </div>
-          {cancel.error && (
-            <p className="text-destructive text-xs">{String(cancel.error)}</p>
+          {archive.error && (
+            <p className="text-destructive text-xs">{String(archive.error)}</p>
           )}
           <DialogFooter>
             <Button
@@ -88,14 +67,15 @@ export function CancelPlanDialog({
               Keep plan
             </Button>
             <Button
-              type="submit"
+              type="button"
               variant="destructive"
-              disabled={!reason.trim() || cancel.isPending}
+              onClick={submit}
+              disabled={archive.isPending}
             >
-              {cancel.isPending ? "Cancelling…" : "Cancel plan"}
+              {archive.isPending ? "Archiving…" : "Archive plan"}
             </Button>
           </DialogFooter>
-        </form>
+        </div>
       </DialogContent>
     </Dialog>
   );

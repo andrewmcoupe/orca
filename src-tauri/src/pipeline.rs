@@ -156,6 +156,27 @@ fn read_task_pipeline_state(
     Ok((task.phase_config, aw.id.clone()))
 }
 
+/// True when the task is in a status that should suppress further auto-progression.
+fn task_is_terminal(app: &AppHandle, task_id: &str) -> Result<bool, PipelineError> {
+    let active = app
+        .try_state::<ActiveWorkspaceState>()
+        .ok_or(PipelineError::NoActiveWorkspace)?;
+    let mut guard = active
+        .0
+        .lock()
+        .map_err(|e| PipelineError::Internal(e.to_string()))?;
+    let aw = guard
+        .as_mut()
+        .ok_or(PipelineError::NoActiveWorkspace)?;
+    let task = projections::get_task(&aw.conn, task_id)
+        .map_err(|e| PipelineError::Internal(e.to_string()))?
+        .ok_or_else(|| PipelineError::TaskNotFound(task_id.to_string()))?;
+    Ok(matches!(
+        task.status.as_str(),
+        "cancelled" | "merged" | "archived"
+    ))
+}
+
 /// Spawn the next phase for a task. Defers to `commands::start_real_phase` so the
 /// dispatcher logic (provider detection, options merge, inflight-run tracking) lives in
 /// exactly one place.
@@ -220,6 +241,13 @@ pub async fn on_phase_completed(
 
     if phase == PhaseType::Auditor {
         // Auditor progression is decided once the verdict event lands.
+        return Ok(());
+    }
+
+    // If the task was cancelled, merged, or archived while this phase was running, don't
+    // progress. The orchestrator's job is to advance live tasks; terminal-state tasks
+    // get to keep their last completed phase but no further work fires.
+    if task_is_terminal(&app, &task_id)? {
         return Ok(());
     }
 

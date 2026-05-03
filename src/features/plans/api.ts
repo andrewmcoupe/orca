@@ -38,4 +38,14 @@ export const plansApi = {
   cancel: (planId: string, reason: string) =>
     invoke<void>("cancel_plan", { planId, reason }),
   archive: (planId: string) => invoke<void>("archive_plan", { planId }),
+  previewCascade: (planId: string) =>
+    invoke<PlanCascadePreview[]>("preview_plan_cascade", { planId }),
+};
+
+export type PlanCascadePreview = {
+  task_id: string;
+  title: string;
+  status: string;
+  has_running_phase_run: boolean;
+  worktree_path: string | null;
 };

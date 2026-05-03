@@ -686,6 +686,163 @@ pub fn resume_plan(
     Ok(())
 }
 
+/// A task that's still alive on a plan: anything not in `cancelled` / `merged` /
+/// `archived`. Used by the cancel/archive plan dialogs to preview what will be cascaded
+/// and by the cascade itself to know what to cancel.
+#[derive(Debug, Serialize)]
+pub struct PlanCascadePreview {
+    pub task_id: String,
+    pub title: String,
+    pub status: String,
+    pub has_running_phase_run: bool,
+    pub worktree_path: Option<String>,
+}
+
+/// Internal cascade target — what `cascade_cancel_tasks` actually needs.
+struct CascadeTarget {
+    task_id: String,
+    latest_phase_run_id: Option<String>,
+}
+
+fn build_cascade_targets(
+    aw: &ActiveWorkspace,
+    plan_id: &str,
+) -> Result<Vec<CascadeTarget>, String> {
+    let tasks = projections::list_tasks_in_plan(&aw.conn, plan_id).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for t in tasks {
+        if t.status == "cancelled" || t.status == "merged" || t.status == "archived" {
+            continue;
+        }
+        out.push(CascadeTarget {
+            task_id: t.id,
+            latest_phase_run_id: t.latest_phase_run_id,
+        });
+    }
+    Ok(out)
+}
+
+fn collect_active_tasks_for_plan(
+    aw: &ActiveWorkspace,
+    plan_id: &str,
+) -> Result<Vec<PlanCascadePreview>, String> {
+    let tasks = projections::list_tasks_in_plan(&aw.conn, plan_id).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for t in tasks {
+        let status = t.status.clone();
+        if status == "cancelled" || status == "merged" || status == "archived" {
+            continue;
+        }
+        let has_running_phase_run = match &t.latest_phase_run_id {
+            Some(pr_id) => projections::list_phase_runs_for_task(&aw.conn, &t.id)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|r| &r.id == pr_id)
+                .map_or(false, |r| r.status == "running"),
+            None => false,
+        };
+        out.push(PlanCascadePreview {
+            task_id: t.id,
+            title: t.title,
+            status,
+            has_running_phase_run,
+            worktree_path: t.worktree_path,
+        });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn preview_plan_cascade(
+    plan_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<Vec<PlanCascadePreview>, String> {
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    collect_active_tasks_for_plan(aw, &plan_id)
+}
+
+/// Cancel any in-flight phase runs for the given tasks and emit `TaskCancelled` for
+/// each. Does NOT touch worktrees — the user is told to remove them manually. Errors on
+/// a single task are logged but don't abort the cascade; best-effort cleanup avoids
+/// stranding other tasks in a half-cancelled state.
+fn cascade_cancel_tasks(
+    app: &AppHandle,
+    workspace_id: &str,
+    cascade: &[CascadeTarget],
+    reason: &str,
+) {
+    let inflight = app.state::<InflightRuns>();
+    for target in cascade {
+        if let Some(pr_id) = &target.latest_phase_run_id {
+            inflight.cancel(pr_id);
+        }
+    }
+
+    let active = app.state::<ActiveWorkspaceState>();
+    let mut guard = match active.0.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let aw = match guard.as_mut() {
+        Some(aw) => aw,
+        None => return,
+    };
+
+    for target in cascade {
+        let task_id = &target.task_id;
+        let payload = json!({ "reason": reason }).to_string();
+        let seq = match current_task_seq(&aw.conn, task_id) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let tx = match aw.conn.transaction() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let outcome = append_events_in_tx(
+            &tx,
+            "task",
+            task_id,
+            seq,
+            vec![NewEvent {
+                event_type: "TaskCancelled".into(),
+                version: 1,
+                payload,
+            }],
+            &make_metadata("user:local"),
+        );
+        let outcome = match outcome {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("cascade cancel: append failed for {}: {}", task_id, e);
+                continue;
+            }
+        };
+        let mut applied_ok = true;
+        for ev in &outcome.events {
+            if let Err(e) = apply_task_event(&tx, ev) {
+                eprintln!("cascade cancel: applier failed for {}: {}", task_id, e);
+                applied_ok = false;
+                break;
+            }
+            if let Err(e) = recent_events::record_event(&tx, ev) {
+                eprintln!("cascade cancel: recent_events failed for {}: {}", task_id, e);
+                applied_ok = false;
+                break;
+            }
+        }
+        if !applied_ok {
+            continue;
+        }
+        if tx.commit().is_err() {
+            continue;
+        }
+        emit_projection_updated(app, Some(workspace_id), "task", task_id);
+    }
+    emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
+}
+
 #[tauri::command]
 pub fn cancel_plan(
     app: AppHandle,
@@ -694,12 +851,15 @@ pub fn cancel_plan(
     active: State<'_, ActiveWorkspaceState>,
 ) -> Result<(), String> {
     let workspace_id;
+    let cascade: Vec<CascadeTarget>;
     {
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         let aw = require_active_workspace(&mut guard)?;
         workspace_id = aw.id.clone();
+        cascade = build_cascade_targets(aw, &plan_id)?;
         append_plan_event(aw, &plan_id, "PlanCancelled", json!({ "reason": reason }), "user:local")?;
     }
+    cascade_cancel_tasks(&app, &workspace_id, &cascade, "plan_cancelled");
     emit_projection_updated(&app, Some(&workspace_id), "plan", &plan_id);
     emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
     Ok(())
@@ -712,12 +872,15 @@ pub fn archive_plan(
     active: State<'_, ActiveWorkspaceState>,
 ) -> Result<(), String> {
     let workspace_id;
+    let cascade: Vec<CascadeTarget>;
     {
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         let aw = require_active_workspace(&mut guard)?;
         workspace_id = aw.id.clone();
+        cascade = build_cascade_targets(aw, &plan_id)?;
         append_plan_event(aw, &plan_id, "PlanArchived", json!({}), "user:local")?;
     }
+    cascade_cancel_tasks(&app, &workspace_id, &cascade, "plan_archived");
     emit_projection_updated(&app, Some(&workspace_id), "plan", &plan_id);
     emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
     Ok(())

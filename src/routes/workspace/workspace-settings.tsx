@@ -1,6 +1,9 @@
+import { useState } from "react";
 import { createRoute, useParams } from "@tanstack/react-router";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { eventsApi } from "@/features/events/api";
 import { useRemoveWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
 import { PhaseConfigPanel } from "@/features/workspaces/components/phase-config-panel";
 import { GateConfigPanel } from "@/features/workspaces/components/gate-config-panel";
@@ -58,17 +61,57 @@ function WorkspaceSettingsPage() {
 
       <Separator />
 
-      <section className="space-y-2">
-        <h2 className="text-sm font-semibold">Danger zone</h2>
-        <Button
-          variant="destructive"
-          size="sm"
-          onClick={() => remove.mutate(ws.id)}
-          disabled={remove.isPending}
-        >
-          Remove workspace
-        </Button>
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold">Maintenance</h2>
+        <RebuildProjectionsButton />
+        <div>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => remove.mutate(ws.id)}
+            disabled={remove.isPending}
+          >
+            Remove workspace
+          </Button>
+        </div>
       </section>
+    </div>
+  );
+}
+
+function RebuildProjectionsButton() {
+  const qc = useQueryClient();
+  const [result, setResult] = useState<string | null>(null);
+  const rebuild = useMutation({
+    mutationFn: eventsApi.rebuildProjections,
+    onSuccess: (r) => {
+      setResult(
+        `Rebuilt ${r.projections_rebuilt.join(", ")} (${r.events_replayed} events).`,
+      );
+      qc.invalidateQueries();
+    },
+  });
+  return (
+    <div className="space-y-1.5">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          setResult(null);
+          rebuild.mutate();
+        }}
+        disabled={rebuild.isPending}
+      >
+        {rebuild.isPending ? "Rebuilding…" : "Rebuild projections"}
+      </Button>
+      <p className="text-muted-foreground text-xs">
+        Replays the event log into the read-side tables. Safe to run; needed
+        after a schema upgrade adds new projection columns.
+      </p>
+      {result && <p className="text-emerald-600 text-xs">{result}</p>}
+      {rebuild.error && (
+        <p className="text-destructive text-xs">{String(rebuild.error)}</p>
+      )}
     </div>
   );
 }

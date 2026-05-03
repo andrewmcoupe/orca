@@ -67,6 +67,7 @@ pub fn run() {
             commands::resume_plan,
             commands::cancel_plan,
             commands::archive_plan,
+            commands::preview_plan_cascade,
             commands::list_plans,
             commands::get_plan,
             commands::create_task,

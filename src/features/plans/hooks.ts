@@ -1,5 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { plansApi, type CreatePlanInput, type RevisePlanInput } from "./api";
+import {
+  plansApi,
+  type CreatePlanInput,
+  type PlanCascadePreview,
+  type RevisePlanInput,
+} from "./api";
 import type { Plan } from "./types";
 
 export const planKeys = {
@@ -66,5 +71,15 @@ export function useCancelPlan() {
 export function useArchivePlan() {
   return useMutation({
     mutationFn: (planId: string) => plansApi.archive(planId),
+  });
+}
+
+export function usePlanCascadePreview(planId: string | undefined, enabled = true) {
+  return useQuery<PlanCascadePreview[]>({
+    queryKey: planId
+      ? (["plan", planId, "cascade_preview"] as const)
+      : (["plan", "__pending__", "cascade_preview"] as const),
+    queryFn: () => plansApi.previewCascade(planId!),
+    enabled: !!planId && enabled,
   });
 }

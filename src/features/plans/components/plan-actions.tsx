@@ -1,22 +1,19 @@
 import { useState } from "react";
 import { Archive, Pause, Play, PencilSimple, X } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
-import {
-  useArchivePlan,
-  usePausePlan,
-  useResumePlan,
-} from "@/features/plans/hooks";
+import { usePausePlan, useResumePlan } from "@/features/plans/hooks";
 import { EditPlanDialog } from "./edit-plan-dialog";
 import { CancelPlanDialog } from "./cancel-plan-dialog";
+import { ArchivePlanDialog } from "./archive-plan-dialog";
 import type { Plan } from "@/features/plans/types";
 
 export function PlanActions({ plan }: { plan: Plan }) {
   const [editing, setEditing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [archiving, setArchiving] = useState(false);
 
   const pause = usePausePlan();
   const resume = useResumePlan();
-  const archive = useArchivePlan();
 
   const isActive = plan.status === "active";
   const isPaused = plan.status === "paused";
@@ -73,8 +70,7 @@ export function PlanActions({ plan }: { plan: Plan }) {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => archive.mutate(plan.id)}
-          disabled={archive.isPending}
+          onClick={() => setArchiving(true)}
         >
           <Archive />
           Archive
@@ -85,6 +81,11 @@ export function PlanActions({ plan }: { plan: Plan }) {
         plan={plan}
         open={cancelling}
         onOpenChange={setCancelling}
+      />
+      <ArchivePlanDialog
+        plan={plan}
+        open={archiving}
+        onOpenChange={setArchiving}
       />
     </div>
   );
