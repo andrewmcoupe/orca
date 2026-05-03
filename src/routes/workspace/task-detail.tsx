@@ -19,6 +19,7 @@ import {
 import { PipelineCards } from "@/features/phase-runs/components/pipeline-cards";
 import { PhaseRunsTrail } from "@/features/phase-runs/components/phase-runs-trail";
 import { TaskEventList } from "@/features/events/components/task-event-list";
+import { DiffPanel } from "@/features/diff/components/diff-panel";
 import { formatRelativeTime } from "@/lib/format";
 import type { Task } from "@/features/tasks/types";
 
@@ -56,7 +57,8 @@ function TaskDetailView({
   const anyRunning = runs.some((r) => r.status === "running");
 
   return (
-    <div className="space-y-7 px-5 py-4">
+    <div className="flex min-h-full">
+      <div className="min-w-0 flex-1 space-y-7 px-5 py-4">
       <header className="space-y-2">
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
@@ -146,6 +148,8 @@ function TaskDetailView({
         <SectionLabel>Worktree</SectionLabel>
         <WorktreeSection task={task} />
       </section>
+      </div>
+      <DiffPanel workspaceId={workspaceId} taskId={task.id} />
     </div>
   );
 }
