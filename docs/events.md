@@ -106,9 +106,18 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 **TaskApproved** — user approved the task for merge.
 - `by: string` — user identifier (local username for now)
 
-**TaskMerged** — task's worktree merged into target branch.
-- `commit_sha: string`
-- `merge_strategy: "squash" | "merge" | "fast_forward"`
+**TaskMerged** — task's worktree merged into target branch. **Version 2.** v1 carried only `commit_sha` and `merge_strategy` (where `merge_strategy` could be `"fast_forward"`). v2 adds the fields below; the v2 applier defaults missing fields when replaying older events.
+- `commit_sha: string` — the resulting commit SHA on the target branch
+- `merge_strategy: "squash" | "merge"` — `"fast_forward"` is no longer emitted; squash subsumes that case
+- `target_branch: string` — the branch we merged into (the main worktree's HEAD at merge time)
+- `source_branch: string` — the worktree's branch (`orca/<task_id>`)
+- `parent_commits: string[]` — the commits that existed on the source branch before merge, ordered oldest-to-newest. Lets the audit trail reconstruct what went into the merge.
+
+**TaskMergeAttempted** — recorded automatically when the user opens the merge dialog and the dry-run reveals conflicts (so the merge couldn't proceed). Useful for the audit trail and for surfacing "you tried to merge this and it had conflicts" in the UI later. Fires *only* on conflict; closing the dialog without confirming emits nothing else.
+- `target_branch: string`
+- `source_branch: string`
+- `conflicts: string[]` — file paths that conflicted
+- `target_head_sha: string` — what HEAD pointed to at the moment of analysis (so you can tell whether the conflict was due to subsequent changes on the target)
 
 **TaskArchived** — task removed from active view.
 

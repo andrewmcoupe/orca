@@ -1301,6 +1301,258 @@ pub fn cancel_phase_run(
 // Worktree commands
 // ======================================================================
 
+// ----------------------------------------------------------------------
+// Merge commands (analyze / execute)
+// ----------------------------------------------------------------------
+
+/// Errors surfaced to the UI for the analyze/execute task-merge commands. Variants are
+/// serialized as `{ kind, details }` so the frontend can pattern-match on `kind` and
+/// render specific guidance per error mode (dirty tree, detached HEAD, etc.).
+#[derive(Debug, Serialize, thiserror::Error)]
+#[serde(tag = "kind", content = "details")]
+pub enum MergeCommandError {
+    #[error("no active workspace")]
+    NoActiveWorkspace,
+    #[error("task not found")]
+    TaskNotFound,
+    #[error("task has no worktree branch recorded")]
+    NoWorktreeBranch,
+    #[error("invalid merge strategy: {0}")]
+    InvalidStrategy(String),
+    #[error("main worktree is in detached-HEAD state")]
+    DetachedHead,
+    #[error("main worktree has uncommitted changes")]
+    WorkingTreeDirty { dirty_files: Vec<String> },
+    #[error("source branch missing: {0}")]
+    SourceBranchMissing(String),
+    #[error("target branch missing: {0}")]
+    TargetBranchMissing(String),
+    #[error("conflicts prevent merge")]
+    Conflicts { conflicts: Vec<String> },
+    #[error("source already merged into target at {commit_sha}")]
+    AlreadyMerged { commit_sha: String, target_branch: String },
+    #[error("git error: {0}")]
+    GitError(String),
+    #[error("internal error: {0}")]
+    InternalError(String),
+}
+
+impl From<crate::merge::MergeError> for MergeCommandError {
+    fn from(e: crate::merge::MergeError) -> Self {
+        use crate::merge::MergeError;
+        match e {
+            MergeError::DetachedHead => Self::DetachedHead,
+            MergeError::WorkingTreeDirty { dirty_files } => {
+                Self::WorkingTreeDirty { dirty_files }
+            }
+            MergeError::SourceBranchMissing(b) => Self::SourceBranchMissing(b),
+            MergeError::TargetBranchMissing(b) => Self::TargetBranchMissing(b),
+            MergeError::Conflicts { conflicts } => Self::Conflicts { conflicts },
+            MergeError::AlreadyMerged { commit_sha } => Self::AlreadyMerged {
+                commit_sha,
+                target_branch: String::new(),
+            },
+            MergeError::GitError(s) => Self::GitError(s),
+            MergeError::InternalError(s) => Self::InternalError(s),
+        }
+    }
+}
+
+fn lookup_task_workspace_and_branch(
+    aw: &ActiveWorkspace,
+    task_id: &str,
+) -> Result<(String, String, String), MergeCommandError> {
+    let task = projections::get_task(&aw.conn, task_id)
+        .map_err(|e| MergeCommandError::InternalError(e.to_string()))?
+        .ok_or(MergeCommandError::TaskNotFound)?;
+    let branch = task
+        .worktree_branch
+        .ok_or(MergeCommandError::NoWorktreeBranch)?;
+    Ok((aw.id.clone(), aw.path.clone(), branch))
+}
+
+/// Read-side: inspect what a merge would do. Side effects:
+/// - If the analysis surfaces conflicts, append `TaskMergeAttempted` so the audit trail
+///   records the failed attempt (and so the UI can show it inline near the Merge button
+///   later).
+/// - If the source is already an ancestor of the target, append `TaskMerged` with the
+///   existing target SHA and synthetic strategy `"squash"` — the merge result already
+///   exists, so the "right" thing for the projection is to mark the task merged rather
+///   than ask the user to do it again.
+#[tauri::command]
+pub fn analyze_task_merge(
+    app: AppHandle,
+    task_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<crate::merge::MergeAnalysis, MergeCommandError> {
+    let (workspace_id, workspace_path, source_branch) = {
+        let mut guard = active
+            .0
+            .lock()
+            .map_err(|_| MergeCommandError::InternalError("active workspace mutex poisoned".into()))?;
+        let aw = guard
+            .as_mut()
+            .ok_or(MergeCommandError::NoActiveWorkspace)?;
+        lookup_task_workspace_and_branch(aw, &task_id)?
+    };
+
+    let analysis = crate::merge::analyze_merge(
+        std::path::Path::new(&workspace_path),
+        &source_branch,
+    )?;
+
+    if analysis.already_merged {
+        // Materialise the merge as a TaskMerged event so the projection reflects reality.
+        // Strategy is synthetic — squash is the closest semantic fit.
+        let payload = json!({
+            "commit_sha": analysis.target_head_sha,
+            "merge_strategy": "squash",
+            "target_branch": analysis.target_branch,
+            "source_branch": analysis.source_branch,
+            "parent_commits": analysis
+                .source_commits
+                .iter()
+                .map(|c| c.sha.clone())
+                .collect::<Vec<_>>(),
+        });
+        let _ = append_task_event_simple(&app, &workspace_id, &task_id, "TaskMerged", payload);
+        // Cleanup the worktree just like a real merge would.
+        let _ = cleanup_task_worktree(
+            &app,
+            &workspace_id,
+            &workspace_path,
+            &task_id,
+            "task_merged",
+        );
+        maybe_complete_plan(&app, &workspace_id, &task_id);
+    } else if !analysis.conflicts.is_empty() {
+        let payload = json!({
+            "target_branch": analysis.target_branch,
+            "source_branch": analysis.source_branch,
+            "conflicts": analysis.conflicts,
+            "target_head_sha": analysis.target_head_sha,
+        });
+        let _ = append_task_event_simple(
+            &app,
+            &workspace_id,
+            &task_id,
+            "TaskMergeAttempted",
+            payload,
+        );
+    }
+
+    Ok(analysis)
+}
+
+#[tauri::command]
+pub fn execute_task_merge(
+    app: AppHandle,
+    task_id: String,
+    strategy: String,
+    commit_message: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<crate::merge::ExecutedMerge, MergeCommandError> {
+    let (workspace_id, workspace_path, source_branch) = {
+        let mut guard = active
+            .0
+            .lock()
+            .map_err(|_| MergeCommandError::InternalError("active workspace mutex poisoned".into()))?;
+        let aw = guard
+            .as_mut()
+            .ok_or(MergeCommandError::NoActiveWorkspace)?;
+        lookup_task_workspace_and_branch(aw, &task_id)?
+    };
+
+    let result = match strategy.as_str() {
+        "squash" => crate::merge::execute_squash_merge(
+            std::path::Path::new(&workspace_path),
+            &source_branch,
+            &commit_message,
+        )?,
+        "merge" => crate::merge::execute_merge_commit(
+            std::path::Path::new(&workspace_path),
+            &source_branch,
+            &commit_message,
+        )?,
+        other => return Err(MergeCommandError::InvalidStrategy(other.to_string())),
+    };
+
+    let payload = json!({
+        "commit_sha": result.commit_sha,
+        "merge_strategy": strategy,
+        "target_branch": result.target_branch,
+        "source_branch": result.source_branch,
+        "parent_commits": result.parent_commits,
+    });
+    append_task_event_simple(&app, &workspace_id, &task_id, "TaskMerged", payload)
+        .map_err(|e| MergeCommandError::InternalError(e))?;
+
+    // Existing wiring: cleanup the worktree (force=true since we just merged its branch
+    // into the target — the worktree files are now redundant), then check plan completion.
+    let _ = cleanup_task_worktree(
+        &app,
+        &workspace_id,
+        &workspace_path,
+        &task_id,
+        "task_merged",
+    );
+    maybe_complete_plan(&app, &workspace_id, &task_id);
+
+    Ok(result)
+}
+
+/// Append a single event to a task aggregate, applying its projection in the same
+/// transaction and emitting `projection_updated`. Caller-friendly helper for the merge
+/// commands above; on failure returns a String the caller wraps in
+/// [`MergeCommandError::InternalError`].
+fn append_task_event_simple(
+    app: &AppHandle,
+    workspace_id: &str,
+    task_id: &str,
+    event_type: &str,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    let active = app.state::<ActiveWorkspaceState>();
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        let seq = current_task_seq(&aw.conn, task_id)?;
+        let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
+        let outcome = append_events_in_tx(
+            &tx,
+            "task",
+            task_id,
+            seq,
+            vec![NewEvent {
+                event_type: event_type.into(),
+                version: if event_type == "TaskMerged" { 2 } else { 1 },
+                payload: payload.to_string(),
+            }],
+            &make_metadata("user:local"),
+        )
+        .map_err(map_append_err)?;
+        for ev in &outcome.events {
+            apply_task_event(&tx, ev).map_err(|e| e.to_string())?;
+            recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    emit_projection_updated(app, Some(workspace_id), "task", task_id);
+    emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_latest_merge_attempt_for_task(
+    task_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<Option<projections::TaskMergeAttempt>, String> {
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    projections::latest_merge_attempt_for_task(&aw.conn, &task_id)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn mark_task_merged(
     app: AppHandle,
@@ -1891,6 +2143,8 @@ pub fn rebuild_projections(
                  DROP TABLE IF EXISTS phase_run_tool_call;
                  DROP TABLE IF EXISTS phase_run_output;
                  DROP TABLE IF EXISTS phase_run_projection;
+                 DROP TABLE IF EXISTS auditor_verdict_projection;
+                 DROP TABLE IF EXISTS task_merge_attempt_projection;
                  DROP TABLE IF EXISTS task_projection;
                  DROP TABLE IF EXISTS plan_projection;
                  DROP TABLE IF EXISTS recent_events;",

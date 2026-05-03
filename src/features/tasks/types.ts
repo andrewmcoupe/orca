@@ -2,6 +2,7 @@ export type TaskStatus =
   | "draft"
   | "running"
   | "awaiting_review"
+  | "approved"
   | "merged"
   | "cancelled"
   | "archived"
@@ -56,6 +57,8 @@ export type Task = {
   approved_by: string | null;
   merged_commit_sha: string | null;
   merge_strategy: string | null;
+  merge_target_branch: string | null;
+  merged_at: number | null;
   latest_phase_run_id: string | null;
   worktree_path: string | null;
   worktree_branch: string | null;

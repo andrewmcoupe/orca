@@ -178,6 +178,8 @@ CREATE TABLE IF NOT EXISTS task_projection (
     approved_by         TEXT,
     merged_commit_sha   TEXT,
     merge_strategy      TEXT,
+    merge_target_branch TEXT,                 -- branch we merged into (TaskMerged v2)
+    merged_at           INTEGER,              -- created_at of the TaskMerged event
     latest_phase_run_id TEXT,
     worktree_path       TEXT,                 -- absolute path while a worktree exists
     worktree_branch     TEXT,
@@ -242,6 +244,19 @@ CREATE TABLE IF NOT EXISTS phase_run_gate (
     PRIMARY KEY (phase_run_id, seq)
 );
 
+-- Records every TaskMergeAttempted event (failed merge attempts due to conflicts).
+-- Keyed by (task_id, attempted_at) so the UI can show the most recent one inline.
+CREATE TABLE IF NOT EXISTS task_merge_attempt_projection (
+    task_id          TEXT NOT NULL,
+    attempted_at     INTEGER NOT NULL,
+    target_branch    TEXT NOT NULL,
+    source_branch    TEXT NOT NULL,
+    target_head_sha  TEXT NOT NULL,
+    conflicts_json   TEXT NOT NULL,           -- JSON array of file paths
+    PRIMARY KEY (task_id, attempted_at)
+);
+CREATE INDEX IF NOT EXISTS idx_task_merge_attempt_task ON task_merge_attempt_projection (task_id);
+
 CREATE TABLE IF NOT EXISTS auditor_verdict_projection (
     phase_run_id    TEXT PRIMARY KEY,         -- the auditor PhaseRun whose verdict this is
     task_id         TEXT NOT NULL,
@@ -255,7 +270,28 @@ CREATE INDEX IF NOT EXISTS idx_auditor_verdict_task ON auditor_verdict_projectio
 "#;
 
 pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(TASK_PROJECTION_DDL)
+    conn.execute_batch(TASK_PROJECTION_DDL)?;
+    // Additive migrations — `CREATE TABLE IF NOT EXISTS` won't add new columns to a
+    // pre-existing table, so explicitly add v2-merge columns when missing. Each ALTER
+    // is wrapped in a one-shot match so a duplicate-column error from a re-run is a
+    // benign no-op.
+    let migrations = &[
+        "ALTER TABLE task_projection ADD COLUMN merge_target_branch TEXT",
+        "ALTER TABLE task_projection ADD COLUMN merged_at INTEGER",
+    ];
+    for sql in migrations {
+        match conn.execute(sql, []) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column") => {}
+            Err(e) => {
+                let s = e.to_string();
+                if !s.contains("duplicate column") {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -437,6 +473,8 @@ pub struct TaskProjection {
     pub approved_by: Option<String>,
     pub merged_commit_sha: Option<String>,
     pub merge_strategy: Option<String>,
+    pub merge_target_branch: Option<String>,
+    pub merged_at: Option<i64>,
     pub latest_phase_run_id: Option<String>,
     pub worktree_path: Option<String>,
     pub worktree_branch: Option<String>,
@@ -527,6 +565,23 @@ struct TaskApprovedPayload {
 struct TaskMergedPayload {
     commit_sha: String,
     merge_strategy: String,
+    /// v2 fields. Optional in deserialization so v1 events on disk replay cleanly.
+    #[serde(default)]
+    target_branch: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    source_branch: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    parent_commits: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskMergeAttemptedPayload {
+    target_branch: String,
+    source_branch: String,
+    conflicts: Vec<String>,
+    target_head_sha: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -623,14 +678,48 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
         "TaskMerged" => {
             let p: TaskMergedPayload = serde_json::from_str(&event.payload)?;
             tx.execute(
-                "UPDATE task_projection SET status = 'merged', merged_commit_sha = ?1, merge_strategy = ?2, updated_at = ?3 WHERE id = ?4",
-                params![p.commit_sha, p.merge_strategy, event.created_at, event.aggregate_id],
+                "UPDATE task_projection
+                 SET status = 'merged',
+                     merged_commit_sha = ?1,
+                     merge_strategy = ?2,
+                     merge_target_branch = ?3,
+                     merged_at = ?4,
+                     updated_at = ?4
+                 WHERE id = ?5",
+                params![
+                    p.commit_sha,
+                    p.merge_strategy,
+                    p.target_branch,
+                    event.created_at,
+                    event.aggregate_id,
+                ],
             )?;
             // Cross-aggregate: bump the plan's done_task_count.
             tx.execute(
                 "UPDATE plan_projection
                  SET done_task_count = done_task_count + 1, updated_at = ?1
                  WHERE id = (SELECT plan_id FROM task_projection WHERE id = ?2)",
+                params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        "TaskMergeAttempted" => {
+            let p: TaskMergeAttemptedPayload = serde_json::from_str(&event.payload)?;
+            let conflicts_json = serde_json::to_string(&p.conflicts)?;
+            tx.execute(
+                "INSERT OR REPLACE INTO task_merge_attempt_projection
+                    (task_id, attempted_at, target_branch, source_branch, target_head_sha, conflicts_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    event.aggregate_id,
+                    event.created_at,
+                    p.target_branch,
+                    p.source_branch,
+                    p.target_head_sha,
+                    conflicts_json,
+                ],
+            )?;
+            tx.execute(
+                "UPDATE task_projection SET updated_at = ?1 WHERE id = ?2",
                 params![event.created_at, event.aggregate_id],
             )?;
         }
@@ -917,7 +1006,7 @@ pub fn apply_phase_run_event(
 }
 
 fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
-    let phase_config_str: String = r.get(16)?;
+    let phase_config_str: String = r.get(18)?;
     let phase_config = serde_json::from_str(&phase_config_str)
         .unwrap_or_else(|_| serde_json::json!({}));
     Ok(TaskProjection {
@@ -931,20 +1020,22 @@ fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
         approved_by: r.get(7)?,
         merged_commit_sha: r.get(8)?,
         merge_strategy: r.get(9)?,
-        latest_phase_run_id: r.get(10)?,
-        worktree_path: r.get(11)?,
-        worktree_branch: r.get(12)?,
-        worktree_base_commit: r.get(13)?,
-        worktree_status: r.get(14)?,
-        worktree_removal_reason: r.get(15)?,
+        merge_target_branch: r.get(10)?,
+        merged_at: r.get(11)?,
+        latest_phase_run_id: r.get(12)?,
+        worktree_path: r.get(13)?,
+        worktree_branch: r.get(14)?,
+        worktree_base_commit: r.get(15)?,
+        worktree_status: r.get(16)?,
+        worktree_removal_reason: r.get(17)?,
         phase_config,
-        task_base_commit: r.get(17)?,
-        created_at: r.get(18)?,
-        updated_at: r.get(19)?,
+        task_base_commit: r.get(19)?,
+        created_at: r.get(20)?,
+        updated_at: r.get(21)?,
     })
 }
 
-const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, phase_config, task_base_commit, created_at, updated_at";
+const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, merge_target_branch, merged_at, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, phase_config, task_base_commit, created_at, updated_at";
 
 pub fn list_tasks_in_plan(
     conn: &Connection,
@@ -1119,4 +1210,177 @@ pub fn list_auditor_verdicts_for_task(
         out.push(r?);
     }
     Ok(out)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskMergeAttempt {
+    pub task_id: String,
+    pub attempted_at: i64,
+    pub target_branch: String,
+    pub source_branch: String,
+    pub target_head_sha: String,
+    pub conflicts: Vec<String>,
+}
+
+fn read_merge_attempt(r: &rusqlite::Row) -> rusqlite::Result<TaskMergeAttempt> {
+    let conflicts_str: String = r.get(5)?;
+    let conflicts = serde_json::from_str(&conflicts_str).unwrap_or_default();
+    Ok(TaskMergeAttempt {
+        task_id: r.get(0)?,
+        attempted_at: r.get(1)?,
+        target_branch: r.get(2)?,
+        source_branch: r.get(3)?,
+        target_head_sha: r.get(4)?,
+        conflicts,
+    })
+}
+
+/// Returns the most recent `TaskMergeAttempted` for the task, or None if there have been
+/// no failed attempts. The UI surfaces this near the Merge button so users remember they
+/// hit conflicts and need to resolve them.
+pub fn latest_merge_attempt_for_task(
+    conn: &Connection,
+    task_id: &str,
+) -> rusqlite::Result<Option<TaskMergeAttempt>> {
+    let mut stmt = conn.prepare(
+        "SELECT task_id, attempted_at, target_branch, source_branch, target_head_sha, conflicts_json
+         FROM task_merge_attempt_projection
+         WHERE task_id = ?1
+         ORDER BY attempted_at DESC
+         LIMIT 1",
+    )?;
+    let mut rows = stmt.query(params![task_id])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(read_merge_attempt(r)?))
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::schema::apply_events_ddl;
+    use crate::events::types::AppendedEvent;
+    use rusqlite::Connection;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_events_ddl(&conn).unwrap();
+        apply_workspace_db_projection_ddl(&conn).unwrap();
+        // Seed a plan + task so cross-aggregate updates have something to land on.
+        conn.execute(
+            "INSERT INTO plan_projection
+                (id, workspace_id, title, description, source, source_metadata, status,
+                 task_count, running_task_count, done_task_count, failed_task_count,
+                 created_at, updated_at)
+             VALUES ('p1', 'ws', 't', '', 'manual', NULL, 'active', 1, 0, 0, 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO task_projection
+                (id, workspace_id, plan_id, title, spec_markdown, status, phase_config, created_at, updated_at)
+             VALUES ('task1', 'ws', 'p1', 'demo', '', 'approved', '{}', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn task_event(seq: i64, event_type: &str, payload: serde_json::Value) -> AppendedEvent {
+        AppendedEvent {
+            id: format!("ev_{seq}"),
+            aggregate_type: "task".into(),
+            aggregate_id: "task1".into(),
+            seq,
+            event_type: event_type.into(),
+            version: if event_type == "TaskMerged" { 2 } else { 1 },
+            payload: payload.to_string(),
+            metadata: "{}".into(),
+            created_at: 100 * seq,
+        }
+    }
+
+    #[test]
+    fn task_merge_attempted_inserts_attempt_row() {
+        let mut conn = db();
+        let tx = conn.transaction().unwrap();
+        let ev = task_event(
+            1,
+            "TaskMergeAttempted",
+            serde_json::json!({
+                "target_branch": "main",
+                "source_branch": "orca/task1",
+                "conflicts": ["a.rs", "b/c.rs"],
+                "target_head_sha": "deadbeef",
+            }),
+        );
+        apply_task_event(&tx, &ev).unwrap();
+        tx.commit().unwrap();
+
+        let attempt = latest_merge_attempt_for_task(&conn, "task1").unwrap().unwrap();
+        assert_eq!(attempt.target_branch, "main");
+        assert_eq!(attempt.source_branch, "orca/task1");
+        assert_eq!(attempt.target_head_sha, "deadbeef");
+        assert_eq!(attempt.conflicts, vec!["a.rs", "b/c.rs"]);
+        // Task itself stays approved — TaskMergeAttempted is not a state transition.
+        let task = get_task(&conn, "task1").unwrap().unwrap();
+        assert_eq!(task.status, "approved");
+    }
+
+    #[test]
+    fn task_merged_v2_populates_new_columns() {
+        let mut conn = db();
+        let tx = conn.transaction().unwrap();
+        let ev = task_event(
+            1,
+            "TaskMerged",
+            serde_json::json!({
+                "commit_sha": "abc123",
+                "merge_strategy": "squash",
+                "target_branch": "main",
+                "source_branch": "orca/task1",
+                "parent_commits": ["c0", "c1"],
+            }),
+        );
+        apply_task_event(&tx, &ev).unwrap();
+        tx.commit().unwrap();
+
+        let task = get_task(&conn, "task1").unwrap().unwrap();
+        assert_eq!(task.status, "merged");
+        assert_eq!(task.merged_commit_sha.as_deref(), Some("abc123"));
+        assert_eq!(task.merge_strategy.as_deref(), Some("squash"));
+        assert_eq!(task.merge_target_branch.as_deref(), Some("main"));
+        assert_eq!(task.merged_at, Some(100));
+
+        // Plan's done_task_count incremented.
+        let plan = get_plan(&conn, "p1").unwrap().unwrap();
+        assert_eq!(plan.done_task_count, 1);
+    }
+
+    #[test]
+    fn task_merged_v1_payload_replays_with_default_target_branch() {
+        // v1 events on disk have no target_branch / source_branch / parent_commits — the
+        // applier must still accept them, leaving the new columns NULL.
+        let mut conn = db();
+        let tx = conn.transaction().unwrap();
+        let ev = AppendedEvent {
+            id: "ev_old".into(),
+            aggregate_type: "task".into(),
+            aggregate_id: "task1".into(),
+            seq: 1,
+            event_type: "TaskMerged".into(),
+            version: 1,
+            payload: r#"{"commit_sha":"abc","merge_strategy":"squash"}"#.into(),
+            metadata: "{}".into(),
+            created_at: 50,
+        };
+        apply_task_event(&tx, &ev).unwrap();
+        tx.commit().unwrap();
+        let task = get_task(&conn, "task1").unwrap().unwrap();
+        assert_eq!(task.status, "merged");
+        assert_eq!(task.merge_target_branch, None);
+        assert_eq!(task.merged_at, Some(50));
+    }
 }

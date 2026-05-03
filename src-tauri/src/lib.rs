@@ -1,6 +1,7 @@
 mod db;
 mod events;
 mod gates;
+mod merge;
 mod phases;
 mod pipeline;
 mod prompts;
@@ -87,6 +88,9 @@ pub fn run() {
             commands::list_recent_events,
             commands::get_event_by_id,
             commands::mark_task_merged,
+            commands::analyze_task_merge,
+            commands::execute_task_merge,
+            commands::get_latest_merge_attempt_for_task,
             commands::cancel_task,
             commands::pass_back_to_implementer,
             commands::reject_task,
