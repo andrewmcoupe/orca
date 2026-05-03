@@ -72,30 +72,30 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
   };
 
   return (
-    <section className="space-y-3">
-      <h2 className="text-muted-foreground text-[11px] font-semibold uppercase tracking-wide">
+    <section className="space-y-2">
+      <h2 className="text-muted-foreground/70 font-mono text-[10px] font-medium uppercase tracking-[0.08em]">
         Auditor verdict
       </h2>
-      <div className="bg-muted/20 space-y-3 rounded-md border p-4">
+      <div className="bg-muted/20 space-y-2.5 border p-[14px]">
         <div className="flex flex-wrap items-center gap-2">
           <Badge
             variant="outline"
             className={cn(
-              "h-5 rounded-sm border px-1.5 text-[10px] uppercase tracking-wide",
+              "h-[18px] rounded-sm border px-2 font-mono text-[10px] font-medium uppercase tracking-[0.08em]",
               VERDICT_STYLES[kind] ?? VERDICT_STYLES.revise,
             )}
           >
             {String(v.verdict)}
           </Badge>
-          <span className="text-muted-foreground text-xs tabular-nums">
+          <span className="text-muted-foreground font-mono text-[11px] tabular-nums">
             confidence {Math.round(v.confidence * 100)}%
           </span>
         </div>
         {v.summary.trim() && (
-          <p className="text-sm leading-relaxed">{v.summary}</p>
+          <p className="text-[13px] leading-[1.5]">{v.summary}</p>
         )}
         {v.concerns.length > 0 && (
-          <ul className="space-y-2">
+          <ul className="space-y-1.5">
             {v.concerns.map((c, idx) => (
               <ConcernRow key={idx} taskId={taskId} concern={c} />
             ))}
@@ -186,11 +186,11 @@ function ConcernRow({
     );
   };
   return (
-    <li className="flex items-start gap-2 text-sm">
+    <li className="flex items-start gap-2">
       <Badge
         variant="outline"
         className={cn(
-          "mt-0.5 h-5 rounded-sm border px-1.5 text-[10px] uppercase tracking-wide",
+          "mt-[3px] h-[16px] shrink-0 rounded-sm border px-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em]",
           SEVERITY_STYLES[concern.severity] ?? SEVERITY_STYLES.advisory,
         )}
       >
@@ -198,18 +198,18 @@ function ConcernRow({
       </Badge>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline gap-x-2">
-          <span className="text-xs font-medium">{concern.category}</span>
+          <span className="text-[12px] font-medium">{concern.category}</span>
           {concern.anchor && (
             <button
               type="button"
               onClick={onOpen}
-              className="text-muted-foreground hover:text-foreground font-mono text-[11px] underline-offset-2 hover:underline"
+              className="text-primary/80 hover:text-primary font-mono text-[11px] underline-offset-2 hover:underline"
             >
               {concern.anchor.path}:{concern.anchor.line}
             </button>
           )}
         </div>
-        <p className="text-muted-foreground text-xs leading-relaxed">
+        <p className="text-muted-foreground text-[12px] leading-[1.5]">
           {concern.rationale}
         </p>
       </div>
