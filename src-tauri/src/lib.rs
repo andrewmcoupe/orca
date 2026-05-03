@@ -1,4 +1,5 @@
 mod db;
+mod diff;
 mod events;
 mod gates;
 mod merge;
