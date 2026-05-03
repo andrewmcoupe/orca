@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createRoute, useParams } from "@tanstack/react-router";
-import { GitMerge, Play } from "@phosphor-icons/react";
+import { GitDiff, GitMerge, Play } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Markdown } from "@/components/markdown";
 import { workspaceLayoutRoute } from "./layout";
@@ -87,7 +87,22 @@ function TaskDetailView({
             </div>
             <TaskHeaderMeta task={task} />
           </div>
-          <TaskActionArea task={task} />
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1"
+              onClick={() => {
+                setModalConcernIdx(undefined);
+                setModalOpen(true);
+              }}
+              title="Open the diff modal — full-window side-by-side review"
+            >
+              <GitDiff className="size-3" />
+              Review diff
+            </Button>
+            <TaskActionArea task={task} />
+          </div>
         </div>
         {task.cancel_reason && (
           <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 font-mono text-[11px]">

@@ -112,7 +112,10 @@ export function DiffPanel({ workspaceId, taskId, onOpenModal }: Props) {
         />
       )}
       {collapsed ? (
-        <CollapsedRail onExpand={() => setCollapsed(false)} />
+        <CollapsedRail
+          onExpand={() => setCollapsed(false)}
+          onOpenModal={onOpenModal}
+        />
       ) : (
         <div className="flex min-w-0 flex-1 flex-col">
           <PanelHeader
@@ -134,22 +137,46 @@ export function DiffPanel({ workspaceId, taskId, onOpenModal }: Props) {
   );
 }
 
-function CollapsedRail({ onExpand }: { onExpand: () => void }) {
+function CollapsedRail({
+  onExpand,
+  onOpenModal,
+}: {
+  onExpand: () => void;
+  onOpenModal?: () => void;
+}) {
   return (
-    <button
-      type="button"
-      onClick={onExpand}
-      className="text-muted-foreground hover:text-foreground hover:bg-muted/40 flex h-full w-full flex-col items-center justify-start gap-2 py-3"
-      title="Expand diff panel"
-    >
-      <ArrowsOutSimple className="size-3.5" />
-      <span
-        className="font-mono text-[10px] uppercase tracking-[0.16em]"
-        style={{ writingMode: "vertical-rl" }}
+    <div className="text-muted-foreground flex h-full w-full flex-col items-center gap-2 py-2">
+      <button
+        type="button"
+        onClick={onExpand}
+        className="hover:text-foreground hover:bg-muted/40 flex w-full flex-col items-center gap-2 py-1"
+        title="Expand diff panel"
       >
-        Diff
-      </span>
-    </button>
+        <ArrowsOutSimple className="size-3.5" />
+        <span
+          className="font-mono text-[10px] uppercase tracking-[0.16em]"
+          style={{ writingMode: "vertical-rl" }}
+        >
+          Diff
+        </span>
+      </button>
+      {onOpenModal ? (
+        <button
+          type="button"
+          onClick={onOpenModal}
+          className="hover:text-foreground hover:bg-muted/40 mt-auto flex w-full flex-col items-center gap-2 py-1"
+          title="Review diff in modal"
+        >
+          <CaretRight className="size-3.5" />
+          <span
+            className="font-mono text-[10px] uppercase tracking-[0.16em]"
+            style={{ writingMode: "vertical-rl" }}
+          >
+            Review
+          </span>
+        </button>
+      ) : null}
+    </div>
   );
 }
 
