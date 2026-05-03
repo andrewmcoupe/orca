@@ -11,6 +11,7 @@ import { usePlans } from "@/features/plans/hooks";
 import { PlanRow } from "@/features/plans/components/plan-row";
 import { PlansFilters } from "@/features/plans/components/plans-filters";
 import { NewPlanDialog } from "@/features/plans/components/new-plan-dialog";
+import { InProgressBriefings } from "@/features/briefings/components/in-progress-briefings";
 import { useDebouncedValue } from "@/lib/hooks/use-debounced-value";
 import type { Plan } from "@/features/plans/types";
 import { Button } from "@/components/ui/button";
@@ -90,14 +91,34 @@ function PlansListPage() {
         }
         query={localQuery}
         onQueryChange={setLocalQuery}
-        onNewPlan={() => setDialogOpen(true)}
+        onNewBriefing={() =>
+          navigate({
+            to: "/workspace/$workspaceId/briefings/new",
+            params: { workspaceId },
+          })
+        }
+        onNewManualPlan={() => setDialogOpen(true)}
+      />
+      <InProgressBriefings
+        onContinue={(briefingId) =>
+          navigate({
+            to: "/workspace/$workspaceId/briefings/new",
+            params: { workspaceId },
+            search: { id: briefingId },
+          })
+        }
       />
       {plans.isLoading ? (
         <p className="text-muted-foreground text-sm">Loading…</p>
       ) : filtered.length === 0 ? (
         <EmptyState
           hasAnyPlans={(plans.data ?? []).length > 0}
-          onNewPlan={() => setDialogOpen(true)}
+          onNewPlan={() =>
+            navigate({
+              to: "/workspace/$workspaceId/briefings/new",
+              params: { workspaceId },
+            })
+          }
         />
       ) : (
         <div className="bg-card border">
@@ -140,10 +161,11 @@ function EmptyState({
       {!hasAnyPlans && (
         <Button
           type="button"
+          size="sm"
           onClick={onNewPlan}
-          className="text-primary mt-3 text-sm hover:underline"
+          className="mt-3"
         >
-          + New plan
+          Start a briefing
         </Button>
       )}
     </div>

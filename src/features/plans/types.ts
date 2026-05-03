@@ -1,4 +1,9 @@
-export type PlanSource = "manual" | "prd_file" | "linear" | "github_issue";
+export type PlanSource =
+  | "manual"
+  | "prd_file"
+  | "linear"
+  | "github_issue"
+  | "briefing";
 
 export type PlanStatus =
   | "active"

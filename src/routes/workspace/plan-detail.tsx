@@ -1,4 +1,5 @@
-import { createRoute, useNavigate, useParams } from "@tanstack/react-router";
+import { createRoute, Link, useNavigate, useParams } from "@tanstack/react-router";
+import { Sparkle } from "@phosphor-icons/react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Markdown } from "@/components/markdown";
@@ -56,6 +57,7 @@ function PlanDetailView({
               Updated {formatRelativeTime(plan.updated_at)} · Created{" "}
               {formatRelativeTime(plan.created_at)}
             </p>
+            <BriefingProvenance plan={plan} workspaceId={workspaceId} />
           </div>
           <PlanActions plan={plan} />
         </div>
@@ -131,6 +133,38 @@ function PlanDetailView({
         }
       />
     </div>
+  );
+}
+
+/**
+ * For briefing-sourced plans, surface a small link to the briefing transcript so
+ * users can audit "why does this plan look the way it does" — the assumptions
+ * the model made and the pushbacks the user gave during refinement.
+ */
+function BriefingProvenance({
+  plan,
+  workspaceId,
+}: {
+  plan: Plan;
+  workspaceId: string;
+}) {
+  if (plan.source !== "briefing") return null;
+  const briefingId =
+    typeof plan.source_metadata?.briefing_id === "string"
+      ? (plan.source_metadata.briefing_id as string)
+      : null;
+  if (!briefingId) return null;
+  return (
+    <p className="mt-1.5">
+      <Link
+        to="/workspace/$workspaceId/briefings/$briefingId"
+        params={{ workspaceId, briefingId }}
+        className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-[11px] hover:underline"
+      >
+        <Sparkle className="size-3" weight="fill" />
+        Created from briefing
+      </Link>
+    </p>
   );
 }
 

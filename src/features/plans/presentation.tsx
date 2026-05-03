@@ -4,6 +4,7 @@ import {
   Kanban,
   LinkSimple,
   PencilSimple,
+  Sparkle,
   type Icon,
 } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +16,7 @@ const SOURCE_ICONS: Record<PlanSource, Icon> = {
   prd_file: FileText,
   linear: LinkSimple,
   github_issue: GithubLogo,
+  briefing: Sparkle,
 };
 
 const SOURCE_LABEL: Record<PlanSource, string> = {
@@ -22,6 +24,7 @@ const SOURCE_LABEL: Record<PlanSource, string> = {
   prd_file: "PRD",
   linear: "Linear",
   github_issue: "GitHub",
+  briefing: "Briefing",
 };
 
 export function PlanSourceIcon({

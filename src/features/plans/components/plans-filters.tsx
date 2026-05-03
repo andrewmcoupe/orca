@@ -1,6 +1,12 @@
-import { MagnifyingGlass } from "@phosphor-icons/react";
+import { CaretDown, MagnifyingGlass, Sparkle } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { PlansSearch } from "@/routes/workspace/plans-list";
 
@@ -17,13 +23,17 @@ export function PlansFilters({
   onStatusChange,
   query,
   onQueryChange,
-  onNewPlan,
+  onNewBriefing,
+  onNewManualPlan,
 }: {
   status: PlansSearch["status"];
   onStatusChange: (status: PlansSearch["status"]) => void;
   query: string;
   onQueryChange: (q: string) => void;
-  onNewPlan: () => void;
+  /** Primary action: open the briefing setup flow. */
+  onNewBriefing: () => void;
+  /** Secondary action: open the manual new-plan dialog. */
+  onNewManualPlan: () => void;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -38,9 +48,63 @@ export function PlansFilters({
         />
       </div>
       <SegmentedStatus value={status} onChange={onStatusChange} />
-      <Button size="sm" onClick={onNewPlan}>
-        + New plan
+      <NewPlanSplitButton
+        onNewBriefing={onNewBriefing}
+        onNewManualPlan={onNewManualPlan}
+      />
+    </div>
+  );
+}
+
+function NewPlanSplitButton({
+  onNewBriefing,
+  onNewManualPlan,
+}: {
+  onNewBriefing: () => void;
+  onNewManualPlan: () => void;
+}) {
+  return (
+    <div className="inline-flex">
+      <Button
+        size="sm"
+        onClick={onNewBriefing}
+        className="rounded-r-none pr-2.5"
+        title="Generate a plan from a feature description (recommended)"
+      >
+        <Sparkle className="size-3.5" weight="fill" />
+        New plan from briefing
       </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              size="sm"
+              className="border-primary-foreground/20 -ml-px rounded-l-none border-l px-1.5"
+              aria-label="More plan creation options"
+            >
+              <CaretDown className="size-3" />
+            </Button>
+          }
+        />
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={onNewBriefing}>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">New plan from briefing</span>
+              <span className="text-muted-foreground text-xs">
+                Recommended for non-trivial work
+              </span>
+            </div>
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onNewManualPlan}>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">New plan (manual)</span>
+              <span className="text-muted-foreground text-xs">
+                Add tasks one at a time yourself
+              </span>
+            </div>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }
