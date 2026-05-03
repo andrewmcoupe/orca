@@ -15,9 +15,15 @@ export type ActiveWorkspaceInfo = {
 
 export type PhaseType = "test_author" | "implementer" | "auditor";
 
+export type ModelChoice = {
+  provider: string;
+  model: string;
+};
+
 export type PhaseConfig = {
   phases: PhaseType[];
   gate_overrides: Record<string, string[]> | null;
+  models?: Record<string, ModelChoice> | null;
 };
 
 export type GateConfig = {
@@ -29,4 +35,5 @@ export type WorkspaceSettings = {
   default_phase_config: PhaseConfig;
   gates: Record<string, GateConfig>;
   phase_gates: Record<string, string[]>;
+  default_models: Record<string, ModelChoice>;
 };

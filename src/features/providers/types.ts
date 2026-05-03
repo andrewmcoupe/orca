@@ -37,3 +37,8 @@ export type ProviderOptionsSchema = {
   schema: OptionDecl[];
   defaults: Record<string, unknown>;
 };
+
+export type KnownModel = {
+  id: string;
+  label: string;
+};

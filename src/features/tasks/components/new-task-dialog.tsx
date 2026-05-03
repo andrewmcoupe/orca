@@ -12,8 +12,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useCreateTask } from "@/features/tasks/hooks";
-import type { PhaseConfig, PhaseType, Task } from "@/features/tasks/types";
+import type { ModelChoice, PhaseConfig, PhaseType, Task } from "@/features/tasks/types";
 import { useActiveWorkspace, useWorkspaceSettings } from "@/features/workspaces/hooks";
+import { ModelSelect } from "@/features/providers/components/model-select";
 
 function buildPhases(testAuthor: boolean, auditor: boolean): PhaseType[] {
   const out: PhaseType[] = [];
@@ -40,12 +41,16 @@ export function NewTaskDialog({
   const [overrideEnabled, setOverrideEnabled] = useState(false);
   const [includeTestAuthor, setIncludeTestAuthor] = useState(false);
   const [includeAuditor, setIncludeAuditor] = useState(true);
+  const [modelOverrides, setModelOverrides] = useState<
+    Record<string, ModelChoice>
+  >({});
   const create = useCreateTask();
   const activeWs = useActiveWorkspace();
   const settings = useWorkspaceSettings(activeWs.data?.id);
 
   const defaultPhases =
     settings.data?.default_phase_config.phases ?? ["implementer", "auditor"];
+  const workspaceDefaultModels = settings.data?.default_models ?? {};
 
   const reset = () => {
     setTitle("");
@@ -54,16 +59,27 @@ export function NewTaskDialog({
     setOverrideEnabled(false);
     setIncludeTestAuthor(defaultPhases.includes("test_author"));
     setIncludeAuditor(defaultPhases.includes("auditor"));
+    setModelOverrides({});
     create.reset();
   };
+
+  const phasesForModelControls = buildPhases(
+    overrideEnabled ? includeTestAuthor : defaultPhases.includes("test_author"),
+    overrideEnabled ? includeAuditor : defaultPhases.includes("auditor"),
+  );
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
-    const phaseConfig: PhaseConfig | undefined = overrideEnabled
+    const hasModelOverrides = Object.keys(modelOverrides).length > 0;
+    const buildPhaseConfig = overrideEnabled || hasModelOverrides;
+    const phaseConfig: PhaseConfig | undefined = buildPhaseConfig
       ? {
-          phases: buildPhases(includeTestAuthor, includeAuditor),
+          phases: overrideEnabled
+            ? buildPhases(includeTestAuthor, includeAuditor)
+            : defaultPhases,
           gate_overrides: null,
+          models: hasModelOverrides ? modelOverrides : null,
         }
       : undefined;
     const task = await create.mutateAsync({
@@ -170,6 +186,42 @@ export function NewTaskDialog({
                       </label>
                     </div>
                   )}
+
+                  <div className="border-t pt-3 space-y-2">
+                    <div className="text-xs font-medium">Model overrides</div>
+                    <p className="text-muted-foreground text-xs">
+                      Pick a model per phase, or inherit the workspace default.
+                    </p>
+                    <div className="space-y-2">
+                      {phasesForModelControls.map((phase) => {
+                        const inherited = workspaceDefaultModels[phase];
+                        const inheritLabel = inherited
+                          ? `Workspace default (${inherited.model})`
+                          : "Workspace default (provider default)";
+                        return (
+                          <div
+                            key={phase}
+                            className="grid grid-cols-[110px_1fr] items-center gap-2"
+                          >
+                            <Label className="font-mono text-xs">{phase}</Label>
+                            <ModelSelect
+                              size="sm"
+                              value={modelOverrides[phase] ?? null}
+                              onChange={(next) =>
+                                setModelOverrides((prev) => {
+                                  const out = { ...prev };
+                                  if (next) out[phase] = next;
+                                  else delete out[phase];
+                                  return out;
+                                })
+                              }
+                              nullLabel={inheritLabel}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

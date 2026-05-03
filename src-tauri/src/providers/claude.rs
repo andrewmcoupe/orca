@@ -3,7 +3,9 @@
 
 use serde_json::{json, Value};
 
-use super::{Invocation, OptionDecl, Provider, ProviderEvent, ProviderStatus, SelectChoice};
+use super::{
+    Invocation, KnownModel, OptionDecl, Provider, ProviderEvent, ProviderStatus, SelectChoice,
+};
 
 pub struct ClaudeProvider;
 
@@ -139,6 +141,23 @@ impl Provider for ClaudeProvider {
             stdin: Some(prompt.to_string()),
             env: Default::default(),
         }
+    }
+
+    fn known_models(&self) -> Vec<KnownModel> {
+        vec![
+            KnownModel {
+                id: "claude-opus-4-5".into(),
+                label: "Claude Opus 4.5".into(),
+            },
+            KnownModel {
+                id: "claude-sonnet-4-5".into(),
+                label: "Claude Sonnet 4.5".into(),
+            },
+            KnownModel {
+                id: "claude-haiku-4-5".into(),
+                label: "Claude Haiku 4.5".into(),
+            },
+        ]
     }
 
     fn parse_line(&self, line: &str) -> Vec<ProviderEvent> {

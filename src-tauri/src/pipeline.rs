@@ -20,7 +20,7 @@ use crate::events::projections;
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::gates::{self, GateResult};
 use crate::phases::runtime::{append_phase_run_step, current_seq};
-use crate::settings::{PhaseConfig, PhaseType, WorkspaceSettings};
+use crate::settings::{ModelChoice, PhaseConfig, PhaseType, WorkspaceSettings};
 use crate::subprocess::ChildTracker;
 use crate::workspace_db::open_workspace_db;
 use crate::{ActiveWorkspaceState, GlobalDb};
@@ -187,18 +187,53 @@ async fn dispatch_phase(
     is_retry: bool,
     retry_context: Option<String>,
 ) -> Result<String, PipelineError> {
+    let (provider_id, options) = resolve_model_for_phase(&app, &task_id, phase)?;
     crate::commands::start_real_phase(
         app,
         task_id,
         phase.as_str().to_string(),
-        None,
-        None,
+        provider_id,
+        options,
         Some(is_retry),
         retry_context,
         None,
     )
     .await
     .map_err(PipelineError::Dispatch)
+}
+
+/// Resolve the (provider, model) for a phase using the precedence:
+/// task `phase_config.models[phase]` > workspace `default_models[phase]` > None
+/// (caller falls back to provider's hardcoded default).
+fn resolve_model_for_phase(
+    app: &AppHandle,
+    task_id: &str,
+    phase: PhaseType,
+) -> Result<(Option<String>, Option<serde_json::Value>), PipelineError> {
+    let (phase_config_value, workspace_id) = read_task_pipeline_state(app, task_id)?;
+    let task_config = parse_phase_config(&phase_config_value);
+    let phase_key = phase.as_str();
+
+    let task_choice = task_config
+        .models
+        .as_ref()
+        .and_then(|m| m.get(phase_key))
+        .cloned();
+
+    let resolved: Option<ModelChoice> = if task_choice.is_some() {
+        task_choice
+    } else {
+        let settings = load_workspace_settings(app, &workspace_id);
+        settings.default_models.get(phase_key).cloned()
+    };
+
+    match resolved {
+        Some(c) => Ok((
+            Some(c.provider),
+            Some(serde_json::json!({ "model": c.model })),
+        )),
+        None => Ok((None, None)),
+    }
 }
 
 /// Hook fired after a `PhaseRunCompleted` event commits. For non-auditor phases: run
@@ -437,6 +472,7 @@ mod tests {
         PhaseConfig {
             phases: phases.to_vec(),
             gate_overrides: None,
+            models: None,
         }
     }
 
@@ -522,6 +558,7 @@ mod tests {
         let pc = PhaseConfig {
             phases: vec![PhaseType::Implementer],
             gate_overrides: Some(overrides),
+            models: None,
         };
         let g = gates_for_phase(&s, &pc, PhaseType::Implementer);
         assert_eq!(g.len(), 1);

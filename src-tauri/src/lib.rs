@@ -83,6 +83,7 @@ pub fn run() {
             commands::list_providers,
             commands::refresh_providers,
             commands::get_provider_options,
+            commands::list_models,
             commands::list_recent_events,
             commands::get_event_by_id,
             commands::mark_task_merged,

@@ -14,7 +14,7 @@ use crate::events::projections::{
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::events::{append::append_events_in_tx, AppendError};
 use crate::phases::{self, InflightRuns};
-use crate::providers::{self, OptionDecl, ProviderCache, ProviderStatus};
+use crate::providers::{self, KnownModel, OptionDecl, ProviderCache, ProviderStatus};
 use crate::recent_events::{self, RecentEventRow};
 use crate::subprocess::ChildTracker;
 use crate::workspace_db::open_workspace_db;
@@ -1074,6 +1074,13 @@ pub fn get_provider_options(provider_id: String) -> Result<ProviderOptionsSchema
         schema: p.options_schema(),
         defaults: p.default_options(),
     })
+}
+
+#[tauri::command]
+pub fn list_models(provider_id: String) -> Result<Vec<KnownModel>, String> {
+    let p = providers::get(&provider_id)
+        .ok_or_else(|| format!("unknown provider: {}", provider_id))?;
+    Ok(p.known_models())
 }
 
 // ======================================================================

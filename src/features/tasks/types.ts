@@ -9,9 +9,15 @@ export type TaskStatus =
 
 export type PhaseType = "test_author" | "implementer" | "auditor";
 
+export type ModelChoice = {
+  provider: string;
+  model: string;
+};
+
 export type PhaseConfig = {
   phases: PhaseType[];
   gate_overrides: Record<string, string[]> | null;
+  models?: Record<string, ModelChoice> | null;
 };
 
 export type AuditorVerdictKind = "approve" | "revise" | "reject";

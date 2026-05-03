@@ -35,6 +35,13 @@ impl PhaseType {
     }
 }
 
+/// A specific model choice: which provider, which model id within that provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelChoice {
+    pub provider: String,
+    pub model: String,
+}
+
 /// Phase configuration for a single task (or workspace default). The phase types are a
 /// closed enum — what's configurable is which phases run, in what order, and which gates
 /// run after which phases for this scope.
@@ -44,6 +51,10 @@ pub struct PhaseConfig {
     /// Per-phase gate name overrides. `None` means "use workspace default".
     #[serde(default)]
     pub gate_overrides: Option<HashMap<String, Vec<String>>>,
+    /// Per-phase model overrides for this task. `None` means "inherit workspace default".
+    /// Keys are phase names (e.g. "implementer").
+    #[serde(default)]
+    pub models: Option<HashMap<String, ModelChoice>>,
 }
 
 impl PhaseConfig {
@@ -52,6 +63,7 @@ impl PhaseConfig {
         Self {
             phases: vec![PhaseType::Implementer, PhaseType::Auditor],
             gate_overrides: None,
+            models: None,
         }
     }
 }
@@ -74,6 +86,11 @@ pub struct WorkspaceSettings {
     /// Which gates run after which phase: `{ phase_name -> [gate_name, ...] }`.
     #[serde(default)]
     pub phase_gates: HashMap<String, Vec<String>>,
+    /// Per-phase default model. `{ phase_name -> { provider, model } }`. Tasks that do
+    /// not override fall back here; phases without an entry fall back to the provider's
+    /// hardcoded default.
+    #[serde(default)]
+    pub default_models: HashMap<String, ModelChoice>,
 }
 
 impl Default for WorkspaceSettings {
@@ -82,6 +99,7 @@ impl Default for WorkspaceSettings {
             default_phase_config: PhaseConfig::bundled_default(),
             gates: HashMap::new(),
             phase_gates: HashMap::new(),
+            default_models: HashMap::new(),
         }
     }
 }
@@ -121,6 +139,7 @@ mod tests {
         let cfg = PhaseConfig {
             phases: vec![PhaseType::TestAuthor, PhaseType::Implementer, PhaseType::Auditor],
             gate_overrides: None,
+            models: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: PhaseConfig = serde_json::from_str(&json).unwrap();

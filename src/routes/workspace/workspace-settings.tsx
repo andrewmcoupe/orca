@@ -6,6 +6,7 @@ import { Separator } from "@/components/ui/separator";
 import { eventsApi } from "@/features/events/api";
 import { useRemoveWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
 import { PhaseConfigPanel } from "@/features/workspaces/components/phase-config-panel";
+import { DefaultModelsPanel } from "@/features/workspaces/components/default-models-panel";
 import { GateConfigPanel } from "@/features/workspaces/components/gate-config-panel";
 import { PromptsPanel } from "@/features/workspaces/components/prompts-panel";
 import { workspaceLayoutRoute } from "./layout";
@@ -43,6 +44,13 @@ function WorkspaceSettingsPage() {
         description="Phases that new tasks inherit. Tasks can override via the Advanced panel on creation."
       >
         <PhaseConfigPanel workspaceId={ws.id} />
+      </SettingsSection>
+
+      <SettingsSection
+        title="Default models"
+        description="Per-phase default model. New tasks inherit these; tasks can override individually."
+      >
+        <DefaultModelsPanel workspaceId={ws.id} />
       </SettingsSection>
 
       <SettingsSection

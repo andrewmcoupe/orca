@@ -73,6 +73,14 @@ pub struct SelectChoice {
     pub label: String,
 }
 
+/// A model offered by a provider. Surfaced via `list_models` so the UI can render
+/// dropdowns without provider-specific logic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnownModel {
+    pub id: String,
+    pub label: String,
+}
+
 /// Implemented once per provider.
 pub trait Provider: Send + Sync {
     fn id(&self) -> &'static str;
@@ -94,6 +102,13 @@ pub trait Provider: Send + Sync {
     /// Parse one line of streaming output. Returns zero or more normalised events.
     /// Stateless across calls — providers should be line-buffered upstream.
     fn parse_line(&self, line: &str) -> Vec<ProviderEvent>;
+
+    /// Known models for this provider. Default: empty (caller treats as "unknown — use
+    /// the provider's `default_options().model`"). Providers with a fixed catalogue
+    /// (e.g. Claude) override this.
+    fn known_models(&self) -> Vec<KnownModel> {
+        Vec::new()
+    }
 }
 
 // ---------- Registry ----------
