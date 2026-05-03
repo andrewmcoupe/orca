@@ -14,13 +14,13 @@ export function PlanRow({
     <Link
       to="/workspace/$workspaceId/plan/$planId"
       params={{ workspaceId, planId: plan.id }}
-      className="hover:bg-muted/40 group block border-b px-3 py-3 transition-colors last:border-b-0"
+      className="hover:bg-muted/40 group block border-b py-2 px-3 transition-colors last:border-b-0"
     >
       <div className="flex items-center gap-3">
         <PlanSourceIcon source={plan.source} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h3 className="truncate text-sm font-medium">{plan.title}</h3>
+            <h3 className="truncate text-xs font-medium">{plan.title}</h3>
             <PlanStatusBadge status={plan.status} />
           </div>
           <TaskSummary plan={plan} />
@@ -49,7 +49,7 @@ function TaskSummary({ plan }: { plan: Plan }) {
   }
 
   return (
-    <p className="text-muted-foreground/90 mt-0.5 flex items-center gap-2 text-xs">
+    <p className="text-muted-foreground/90 mt-0.5 flex items-center gap-2 text-[11px]">
       <span className="text-muted-foreground tabular-nums">{total} tasks</span>
       {running > 0 && (
         <>

@@ -84,6 +84,7 @@ pub fn run() {
             commands::refresh_providers,
             commands::get_provider_options,
             commands::list_recent_events,
+            commands::get_event_by_id,
             commands::mark_task_merged,
             commands::cancel_task,
             commands::pass_back_to_implementer,

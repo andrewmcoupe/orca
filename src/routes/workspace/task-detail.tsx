@@ -24,10 +24,14 @@ function TaskDetailPage() {
   const taskQ = useTask(taskId);
 
   if (taskQ.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading task…</div>;
+    return (
+      <div className="p-6 text-sm text-muted-foreground">Loading task…</div>
+    );
   }
   if (!taskQ.data) {
-    return <div className="p-6 text-sm text-muted-foreground">Task not found.</div>;
+    return (
+      <div className="p-6 text-sm text-muted-foreground">Task not found.</div>
+    );
   }
   return (
     <TaskDetailView
@@ -55,7 +59,7 @@ function TaskDetailView({
   const anyRunning = runs.some((r) => r.status === "running");
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-6">
+    <div className="space-y-6 p-4">
       <Link
         to="/workspace/$workspaceId/plan/$planId"
         params={{ workspaceId, planId }}
@@ -87,7 +91,7 @@ function TaskDetailView({
           </div>
         </div>
         {task.cancel_reason && (
-          <p className="bg-zinc-500/10 text-muted-foreground rounded-md border px-3 py-2 text-xs">
+          <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-xs">
             <span className="font-medium">Cancelled:</span> {task.cancel_reason}
           </p>
         )}
@@ -98,7 +102,7 @@ function TaskDetailView({
           <h2 className="text-muted-foreground mb-2 text-[11px] font-semibold uppercase tracking-wide">
             Spec
           </h2>
-          <div className="bg-muted/20 rounded-md border p-4">
+          <div className="bg-muted/20 border p-2">
             <Markdown>{task.spec_markdown}</Markdown>
           </div>
         </section>
@@ -119,7 +123,11 @@ function TaskDetailView({
               className="gap-1"
             >
               <Play className="size-3" />
-              {anyRunning ? "Running…" : runs.length === 0 ? "Start pipeline" : "Restart"}
+              {anyRunning
+                ? "Running…"
+                : runs.length === 0
+                  ? "Start pipeline"
+                  : "Restart"}
             </Button>
             <Button
               variant="outline"
@@ -138,10 +146,7 @@ function TaskDetailView({
             {String(startFake.error ?? startTask.error)}
           </p>
         )}
-        <PipelineCards
-          phaseConfig={task.phase_config}
-          phaseRuns={runs}
-        />
+        <PipelineCards phaseConfig={task.phase_config} phaseRuns={runs} />
       </section>
 
       <section className="space-y-3">

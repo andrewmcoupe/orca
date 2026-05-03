@@ -13,6 +13,7 @@ import { PlansFilters } from "@/features/plans/components/plans-filters";
 import { NewPlanDialog } from "@/features/plans/components/new-plan-dialog";
 import { useDebouncedValue } from "@/lib/hooks/use-debounced-value";
 import type { Plan } from "@/features/plans/types";
+import { Button } from "@/components/ui/button";
 
 const plansSearchSchema = z.object({
   status: z
@@ -26,7 +27,9 @@ export type PlansSearch = z.infer<typeof plansSearchSchema>;
 function filterPlans(plans: Plan[], search: PlansSearch): Plan[] {
   const q = search.q.trim().toLowerCase();
   return plans
-    .filter((p) => (search.status === "all" ? true : p.status === search.status))
+    .filter((p) =>
+      search.status === "all" ? true : p.status === search.status,
+    )
     .filter((p) => {
       if (!q) return true;
       return (
@@ -70,7 +73,7 @@ function PlansListPage() {
   );
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4 p-6">
+    <div className="space-y-4 p-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold tracking-tight">Plans</h1>
         <span className="text-muted-foreground text-xs tabular-nums">
@@ -97,7 +100,7 @@ function PlansListPage() {
           onNewPlan={() => setDialogOpen(true)}
         />
       ) : (
-        <div className="bg-card rounded-md border">
+        <div className="bg-card border">
           {filtered.map((plan) => (
             <PlanRow key={plan.id} plan={plan} workspaceId={workspaceId} />
           ))}
@@ -135,13 +138,13 @@ function EmptyState({
           : "Create your first plan to start grouping tasks."}
       </p>
       {!hasAnyPlans && (
-        <button
+        <Button
           type="button"
           onClick={onNewPlan}
           className="text-primary mt-3 text-sm hover:underline"
         >
           + New plan
-        </button>
+        </Button>
       )}
     </div>
   );

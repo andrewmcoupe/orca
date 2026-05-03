@@ -4,12 +4,7 @@ import { cn } from "@/lib/utils";
 import type { PhaseConfig, PhaseType } from "@/features/tasks/types";
 import type { PhaseRun } from "../types";
 
-type PhaseStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled";
+type PhaseStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 const PHASE_STATUS_STYLES: Record<PhaseStatus, string> = {
   pending: "bg-muted/40 text-muted-foreground border-dashed",
@@ -117,7 +112,7 @@ function PhaseCardRow({
         disabled={!clickable}
         onClick={() => latest && onSelectRun?.(latest.id)}
         className={cn(
-          "flex min-w-[160px] flex-col items-start gap-1 rounded-md border p-3 text-left transition-colors",
+          "flex min-w-[160px] flex-col items-start gap-1 border p-3 text-left transition-colors",
           PHASE_STATUS_STYLES[status],
           clickable && "hover:bg-muted/40 cursor-pointer",
           !clickable && "cursor-default",
@@ -127,7 +122,7 @@ function PhaseCardRow({
           <span className="font-mono text-sm">{phase}</span>
           <Badge
             variant="outline"
-            className="ml-auto h-5 rounded-sm border px-1.5 text-[10px] uppercase tracking-wide"
+            className="ml-auto h-5 border px-1.5 text-[10px] uppercase tracking-wide"
           >
             {status}
           </Badge>

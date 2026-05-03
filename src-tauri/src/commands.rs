@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::sync::Arc;
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -1806,6 +1806,49 @@ pub fn list_recent_events(
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
     let aw = require_active_workspace(&mut guard)?;
     recent_events::list_recent(&aw.conn, limit).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventDetail {
+    pub id: String,
+    pub aggregate_type: String,
+    pub aggregate_id: String,
+    pub seq: i64,
+    pub event_type: String,
+    pub version: i64,
+    pub payload: String,
+    pub metadata: String,
+    pub created_at: i64,
+}
+
+#[tauri::command]
+pub fn get_event_by_id(
+    event_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<Option<EventDetail>, String> {
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    aw.conn
+        .query_row(
+            "SELECT id, aggregate_type, aggregate_id, seq, event_type, version, payload, metadata, created_at
+             FROM events WHERE id = ?1",
+            rusqlite::params![event_id],
+            |r| {
+                Ok(EventDetail {
+                    id: r.get(0)?,
+                    aggregate_type: r.get(1)?,
+                    aggregate_id: r.get(2)?,
+                    seq: r.get(3)?,
+                    event_type: r.get(4)?,
+                    version: r.get(5)?,
+                    payload: r.get(6)?,
+                    metadata: r.get(7)?,
+                    created_at: r.get(8)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
 }
 
 // ======================================================================

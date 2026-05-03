@@ -17,10 +17,14 @@ function PlanDetailPage() {
   const planQ = usePlan(planId);
 
   if (planQ.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading plan…</div>;
+    return (
+      <div className="p-6 text-sm text-muted-foreground">Loading plan…</div>
+    );
   }
   if (!planQ.data) {
-    return <div className="p-6 text-sm text-muted-foreground">Plan not found.</div>;
+    return (
+      <div className="p-6 text-sm text-muted-foreground">Plan not found.</div>
+    );
   }
   return <PlanDetailView plan={planQ.data} workspaceId={workspaceId} />;
 }
@@ -37,7 +41,7 @@ function PlanDetailView({
   const navigate = useNavigate();
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-6">
+    <div className="space-y-6 p-4">
       <header className="space-y-3">
         <div className="flex items-start gap-3">
           <PlanSourceIcon source={plan.source} className="mt-1.5 size-5" />
@@ -56,12 +60,12 @@ function PlanDetailView({
           <PlanActions plan={plan} />
         </div>
         {plan.pause_reason && (
-          <p className="bg-amber-500/10 text-amber-800 dark:text-amber-200 rounded-md border border-amber-500/30 px-3 py-2 text-xs">
+          <p className="bg-amber-500/10 text-amber-800 dark:text-amber-200 border border-amber-500/30 px-3 py-2 text-xs">
             <span className="font-medium">Paused:</span> {plan.pause_reason}
           </p>
         )}
         {plan.cancel_reason && (
-          <p className="bg-zinc-500/10 text-muted-foreground rounded-md border px-3 py-2 text-xs">
+          <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-xs">
             <span className="font-medium">Cancelled:</span> {plan.cancel_reason}
           </p>
         )}
@@ -103,7 +107,7 @@ function PlanDetailView({
             </p>
           </div>
         ) : (
-          <div className="bg-card rounded-md border">
+          <div className="bg-card border">
             {(tasks.data ?? []).map((task) => (
               <TaskRow key={task.id} task={task} workspaceId={workspaceId} />
             ))}

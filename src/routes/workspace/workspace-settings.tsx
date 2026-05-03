@@ -25,7 +25,7 @@ function WorkspaceSettingsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-8 p-6">
+    <div className="space-y-8 p-4">
       <header>
         <h1 className="text-xl font-semibold tracking-tight">
           Workspace settings

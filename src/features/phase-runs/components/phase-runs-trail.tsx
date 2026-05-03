@@ -14,9 +14,7 @@ export function PhaseRunsTrail({ phaseRuns }: { phaseRuns: PhaseRun[] }) {
   }
 
   // Chronological — oldest first, matching the brief's "audit trail" framing.
-  const ordered = [...phaseRuns].sort(
-    (a, b) => a.started_at - b.started_at,
-  );
+  const ordered = [...phaseRuns].sort((a, b) => a.started_at - b.started_at);
   const indexById = new Map<string, number>();
   ordered.forEach((r, i) => indexById.set(r.id, i + 1));
 
@@ -48,15 +46,15 @@ export function PhaseRunsTrail({ phaseRuns }: { phaseRuns: PhaseRun[] }) {
                   onClick={() =>
                     setExpanded((cur) => (cur === run.id ? null : run.id))
                   }
-                  className="hover:bg-muted/40 flex w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-xs"
+                  className="hover:bg-muted/40 flex w-full items-center gap-2 border px-3 py-2 text-left text-xs"
                 >
                   <span className="text-muted-foreground tabular-nums">
                     #{i + 1}
                   </span>
-                  <span className="font-mono">{run.phase}</span>
-                  <span className="text-muted-foreground">
-                    {run.status}
+                  <span className="font-mono text-muted-foreground">
+                    {run.phase}
                   </span>
+                  <span className="text-muted-foreground/40">{run.status}</span>
                   {retryOfIdx && (
                     <span className="text-muted-foreground inline-flex items-center gap-1">
                       <ArrowUUpLeft className="size-3" />

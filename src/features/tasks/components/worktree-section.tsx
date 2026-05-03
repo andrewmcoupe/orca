@@ -30,9 +30,9 @@ export function WorktreeSection({ task }: { task: Task }) {
           "This worktree has uncommitted changes. Delete anyway?",
         );
         if (ok) {
-          await remove.mutateAsync({ taskId: task.id, force: true }).catch(
-            () => {},
-          );
+          await remove
+            .mutateAsync({ taskId: task.id, force: true })
+            .catch(() => {});
         }
       }
     }
@@ -45,7 +45,7 @@ export function WorktreeSection({ task }: { task: Task }) {
   };
 
   return (
-    <div className="bg-muted/20 space-y-1 rounded-md border p-3 text-xs">
+    <div className="bg-muted/20 space-y-1 border p-3 text-xs">
       <div className="text-muted-foreground text-[11px] font-medium uppercase tracking-wide">
         Worktree
       </div>
