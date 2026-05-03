@@ -1,5 +1,6 @@
 mod db;
 mod diff;
+mod diff_service;
 mod events;
 mod gates;
 mod merge;
@@ -51,6 +52,7 @@ pub fn run() {
             app.manage(ActiveWorkspaceState(Mutex::new(None)));
             app.manage(tracker.clone());
             app.manage(InflightRuns::new());
+            app.manage(diff_service::DiffCache::new());
             // Detect providers once on startup; the result populates the cache for the
             // session and is refreshed on demand from the Settings panel.
             app.manage(ProviderCache(Mutex::new(providers::detect_providers())));
@@ -107,6 +109,9 @@ pub fn run() {
             commands::get_prompt,
             commands::save_prompt,
             commands::reset_prompt,
+            diff_service::get_task_diff,
+            diff_service::refresh_task_diff,
+            diff_service::get_unchanged_file_content,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -33,6 +33,9 @@ tokio-util = "0.7"
 git2 = { version = "0.19", default-features = false }
 handlebars = "5"
 sha2 = "0.10"
+# `default-fancy` skips the C-based onig regex (heavy to build) and ships the
+# bundled syntaxes/themes — no external files at runtime.
+syntect = { version = "5", default-features = false, features = ["default-fancy", "html"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

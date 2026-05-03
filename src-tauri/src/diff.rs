@@ -21,8 +21,15 @@
 
 use std::path::{Path, PathBuf};
 
+use std::sync::OnceLock;
+
 use git2::{BranchType, Delta, DiffFindOptions, DiffOptions, Oid, Patch, Repository};
 use serde::{Deserialize, Serialize};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Theme, ThemeSet};
+use syntect::html::{styled_line_to_highlighted_html, IncludeBackground};
+use syntect::parsing::SyntaxSet;
+use syntect::util::LinesWithEndings;
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -649,6 +656,236 @@ fn read_blob_at_path(repo_root: &Path, commit_sha: &str, relative_path: &str) ->
 }
 
 // ---------------------------------------------------------------------------
+// Syntax highlighting (syntect)
+// ---------------------------------------------------------------------------
+
+/// Diff with every renderable string pre-highlighted into HTML. The frontend just
+/// `dangerouslySetInnerHTML`s the spans into a styled container — no client-side
+/// parsing or transformation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HighlightedTaskDiff {
+    pub task_id: String,
+    pub base_commit: String,
+    pub head_commit: String,
+    pub source: DiffSource,
+    pub files: Vec<HighlightedDiffFile>,
+    pub computed_at: i64,
+    /// Aggregate counters across all files; UI uses these for the panel header.
+    pub additions: usize,
+    pub deletions: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HighlightedDiffFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: FileStatus,
+    pub is_binary: bool,
+    pub hunks: Vec<HighlightedDiffHunk>,
+    /// One entry per line of the post-change file, in order. `None` if the file
+    /// was deleted or is binary. Indexed 0-based; line N is at index N-1.
+    pub new_lines_html: Option<Vec<String>>,
+    /// Same shape for the pre-change file. `None` for added/binary.
+    pub old_lines_html: Option<Vec<String>>,
+    pub language: Option<String>,
+    pub additions: usize,
+    pub deletions: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HighlightedDiffHunk {
+    pub old_start: usize,
+    pub old_lines: usize,
+    pub new_start: usize,
+    pub new_lines: usize,
+    pub header: Option<String>,
+    pub lines: Vec<HighlightedDiffLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HighlightedDiffLine {
+    pub kind: DiffLineKind,
+    pub old_lineno: Option<usize>,
+    pub new_lineno: Option<usize>,
+    /// Pre-highlighted span sequence, no `<pre>` wrapper. Already HTML-escaped.
+    pub html: String,
+}
+
+struct SyntectAssets {
+    syntaxes: SyntaxSet,
+    theme: Theme,
+}
+
+fn assets() -> &'static SyntectAssets {
+    static ASSETS: OnceLock<SyntectAssets> = OnceLock::new();
+    ASSETS.get_or_init(|| {
+        let syntaxes = SyntaxSet::load_defaults_newlines();
+        let themes = ThemeSet::load_defaults();
+        // `base16-ocean.dark` ships with syntect and reads well against the app's
+        // zinc-tinted dark palette.
+        let theme = themes
+            .themes
+            .get("base16-ocean.dark")
+            .cloned()
+            .unwrap_or_else(|| themes.themes.values().next().cloned().expect("at least one theme"));
+        SyntectAssets { syntaxes, theme }
+    })
+}
+
+/// Highlight a full file's contents into one HTML string per source line. The
+/// state of the highlighter carries across lines, so multi-line tokens (block
+/// strings, doc comments, etc.) render correctly. Returns an empty `Vec` for
+/// empty input.
+fn highlight_lines(content: &str, language: Option<&str>) -> Vec<String> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+    let SyntectAssets { syntaxes, theme } = assets();
+    let syntax = language
+        .and_then(|l| syntaxes.find_syntax_by_token(l))
+        // `find_syntax_by_token` covers most cases; fall back to plain text.
+        .unwrap_or_else(|| syntaxes.find_syntax_plain_text());
+    let mut highlighter = HighlightLines::new(syntax, theme);
+
+    let mut out = Vec::new();
+    for line in LinesWithEndings::from(content) {
+        // Strip the trailing newline before producing HTML — the frontend lays out
+        // each line in its own row, so a literal `\n` in the html is just noise.
+        let no_newline = line.strip_suffix('\n').unwrap_or(line);
+        match highlighter.highlight_line(line, syntaxes) {
+            Ok(ranges) => {
+                // We have to re-run `highlight_line` produced ranges over the no-newline
+                // text. Since the only difference is a trailing newline (which carries no
+                // syntax weight) we can safely call into `styled_line_to_highlighted_html`
+                // with the original ranges, then strip a trailing `\n` from the html.
+                match styled_line_to_highlighted_html(&ranges, IncludeBackground::No) {
+                    Ok(html) => out.push(html.trim_end_matches('\n').to_string()),
+                    Err(_) => out.push(html_escape(no_newline)),
+                }
+            }
+            Err(_) => out.push(html_escape(no_newline)),
+        }
+    }
+    out
+}
+
+/// Trivial HTML escape for the fallback path — the syntect path emits already-escaped
+/// HTML, so we only need this when the highlighter errors (very rare in practice).
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Highlight a structured diff. Files are highlighted in source order; per-line
+/// HTML for hunk lines is sourced from the pre-highlighted line arrays of the
+/// pre/post file content so that highlighter state is consistent (multi-line
+/// strings highlight correctly even across hunk boundaries).
+pub fn highlight_diff(diff: &TaskDiff) -> HighlightedTaskDiff {
+    let mut files = Vec::with_capacity(diff.files.len());
+    let mut total_add = 0usize;
+    let mut total_del = 0usize;
+    for f in &diff.files {
+        total_add += f.additions;
+        total_del += f.deletions;
+        files.push(highlight_file(f));
+    }
+    HighlightedTaskDiff {
+        task_id: diff.task_id.clone(),
+        base_commit: diff.base_commit.clone(),
+        head_commit: diff.head_commit.clone(),
+        source: diff.source.clone(),
+        files,
+        computed_at: diff.computed_at,
+        additions: total_add,
+        deletions: total_del,
+    }
+}
+
+fn highlight_file(f: &DiffFile) -> HighlightedDiffFile {
+    let lang = f.language.as_deref();
+
+    let new_lines_html = if f.is_binary {
+        None
+    } else {
+        f.new_content
+            .as_deref()
+            .map(|c| highlight_lines(c, lang))
+    };
+    let old_lines_html = if f.is_binary {
+        None
+    } else {
+        f.old_content
+            .as_deref()
+            .map(|c| highlight_lines(c, lang))
+    };
+
+    let mut hunks = Vec::with_capacity(f.hunks.len());
+    for h in &f.hunks {
+        let mut lines = Vec::with_capacity(h.lines.len());
+        for l in &h.lines {
+            // Pull the highlighted html for this diff line from the pre-highlighted
+            // file lines so highlighter state is consistent across the file. Removed
+            // lines come from old, added/context come from new (added lines didn't
+            // exist in old; context lines have a new_lineno so we prefer new).
+            let html = match l.kind {
+                DiffLineKind::Removed => l
+                    .old_lineno
+                    .and_then(|n| old_lines_html.as_ref().and_then(|v| v.get(n - 1).cloned())),
+                DiffLineKind::Added | DiffLineKind::Context => l
+                    .new_lineno
+                    .and_then(|n| new_lines_html.as_ref().and_then(|v| v.get(n - 1).cloned()))
+                    .or_else(|| {
+                        l.old_lineno.and_then(|n| {
+                            old_lines_html.as_ref().and_then(|v| v.get(n - 1).cloned())
+                        })
+                    }),
+            }
+            // Last-resort: HTML-escape the diff line's raw content. Triggers for
+            // empty files, binaries we somehow tried to highlight, etc.
+            .unwrap_or_else(|| html_escape(l.content.trim_end_matches('\n')));
+
+            lines.push(HighlightedDiffLine {
+                kind: l.kind,
+                old_lineno: l.old_lineno,
+                new_lineno: l.new_lineno,
+                html,
+            });
+        }
+        hunks.push(HighlightedDiffHunk {
+            old_start: h.old_start,
+            old_lines: h.old_lines,
+            new_start: h.new_start,
+            new_lines: h.new_lines,
+            header: h.header.clone(),
+            lines,
+        });
+    }
+
+    HighlightedDiffFile {
+        path: f.path.clone(),
+        old_path: f.old_path.clone(),
+        status: f.status,
+        is_binary: f.is_binary,
+        hunks,
+        new_lines_html,
+        old_lines_html,
+        language: f.language.clone(),
+        additions: f.additions,
+        deletions: f.deletions,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -972,6 +1209,25 @@ mod tests {
         let diff = build_diff_for_modified();
         let mappings = map_concerns_to_diff(&diff, &[concern_at("other.ts", 3)]);
         assert!(matches!(mappings[0].mapping, AnchorMapping::FileNotInDiff { .. }));
+    }
+
+    #[test]
+    fn highlight_produces_html_per_diff_line() {
+        let diff = build_diff_for_modified();
+        let h = highlight_diff(&diff);
+        assert_eq!(h.files.len(), 1);
+        let f = &h.files[0];
+        assert!(f.new_lines_html.is_some());
+        assert_eq!(f.new_lines_html.as_ref().unwrap().len(), 10);
+        // Every hunk line should have non-empty HTML.
+        for hunk in &f.hunks {
+            for line in &hunk.lines {
+                assert!(!line.html.is_empty(), "empty html for line {:?}", line);
+            }
+        }
+        // Additions/deletions roll up to the top-level totals.
+        assert_eq!(h.additions, 1);
+        assert_eq!(h.deletions, 1);
     }
 
     #[test]
