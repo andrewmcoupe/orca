@@ -144,7 +144,11 @@ function TaskDetailView({
             {String(startFake.error ?? startTask.error)}
           </p>
         )}
-        <PipelineCards phaseConfig={task.phase_config} phaseRuns={runs} />
+        <PipelineCards
+          workspaceId={workspaceId}
+          phaseConfig={task.phase_config}
+          phaseRuns={runs}
+        />
       </section>
 
       <section className="space-y-3">
