@@ -21,8 +21,6 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
 import { useAddWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
 import { usePlans } from "@/features/plans/hooks";
 import { useProviders } from "@/features/providers/hooks";
@@ -84,25 +82,24 @@ export function WorkspacesSidebar() {
   const list = workspaces.data ?? [];
 
   return (
-    <aside className="bg-sidebar text-sidebar-foreground flex w-64 flex-shrink-0 flex-col border-r">
-      <div className="flex h-10 items-center justify-between px-3">
-        <span className="text-[10px] font-semibold tracking-widest uppercase text-muted-foreground">
+    <aside className="bg-sidebar text-sidebar-foreground flex w-[220px] flex-shrink-0 flex-col border-r">
+      <div className="flex h-7 items-center justify-between pr-1 pl-2">
+        <span className="text-muted-foreground text-[10px] font-semibold uppercase tracking-[0.08em]">
           Workspaces
         </span>
-        <Button
-          variant="ghost"
-          size="icon-xs"
+        <button
+          type="button"
           onClick={onAdd}
           aria-label="Add workspace"
           title="Add workspace"
+          className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-[14px] items-center justify-center rounded-sm"
         >
-          <Plus />
-        </Button>
+          <Plus className="size-3" />
+        </button>
       </div>
-      <Separator />
       <div className="flex-1 overflow-y-auto">
         {list.length === 0 ? (
-          <p className="text-muted-foreground px-3 py-4 text-xs">
+          <p className="text-muted-foreground px-2 py-2 text-[11px]">
             No workspaces yet. Click + to add one.
           </p>
         ) : (
@@ -111,7 +108,6 @@ export function WorkspacesSidebar() {
             onValueChange={(v) =>
               expansion.setOpen(Array.isArray(v) ? (v as string[]) : [])
             }
-            className="px-1 py-1"
           >
             {list.map((ws) => (
               <WorkspaceItem
@@ -124,8 +120,7 @@ export function WorkspacesSidebar() {
           </Accordion>
         )}
       </div>
-      <Separator />
-      <nav className="space-y-0.5 px-1 py-1">
+      <nav className="flex flex-col py-1">
         <SidebarGlobalLink to="/settings" icon={<Gear />}>
           Settings
         </SidebarGlobalLink>
@@ -149,10 +144,12 @@ function SidebarGlobalLink({
   return (
     <Link
       to={to}
-      className="hover:bg-sidebar-accent text-muted-foreground hover:text-foreground flex items-center gap-2 rounded-sm px-2 py-1.5 text-xs transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
+      className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-[20px] items-center gap-2 px-2 text-[11px] no-underline transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
       activeOptions={{ exact: true }}
     >
-      <span className="size-3.5">{icon}</span>
+      <span className="text-muted-foreground/80 inline-flex size-3 items-center justify-center">
+        {icon}
+      </span>
       {children}
     </Link>
   );
@@ -190,68 +187,75 @@ function WorkspaceItem({
     <AccordionItem
       value={workspace.id}
       className={cn(
-        "border-b-0 px-1.5",
-        isActive && "bg-sidebar-accent/40 border-l-2 border-l-primary",
+        "border-b-0",
+        isActive && "border-l-primary border-l-2",
       )}
     >
-      <AccordionTrigger className="px-1.5 py-1.5 text-xs hover:no-underline">
-        <span className="flex min-w-0 flex-1 items-center gap-2 truncate pr-2">
-          <span className={cn("truncate", isActive && "font-medium")}>
-            {workspace.name}
-          </span>
+      <AccordionTrigger
+        className={cn(
+          // Override the UI primitive defaults so the row sits at ~22px.
+          "h-[22px] items-center px-2 py-0 text-[12px] font-normal hover:no-underline",
+          "**:data-[slot=accordion-trigger-icon]:size-[10px] **:data-[slot=accordion-trigger-icon]:opacity-70",
+          isActive && "font-medium",
+        )}
+      >
+        <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate pr-1.5">
+          <span className="truncate">{workspace.name}</span>
           {isActive && runningCount > 0 && (
             <span className="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-[10px] tabular-nums">
               <span className="bg-emerald-500 inline-block size-1.5 rounded-full animate-pulse" />
-              {runningCount} running
+              {runningCount}
             </span>
           )}
         </span>
       </AccordionTrigger>
-      <AccordionContent className="space-y-0.5 pb-1.5">
-        <Link
-          to="/workspace/$workspaceId/plans"
-          params={{ workspaceId: workspace.id }}
-          search={{ status: "active", q: "" }}
-          onClick={onNavigate}
-          className={navLinkClass}
-        >
-          <NavRowContent
-            icon={<ClipboardText />}
-            label="Plans"
-            count={planCount !== null ? String(planCount) : null}
-          />
-        </Link>
-        <Link
-          to="/workspace/$workspaceId/providers"
-          params={{ workspaceId: workspace.id }}
-          onClick={onNavigate}
-          className={navLinkClass}
-        >
-          <NavRowContent
-            icon={<Plug />}
-            label="Providers"
-            count={
-              totalProviders !== null
-                ? `${installedProviders}/${totalProviders}`
-                : null
-            }
-          />
-        </Link>
-        <Link
-          to="/workspace/$workspaceId/settings"
-          params={{ workspaceId: workspace.id }}
-          onClick={onNavigate}
-          className={navLinkClass}
-        >
-          <NavRowContent icon={<Gear />} label="Settings" />
-        </Link>
+      <AccordionContent className="pb-1 pt-0">
+        <div className="flex flex-col">
+          <Link
+            to="/workspace/$workspaceId/plans"
+            params={{ workspaceId: workspace.id }}
+            search={{ status: "active", q: "" }}
+            onClick={onNavigate}
+            className={navLinkClass}
+          >
+            <NavRowContent
+              icon={<ClipboardText />}
+              label="Plans"
+              count={planCount !== null ? String(planCount) : null}
+            />
+          </Link>
+          <Link
+            to="/workspace/$workspaceId/providers"
+            params={{ workspaceId: workspace.id }}
+            onClick={onNavigate}
+            className={navLinkClass}
+          >
+            <NavRowContent
+              icon={<Plug />}
+              label="Providers"
+              count={
+                totalProviders !== null
+                  ? `${installedProviders}/${totalProviders}`
+                  : null
+              }
+            />
+          </Link>
+          <Link
+            to="/workspace/$workspaceId/settings"
+            params={{ workspaceId: workspace.id }}
+            onClick={onNavigate}
+            className={navLinkClass}
+          >
+            <NavRowContent icon={<Gear />} label="Settings" />
+          </Link>
+        </div>
       </AccordionContent>
     </AccordionItem>
   );
 }
 
 const navLinkClass =
-  "hover:bg-sidebar-accent text-muted-foreground hover:text-foreground flex items-center gap-2 rounded-sm px-2 py-1 text-xs no-underline transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground [&.active]:font-medium";
+  "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-[20px] items-center gap-2 pl-[14px] pr-2 text-[11px] no-underline transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground [&.active]:font-medium";
 
 function NavRowContent({
   icon,
@@ -264,7 +268,9 @@ function NavRowContent({
 }) {
   return (
     <>
-      <span className="size-3.5">{icon}</span>
+      <span className="text-muted-foreground/70 inline-flex size-3 items-center justify-center">
+        {icon}
+      </span>
       <span className="flex-1 truncate">{label}</span>
       {count !== undefined && count !== null && (
         <span className="text-muted-foreground/70 text-[10px] tabular-nums">
