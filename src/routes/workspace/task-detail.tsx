@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createRoute, useParams } from "@tanstack/react-router";
 import { GitMerge, Play } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,8 @@ import { PipelineCards } from "@/features/phase-runs/components/pipeline-cards";
 import { PhaseRunsTrail } from "@/features/phase-runs/components/phase-runs-trail";
 import { TaskEventList } from "@/features/events/components/task-event-list";
 import { DiffPanel } from "@/features/diff/components/diff-panel";
+import { DiffModal } from "@/features/diff/components/diff-modal";
+import { diffModalController } from "@/features/diff/modal-controller";
 import { formatRelativeTime } from "@/lib/format";
 import type { Task } from "@/features/tasks/types";
 
@@ -55,6 +57,21 @@ function TaskDetailView({
 
   const runs = phaseRuns.data ?? [];
   const anyRunning = runs.some((r) => r.status === "running");
+
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalConcernIdx, setModalConcernIdx] = useState<number | undefined>(
+    undefined,
+  );
+
+  // Bridge: anything calling `diffModalController.open` (e.g. verdict concern
+  // rows) opens the modal here, scoped to the right task.
+  useEffect(() => {
+    return diffModalController.subscribe((req) => {
+      if (req.taskId !== task.id) return;
+      setModalConcernIdx(req.concernIndex);
+      setModalOpen(true);
+    });
+  }, [task.id]);
 
   return (
     <div className="flex min-h-full">
@@ -149,7 +166,21 @@ function TaskDetailView({
         <WorktreeSection task={task} />
       </section>
       </div>
-      <DiffPanel workspaceId={workspaceId} taskId={task.id} />
+      <DiffPanel
+        workspaceId={workspaceId}
+        taskId={task.id}
+        onOpenModal={() => {
+          setModalConcernIdx(undefined);
+          setModalOpen(true);
+        }}
+      />
+      <DiffModal
+        workspaceId={workspaceId}
+        taskId={task.id}
+        open={modalOpen}
+        onOpenChange={setModalOpen}
+        initialConcernIndex={modalConcernIdx}
+      />
     </div>
   );
 }

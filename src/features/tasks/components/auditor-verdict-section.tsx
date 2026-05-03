@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { tasksApi } from "../api";
+import { diffModalController } from "@/features/diff/modal-controller";
 import {
   useApproveTaskAnyway,
   useLatestAuditorVerdict,
@@ -97,7 +97,12 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
         {v.concerns.length > 0 && (
           <ul className="space-y-1.5">
             {v.concerns.map((c, idx) => (
-              <ConcernRow key={idx} taskId={taskId} concern={c} />
+              <ConcernRow
+                key={idx}
+                taskId={taskId}
+                concernIndex={idx}
+                concern={c}
+              />
             ))}
           </ul>
         )}
@@ -172,18 +177,18 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
 
 function ConcernRow({
   taskId,
+  concernIndex,
   concern,
 }: {
   taskId: string;
+  concernIndex: number;
   concern: AuditorConcern;
 }) {
+  // Click jumps into the diff modal, scrolled to this concern. Replaces the
+  // previous "open in external editor" affordance — the modal puts the line
+  // and the rationale together without leaving the app.
   const onOpen = () => {
-    if (!concern.anchor) return;
-    void tasksApi.openInEditor(
-      taskId,
-      concern.anchor.path,
-      concern.anchor.line,
-    );
+    diffModalController.open({ taskId, concernIndex });
   };
   return (
     <li className="flex items-start gap-2">
