@@ -73,11 +73,15 @@ export function WorkspaceBreadcrumbs({
   return (
     <nav
       aria-label="Breadcrumb"
-      className="text-muted-foreground flex items-center gap-1.5 text-xs"
+      className="text-muted-foreground flex items-center gap-1.5 font-mono text-[11px]"
     >
       {crumbs.map((c, i) => (
         <Fragment key={c.key}>
-          {i > 0 && <span className="text-muted-foreground/60">/</span>}
+          {i > 0 && (
+            <span className="text-muted-foreground/50" aria-hidden="true">
+              ›
+            </span>
+          )}
           <CrumbLink crumb={c} last={i === crumbs.length - 1} />
         </Fragment>
       ))}

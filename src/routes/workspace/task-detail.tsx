@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Link, createRoute, useParams } from "@tanstack/react-router";
-import { ArrowLeft, GitMerge, Play } from "@phosphor-icons/react";
+import { createRoute, useParams } from "@tanstack/react-router";
+import { GitMerge, Play } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Markdown } from "@/components/markdown";
 import { workspaceLayoutRoute } from "./layout";
@@ -22,7 +22,7 @@ import { formatRelativeTime } from "@/lib/format";
 import type { Task } from "@/features/tasks/types";
 
 function TaskDetailPage() {
-  const { workspaceId, planId, taskId } = useParams({
+  const { workspaceId, taskId } = useParams({
     from: taskDetailRoute.id,
   });
   const taskQ = useTask(taskId);
@@ -37,23 +37,15 @@ function TaskDetailPage() {
       <div className="p-6 text-sm text-muted-foreground">Task not found.</div>
     );
   }
-  return (
-    <TaskDetailView
-      task={taskQ.data}
-      workspaceId={workspaceId}
-      planId={planId}
-    />
-  );
+  return <TaskDetailView task={taskQ.data} workspaceId={workspaceId} />;
 }
 
 function TaskDetailView({
   task,
   workspaceId,
-  planId,
 }: {
   task: Task;
   workspaceId: string;
-  planId: string;
 }) {
   const phaseRuns = usePhaseRuns(workspaceId, task.id);
   const startFake = useStartFakePhase();
@@ -63,20 +55,12 @@ function TaskDetailView({
   const anyRunning = runs.some((r) => r.status === "running");
 
   return (
-    <div className="space-y-6 p-4">
-      <Link
-        to="/workspace/$workspaceId/plan/$planId"
-        params={{ workspaceId, planId }}
-        className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs transition-colors"
-      >
-        <ArrowLeft className="size-3" /> Back to plan
-      </Link>
-
+    <div className="space-y-7 px-5 py-4">
       <header className="space-y-2">
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h1 className="truncate text-2xl font-semibold tracking-tight">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="truncate text-[20px] font-medium tracking-tight">
                 {task.title}
               </h1>
               <TaskStatusBadge status={task.status} />
@@ -86,7 +70,7 @@ function TaskDetailView({
           <TaskActionArea task={task} />
         </div>
         {task.cancel_reason && (
-          <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-xs">
+          <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 font-mono text-[11px]">
             <span className="font-medium">Cancelled:</span> {task.cancel_reason}
           </p>
         )}
@@ -94,11 +78,9 @@ function TaskDetailView({
       </header>
 
       {task.spec_markdown.trim() ? (
-        <section>
-          <h2 className="text-muted-foreground mb-2 text-[11px] font-semibold uppercase tracking-wide">
-            Spec
-          </h2>
-          <div className="bg-muted/20 border p-2">
+        <section className="space-y-2">
+          <SectionLabel>Spec</SectionLabel>
+          <div className="bg-muted/20 border p-3">
             <Markdown>{task.spec_markdown}</Markdown>
           </div>
         </section>
@@ -108,14 +90,12 @@ function TaskDetailView({
 
       <WorktreeInitSection task={task} />
 
-      <section className="space-y-3">
+      <section className="space-y-2.5">
         <div className="flex items-center justify-between">
-          <h2 className="text-muted-foreground text-[11px] font-semibold uppercase tracking-wide">
-            Pipeline
-          </h2>
+          <SectionLabel>Pipeline</SectionLabel>
           <div className="flex items-center gap-1.5">
             <Button
-              size="sm"
+              size="xs"
               onClick={() => startTask.mutate(task.id)}
               disabled={startTask.isPending || anyRunning}
               className="gap-1"
@@ -129,7 +109,7 @@ function TaskDetailView({
             </Button>
             <Button
               variant="outline"
-              size="sm"
+              size="xs"
               onClick={() =>
                 startFake.mutate({ taskId: task.id, phase: "implementer" })
               }
@@ -140,7 +120,7 @@ function TaskDetailView({
           </div>
         </div>
         {(startFake.error || startTask.error) && (
-          <p className="text-destructive text-xs">
+          <p className="text-destructive text-[11px]">
             {String(startFake.error ?? startTask.error)}
           </p>
         )}
@@ -151,35 +131,37 @@ function TaskDetailView({
         />
       </section>
 
-      <section className="space-y-3">
-        <h2 className="text-muted-foreground text-[11px] font-semibold uppercase tracking-wide">
-          Audit trail
-        </h2>
+      <section className="space-y-2.5">
+        <SectionLabel>Audit trail</SectionLabel>
         {phaseRuns.isLoading ? (
-          <p className="text-muted-foreground text-sm">Loading…</p>
+          <p className="text-muted-foreground text-[11px]">Loading…</p>
         ) : (
           <PhaseRunsTrail phaseRuns={runs} />
         )}
       </section>
 
-      <section className="space-y-3">
-        <h2 className="text-muted-foreground text-[11px] font-semibold uppercase tracking-wide">
-          Worktree
-        </h2>
+      <section className="space-y-2.5">
+        <SectionLabel>Worktree</SectionLabel>
         <WorktreeSection task={task} />
       </section>
     </div>
   );
 }
 
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <h2 className="text-muted-foreground/70 font-mono text-[10px] font-medium uppercase tracking-[0.08em]">
+      {children}
+    </h2>
+  );
+}
+
 function TaskHeaderMeta({ task }: { task: Task }) {
   if (task.status === "merged" && task.merged_commit_sha) {
     return (
-      <p className="text-muted-foreground mt-1 text-xs tabular-nums">
+      <p className="text-muted-foreground mt-1 font-mono text-[11px] tabular-nums">
         Merged into{" "}
-        <code className="font-mono">
-          {task.merge_target_branch ?? "main"}
-        </code>{" "}
+        <code>{task.merge_target_branch ?? "main"}</code>{" "}
         as <CopyableSha sha={task.merged_commit_sha} />
         {task.merged_at != null && (
           <> · {formatRelativeTime(task.merged_at)}</>
@@ -188,7 +170,7 @@ function TaskHeaderMeta({ task }: { task: Task }) {
     );
   }
   return (
-    <p className="text-muted-foreground mt-1 text-xs tabular-nums">
+    <p className="text-muted-foreground mt-1 font-mono text-[11px] tabular-nums">
       Updated {formatRelativeTime(task.updated_at)}
     </p>
   );

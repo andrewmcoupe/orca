@@ -18,7 +18,7 @@ function WorkspaceLayout() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="border-border bg-background sticky top-0 z-10 flex h-10 items-center border-b px-4">
+      <header className="border-border bg-background sticky top-0 z-10 flex h-7 items-center border-b px-3">
         <WorkspaceBreadcrumbs
           workspaceId={workspaceId}
           planId={all.planId}
