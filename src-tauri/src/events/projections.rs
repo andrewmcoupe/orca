@@ -200,6 +200,8 @@ CREATE TABLE IF NOT EXISTS phase_run_projection (
     phase           TEXT NOT NULL,
     provider        TEXT NOT NULL,
     model           TEXT NOT NULL,
+    permission_mode TEXT,                 -- the resolved mode at start time; NULL for legacy events
+
     status          TEXT NOT NULL,        -- running | completed | failed
     summary         TEXT,
     exit_code       INTEGER,
@@ -287,6 +289,9 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
         "ALTER TABLE task_projection ADD COLUMN worktree_init_duration_ms INTEGER",
         "ALTER TABLE task_projection ADD COLUMN worktree_init_detection_kind TEXT",
         "ALTER TABLE task_projection ADD COLUMN worktree_init_output TEXT",
+        // Per-phase permission mode (M-permission-modes): captured on PhaseRunStarted
+        // so the UI surfaces what mode the run actually used. Old events are NULL.
+        "ALTER TABLE phase_run_projection ADD COLUMN permission_mode TEXT",
     ];
     for sql in migrations {
         match conn.execute(sql, []) {
@@ -519,6 +524,10 @@ pub struct PhaseRunProjection {
     pub phase: String,
     pub provider: String,
     pub model: String,
+    /// `"plan" | "acceptEdits" | "bypassPermissions"`. Optional for legacy phase runs
+    /// that were started before the field landed; the UI treats `None` as "unknown".
+    #[serde(default)]
+    pub permission_mode: Option<String>,
     pub status: String,
     pub summary: Option<String>,
     pub exit_code: Option<i64>,
@@ -876,6 +885,10 @@ struct PhaseRunStartedPayload {
     phase: String,
     provider: String,
     model: String,
+    /// `"plan" | "acceptEdits" | "bypassPermissions"`. Optional so events written before
+    /// per-phase permission modes still replay cleanly.
+    #[serde(default)]
+    permission_mode: Option<String>,
     /// Legacy field; some phase runners (test_author/implementer/auditor in M3-M5+) emit
     /// `prompt_template_hash` instead. Not consumed by the projection — kept as `Option`
     /// so old events still parse.
@@ -941,14 +954,15 @@ pub fn apply_phase_run_event(
             let p: PhaseRunStartedPayload = serde_json::from_str(&event.payload)?;
             tx.execute(
                 "INSERT INTO phase_run_projection
-                    (id, task_id, phase, provider, model, status, is_retry_of, started_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7, ?7)",
+                    (id, task_id, phase, provider, model, permission_mode, status, is_retry_of, started_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running', ?7, ?8, ?8)",
                 params![
                     event.aggregate_id,
                     p.task_id,
                     p.phase,
                     p.provider,
                     p.model,
+                    p.permission_mode,
                     p.is_retry_of,
                     event.created_at,
                 ],
@@ -1164,7 +1178,7 @@ pub fn list_phase_runs_for_task(
     task_id: &str,
 ) -> rusqlite::Result<Vec<PhaseRunProjection>> {
     let mut stmt = conn.prepare(
-        "SELECT id, task_id, phase, provider, model, status, summary, exit_code, error_kind, error_message,
+        "SELECT id, task_id, phase, provider, model, permission_mode, status, summary, exit_code, error_kind, error_message,
                 files_changed, input_tokens, output_tokens, head_commit_after, is_retry_of, started_at, completed_at, updated_at
          FROM phase_run_projection
          WHERE task_id = ?1
@@ -1177,19 +1191,20 @@ pub fn list_phase_runs_for_task(
             phase: r.get(2)?,
             provider: r.get(3)?,
             model: r.get(4)?,
-            status: r.get(5)?,
-            summary: r.get(6)?,
-            exit_code: r.get(7)?,
-            error_kind: r.get(8)?,
-            error_message: r.get(9)?,
-            files_changed: r.get(10)?,
-            input_tokens: r.get(11)?,
-            output_tokens: r.get(12)?,
-            head_commit_after: r.get(13)?,
-            is_retry_of: r.get(14)?,
-            started_at: r.get(15)?,
-            completed_at: r.get(16)?,
-            updated_at: r.get(17)?,
+            permission_mode: r.get(5)?,
+            status: r.get(6)?,
+            summary: r.get(7)?,
+            exit_code: r.get(8)?,
+            error_kind: r.get(9)?,
+            error_message: r.get(10)?,
+            files_changed: r.get(11)?,
+            input_tokens: r.get(12)?,
+            output_tokens: r.get(13)?,
+            head_commit_after: r.get(14)?,
+            is_retry_of: r.get(15)?,
+            started_at: r.get(16)?,
+            completed_at: r.get(17)?,
+            updated_at: r.get(18)?,
         })
     })?;
     let mut out = Vec::new();

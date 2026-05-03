@@ -13,7 +13,7 @@ use crate::events::projections;
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::prompts::{self, PromptContext};
 use crate::providers::{Provider, ProviderEvent};
-use crate::settings::PhaseType;
+use crate::settings::{PermissionMode, PhaseType};
 use crate::subprocess::{self, ChildTracker, StreamOptions};
 use crate::workspace_db::open_workspace_db;
 use crate::worktree;
@@ -44,6 +44,10 @@ pub struct ImplementerInput {
     pub provider: Box<dyn Provider>,
     pub provider_path: String,
     pub options: Value,
+    /// Resolved at dispatch time and recorded on `PhaseRunStarted`. Carried separately
+    /// from `options` so the value emitted on the event always matches the value the
+    /// provider actually receives — both are derived from this field.
+    pub permission_mode: PermissionMode,
     pub cancel: CancellationToken,
     /// Set by `pass_back_to_implementer` (M8) when the auditor returned `revise`.
     pub is_retry: bool,
@@ -79,6 +83,7 @@ pub async fn run(
         provider,
         provider_path,
         options,
+        permission_mode,
         cancel,
         is_retry,
         retry_context,
@@ -136,6 +141,7 @@ pub async fn run(
                 &task_id,
                 provider.id(),
                 model_str,
+                permission_mode,
                 &prompt_template_hash,
                 &prior_phase_commits,
                 is_retry,
@@ -209,6 +215,7 @@ pub async fn run(
         &task_id,
         provider.id(),
         model_str,
+        permission_mode,
         &prompt_template_hash,
         &prior_phase_commits,
         is_retry,
@@ -506,6 +513,7 @@ fn started_payload(
     task_id: &str,
     provider: &str,
     model: &str,
+    permission_mode: PermissionMode,
     prompt_template_hash: &str,
     prior_phase_commits: &std::collections::HashMap<String, String>,
     is_retry: bool,
@@ -518,6 +526,7 @@ fn started_payload(
         "phase": PHASE_NAME,
         "provider": provider,
         "model": model,
+        "permission_mode": permission_mode.as_str(),
         "prompt_template_hash": prompt_template_hash,
         "prior_phase_commits": prior_phase_commits,
         "is_retry": is_retry,

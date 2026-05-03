@@ -20,7 +20,9 @@ use crate::events::projections;
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::gates::{self, GateResult};
 use crate::phases::runtime::{append_phase_run_step, current_seq};
-use crate::settings::{ModelChoice, PhaseConfig, PhaseType, WorkspaceSettings};
+use crate::settings::{
+    self, PhaseConfig, PhaseType, ResolvedPhaseSettings, WorkspaceSettings,
+};
 use crate::subprocess::ChildTracker;
 use crate::workspace_db::open_workspace_db;
 use crate::{ActiveWorkspaceState, GlobalDb};
@@ -187,13 +189,21 @@ async fn dispatch_phase(
     is_retry: bool,
     retry_context: Option<String>,
 ) -> Result<String, PipelineError> {
-    let (provider_id, options) = resolve_model_for_phase(&app, &task_id, phase)?;
+    let resolved = resolve_for_phase(&app, &task_id, phase)?;
+    let mut options = serde_json::Map::new();
+    if let Some(model) = resolved.model {
+        options.insert("model".into(), serde_json::Value::String(model));
+    }
+    options.insert(
+        "permission_mode".into(),
+        serde_json::Value::String(resolved.permission_mode.as_str().to_string()),
+    );
     crate::commands::start_real_phase(
         app,
         task_id,
         phase.as_str().to_string(),
-        provider_id,
-        options,
+        resolved.provider,
+        Some(serde_json::Value::Object(options)),
         Some(is_retry),
         retry_context,
         None,
@@ -202,39 +212,46 @@ async fn dispatch_phase(
     .map_err(PipelineError::Dispatch)
 }
 
-/// Resolve the (provider, model) for a phase using the precedence:
-/// task `phase_config.models[phase]` > workspace `default_models[phase]` > None
-/// (caller falls back to provider's hardcoded default).
-fn resolve_model_for_phase(
+/// Resolve the full (provider, model, permission_mode) tuple for a phase by combining
+/// the task's `phase_config` with the workspace settings. Single source of truth — UI,
+/// pipeline, and the per-phase dispatcher all flow through this function.
+pub fn resolve_for_phase(
     app: &AppHandle,
     task_id: &str,
     phase: PhaseType,
-) -> Result<(Option<String>, Option<serde_json::Value>), PipelineError> {
+) -> Result<ResolvedPhaseSettings, PipelineError> {
     let (phase_config_value, workspace_id) = read_task_pipeline_state(app, task_id)?;
     let task_config = parse_phase_config(&phase_config_value);
-    let phase_key = phase.as_str();
-
-    let task_choice = task_config
-        .models
-        .as_ref()
-        .and_then(|m| m.get(phase_key))
-        .cloned();
-
-    let resolved: Option<ModelChoice> = if task_choice.is_some() {
-        task_choice
-    } else {
-        let settings = load_workspace_settings(app, &workspace_id);
-        settings.default_models.get(phase_key).cloned()
-    };
-
-    match resolved {
-        Some(c) => Ok((
-            Some(c.provider),
-            Some(serde_json::json!({ "model": c.model })),
-        )),
-        None => Ok((None, None)),
-    }
+    let workspace_settings = load_workspace_settings(app, &workspace_id);
+    Ok(settings::resolve_phase_settings(
+        &workspace_settings,
+        &task_config,
+        phase,
+    ))
 }
+
+/// Public helper for non-task contexts (e.g. the create-task preview, which needs to
+/// show the user what would resolve without yet having a task). Mirrors
+/// `resolve_for_phase` but takes the workspace id and a (possibly empty) task config
+/// directly rather than reading from the projection.
+pub fn preview_resolved_settings(
+    app: &AppHandle,
+    workspace_id: &str,
+    task_config: &PhaseConfig,
+) -> Vec<(PhaseType, ResolvedPhaseSettings)> {
+    let workspace_settings = load_workspace_settings(app, workspace_id);
+    task_config
+        .phases
+        .iter()
+        .map(|p| {
+            (
+                *p,
+                settings::resolve_phase_settings(&workspace_settings, task_config, *p),
+            )
+        })
+        .collect()
+}
+
 
 /// Hook fired after a `PhaseRunCompleted` event commits. For non-auditor phases: run
 /// configured gates and, on success, dispatch the next phase. For auditor: do nothing
@@ -473,6 +490,7 @@ mod tests {
             phases: phases.to_vec(),
             gate_overrides: None,
             models: None,
+            permission_modes: None,
         }
     }
 
@@ -559,6 +577,7 @@ mod tests {
             phases: vec![PhaseType::Implementer],
             gate_overrides: Some(overrides),
             models: None,
+            permission_modes: None,
         };
         let g = gates_for_phase(&s, &pc, PhaseType::Implementer);
         assert_eq!(g.len(), 1);

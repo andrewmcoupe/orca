@@ -1,7 +1,9 @@
+import { Lock } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useCancelPhaseRun, usePhaseRunOutput } from "@/features/phase-runs/hooks";
 import type { PhaseRun } from "@/features/phase-runs/types";
+import { PERMISSION_MODE_LABEL, type PermissionMode } from "@/features/workspaces/types";
 import { cn } from "@/lib/utils";
 
 const STATUS_BADGE: Record<string, string> = {
@@ -24,6 +26,20 @@ export function PhaseRunCard({ phaseRun }: { phaseRun: PhaseRun }) {
         <span className="text-muted-foreground text-xs">
           {phaseRun.provider} · {phaseRun.model}
         </span>
+        {phaseRun.permission_mode && (
+          <span className="text-muted-foreground inline-flex items-center gap-1 text-xs">
+            ·
+            {phaseRun.permission_mode === "plan" && (
+              <Lock className="size-3" aria-label="read-only" />
+            )}
+            <span>
+              mode:{" "}
+              {PERMISSION_MODE_LABEL[
+                phaseRun.permission_mode as PermissionMode
+              ] ?? phaseRun.permission_mode}
+            </span>
+          </span>
+        )}
         <Badge
           variant="outline"
           className={cn(

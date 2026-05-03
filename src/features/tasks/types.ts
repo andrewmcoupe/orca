@@ -15,10 +15,13 @@ export type ModelChoice = {
   model: string;
 };
 
+export type PermissionMode = "plan" | "acceptEdits" | "bypassPermissions";
+
 export type PhaseConfig = {
   phases: PhaseType[];
   gate_overrides: Record<string, string[]> | null;
   models?: Record<string, ModelChoice> | null;
+  permission_modes?: Record<string, PermissionMode> | null;
 };
 
 export type AuditorVerdictKind = "approve" | "revise" | "reject";

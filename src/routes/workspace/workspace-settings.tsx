@@ -6,7 +6,8 @@ import { Separator } from "@/components/ui/separator";
 import { eventsApi } from "@/features/events/api";
 import { useRemoveWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
 import { PhaseConfigPanel } from "@/features/workspaces/components/phase-config-panel";
-import { DefaultModelsPanel } from "@/features/workspaces/components/default-models-panel";
+import { DefaultPhaseSettingsPanel } from "@/features/workspaces/components/default-phase-settings-panel";
+import { QuickTaskPreviewToggle } from "@/features/workspaces/components/quick-task-preview-toggle";
 import { GateConfigPanel } from "@/features/workspaces/components/gate-config-panel";
 import { PromptsPanel } from "@/features/workspaces/components/prompts-panel";
 import { ReliabilityPanel } from "@/features/workspaces/components/reliability-panel";
@@ -48,10 +49,17 @@ function WorkspaceSettingsPage() {
       </SettingsSection>
 
       <SettingsSection
-        title="Default models"
-        description="Per-phase default model. New tasks inherit these; tasks can override individually."
+        title="Default phase settings"
+        description="Per-phase default model and permission mode. New tasks inherit these; tasks can override per-phase from the preview screen before starting."
       >
-        <DefaultModelsPanel workspaceId={ws.id} />
+        <DefaultPhaseSettingsPanel workspaceId={ws.id} />
+      </SettingsSection>
+
+      <SettingsSection
+        title="Task creation"
+        description="Behaviour of the task creation flow."
+      >
+        <QuickTaskPreviewToggle workspaceId={ws.id} />
       </SettingsSection>
 
       <SettingsSection

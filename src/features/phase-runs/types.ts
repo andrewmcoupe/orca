@@ -4,6 +4,8 @@ export type PhaseRun = {
   phase: string;
   provider: string;
   model: string;
+  /** Captured at PhaseRunStarted; null on legacy runs that predate the field. */
+  permission_mode: "plan" | "acceptEdits" | "bypassPermissions" | null;
   status: "running" | "completed" | "failed" | "cancelled" | string;
   summary: string | null;
   exit_code: number | null;

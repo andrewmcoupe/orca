@@ -42,6 +42,94 @@ pub struct ModelChoice {
     pub model: String,
 }
 
+/// How much trust the underlying provider CLI extends to the agent. Three modes are
+/// exposed; the CLI's `default` ("prompt for every action") is intentionally absent
+/// because it deadlocks our non-interactive subprocess harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PermissionMode {
+    /// Read-only. Agent can analyse but cannot modify files or run commands.
+    #[serde(rename = "plan")]
+    Plan,
+    /// Auto-accept file edits within the working directory; gate shell commands.
+    #[serde(rename = "acceptEdits")]
+    AcceptEdits,
+    /// Full trust. Agent runs anything without prompting.
+    #[serde(rename = "bypassPermissions")]
+    BypassPermissions,
+}
+
+impl PermissionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PermissionMode::Plan => "plan",
+            PermissionMode::AcceptEdits => "acceptEdits",
+            PermissionMode::BypassPermissions => "bypassPermissions",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "plan" => Some(PermissionMode::Plan),
+            "acceptEdits" => Some(PermissionMode::AcceptEdits),
+            "bypassPermissions" => Some(PermissionMode::BypassPermissions),
+            _ => None,
+        }
+    }
+
+    /// Bundled fallback when no override exists at any level — conservative-pragmatic:
+    /// `plan` for the auditor (which only needs to read), `acceptEdits` for write phases.
+    pub fn bundled_default_for(phase: PhaseType) -> Self {
+        match phase {
+            PhaseType::Auditor => PermissionMode::Plan,
+            PhaseType::TestAuthor | PhaseType::Implementer => PermissionMode::AcceptEdits,
+        }
+    }
+
+    /// Belt-and-braces auditor enforcement: the auditor never runs with full bypass,
+    /// regardless of how it was set. Clamps `bypassPermissions` to `acceptEdits` for
+    /// the auditor; leaves all other phase/mode combinations untouched.
+    pub fn clamp_for(self, phase: PhaseType) -> Self {
+        if phase == PhaseType::Auditor && self == PermissionMode::BypassPermissions {
+            PermissionMode::AcceptEdits
+        } else {
+            self
+        }
+    }
+
+    /// Whether this mode is selectable for the given phase. Used by the UI to filter
+    /// dropdown options and by the resolution layer to validate inputs from older event
+    /// payloads.
+    pub fn is_available_for(self, phase: PhaseType) -> bool {
+        match (phase, self) {
+            (PhaseType::Auditor, PermissionMode::BypassPermissions) => false,
+            (PhaseType::TestAuthor, PermissionMode::Plan) => false,
+            (PhaseType::Implementer, PermissionMode::Plan) => false,
+            _ => true,
+        }
+    }
+}
+
+/// Per-phase workspace defaults: model choice and permission mode together. Tasks that
+/// don't override inherit these values at creation time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefaultPhaseSetting {
+    /// `None` means "use the provider's hardcoded default model".
+    #[serde(default)]
+    pub model: Option<ModelChoice>,
+    /// `None` means "use the bundled default for this phase".
+    #[serde(default)]
+    pub permission_mode: Option<PermissionMode>,
+}
+
+/// Output of the resolution function — everything a phase runner needs to launch the
+/// provider for a single phase of a single task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPhaseSettings {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub permission_mode: PermissionMode,
+}
+
 /// Phase configuration for a single task (or workspace default). The phase types are a
 /// closed enum — what's configurable is which phases run, in what order, and which gates
 /// run after which phases for this scope.
@@ -55,6 +143,10 @@ pub struct PhaseConfig {
     /// Keys are phase names (e.g. "implementer").
     #[serde(default)]
     pub models: Option<HashMap<String, ModelChoice>>,
+    /// Per-phase permission mode overrides for this task. `None`/missing entry means
+    /// "inherit workspace default". Keys are phase names.
+    #[serde(default)]
+    pub permission_modes: Option<HashMap<String, PermissionMode>>,
 }
 
 impl PhaseConfig {
@@ -64,6 +156,7 @@ impl PhaseConfig {
             phases: vec![PhaseType::Implementer, PhaseType::Auditor],
             gate_overrides: None,
             models: None,
+            permission_modes: None,
         }
     }
 }
@@ -157,8 +250,23 @@ pub struct WorkspaceSettings {
     /// Per-phase default model. `{ phase_name -> { provider, model } }`. Tasks that do
     /// not override fall back here; phases without an entry fall back to the provider's
     /// hardcoded default.
+    ///
+    /// Retained alongside `default_phase_settings` for backwards-compatibility with
+    /// stored settings JSON written before the per-phase permission-mode landed; readers
+    /// should prefer `default_phase_settings[phase].model` and only fall back here if
+    /// missing. The settings UI writes both fields in lock-step so on-disk state stays
+    /// internally consistent.
     #[serde(default)]
     pub default_models: HashMap<String, ModelChoice>,
+    /// Per-phase default model + permission mode. Supersedes `default_models` for new
+    /// installs; `default_models` is kept for back-compat. Keys are phase names.
+    #[serde(default)]
+    pub default_phase_settings: HashMap<String, DefaultPhaseSetting>,
+    /// When true, the ⌘N quick-task dialog jumps straight from form to execution and
+    /// skips the per-phase preview. Default: false (preview shown) — users build a
+    /// mental model of "what will run" before opting out.
+    #[serde(default)]
+    pub skip_preview_for_quick_tasks: bool,
     #[serde(default)]
     pub worktree_init: WorktreeInitSettings,
     #[serde(default)]
@@ -174,6 +282,8 @@ impl Default for WorkspaceSettings {
             gates: HashMap::new(),
             phase_gates: HashMap::new(),
             default_models: HashMap::new(),
+            default_phase_settings: HashMap::new(),
+            skip_preview_for_quick_tasks: false,
             worktree_init: WorktreeInitSettings::default(),
             phase_timeouts: PhaseTimeoutSettings::default(),
             subprocess: SubprocessSettings::default(),
@@ -189,6 +299,80 @@ impl WorkspaceSettings {
             return Self::default();
         }
         serde_json::from_str(s).unwrap_or_default()
+    }
+
+    /// The workspace-level default model for `phase`. Prefers the new
+    /// `default_phase_settings` entry; falls back to legacy `default_models`. `None`
+    /// means "no workspace-level model is set" — the caller should fall through to the
+    /// provider's hardcoded default.
+    pub fn workspace_default_model(&self, phase: PhaseType) -> Option<ModelChoice> {
+        let key = phase.as_str();
+        if let Some(s) = self.default_phase_settings.get(key) {
+            if let Some(m) = &s.model {
+                return Some(m.clone());
+            }
+        }
+        self.default_models.get(key).cloned()
+    }
+
+    /// The workspace-level default permission mode for `phase`. Honours per-phase
+    /// availability — if the stored value isn't valid for the phase (e.g. somebody
+    /// hand-edited `bypassPermissions` onto the auditor), we fall back to the bundled
+    /// default rather than propagating a forbidden mode.
+    pub fn workspace_default_permission_mode(&self, phase: PhaseType) -> PermissionMode {
+        let key = phase.as_str();
+        let stored = self
+            .default_phase_settings
+            .get(key)
+            .and_then(|s| s.permission_mode);
+        match stored {
+            Some(m) if m.is_available_for(phase) => m,
+            _ => PermissionMode::bundled_default_for(phase),
+        }
+    }
+}
+
+/// Resolve the (provider, model, permission_mode) for a phase using the precedence:
+///
+/// 1. Per-task `phase_config.permission_modes[phase]` / `models[phase]`.
+/// 2. Workspace `default_phase_settings[phase]` (or legacy `default_models[phase]`).
+/// 3. Bundled fallback (`acceptEdits` for write phases, `plan` for the auditor; no
+///    model — provider picks).
+///
+/// The auditor downgrade is applied as the final step: if the resolved mode is
+/// `bypassPermissions` for the auditor (which can only happen via a stale event payload
+/// or hand-edited settings), it's clamped to `acceptEdits`. Defence-in-depth — the UI
+/// shouldn't let the user pick it, but the runtime guarantees it regardless.
+pub fn resolve_phase_settings(
+    workspace_settings: &WorkspaceSettings,
+    task_phase_config: &PhaseConfig,
+    phase: PhaseType,
+) -> ResolvedPhaseSettings {
+    let key = phase.as_str();
+
+    let model_choice = task_phase_config
+        .models
+        .as_ref()
+        .and_then(|m| m.get(key).cloned())
+        .or_else(|| workspace_settings.workspace_default_model(phase));
+
+    let permission_mode = task_phase_config
+        .permission_modes
+        .as_ref()
+        .and_then(|m| m.get(key).copied())
+        .filter(|m| m.is_available_for(phase))
+        .unwrap_or_else(|| workspace_settings.workspace_default_permission_mode(phase))
+        .clamp_for(phase);
+
+    let (provider, model) = match model_choice {
+        Some(c) => (Some(c.provider), Some(c.model)),
+        None => (None, None),
+    };
+
+    ResolvedPhaseSettings {
+        provider,
+        model,
+        permission_mode,
     }
 }
 
@@ -217,6 +401,7 @@ mod tests {
             phases: vec![PhaseType::TestAuthor, PhaseType::Implementer, PhaseType::Auditor],
             gate_overrides: None,
             models: None,
+            permission_modes: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: PhaseConfig = serde_json::from_str(&json).unwrap();
@@ -261,6 +446,176 @@ mod tests {
         assert_eq!(s.phase_timeouts.silence_timeout_seconds, 60);
         assert_eq!(s.phase_timeouts.wall_clock_timeout_seconds, 3600);
         assert_eq!(s.subprocess.additional_env.get("FOO").map(String::as_str), Some("bar"));
+    }
+
+    fn ws_with_phase_settings(
+        entries: &[(PhaseType, Option<&str>, Option<PermissionMode>)],
+    ) -> WorkspaceSettings {
+        let mut s = WorkspaceSettings::default();
+        for (phase, model, mode) in entries {
+            s.default_phase_settings.insert(
+                phase.as_str().to_string(),
+                DefaultPhaseSetting {
+                    model: model.map(|m| ModelChoice {
+                        provider: "claude".into(),
+                        model: m.to_string(),
+                    }),
+                    permission_mode: *mode,
+                },
+            );
+        }
+        s
+    }
+
+    fn task_cfg_with(
+        models: &[(PhaseType, &str)],
+        modes: &[(PhaseType, PermissionMode)],
+    ) -> PhaseConfig {
+        let mut models_map: HashMap<String, ModelChoice> = HashMap::new();
+        for (p, m) in models {
+            models_map.insert(
+                p.as_str().to_string(),
+                ModelChoice {
+                    provider: "claude".into(),
+                    model: (*m).to_string(),
+                },
+            );
+        }
+        let mut modes_map: HashMap<String, PermissionMode> = HashMap::new();
+        for (p, m) in modes {
+            modes_map.insert(p.as_str().to_string(), *m);
+        }
+        PhaseConfig {
+            phases: vec![PhaseType::Implementer, PhaseType::Auditor],
+            gate_overrides: None,
+            models: if models_map.is_empty() {
+                None
+            } else {
+                Some(models_map)
+            },
+            permission_modes: if modes_map.is_empty() {
+                None
+            } else {
+                Some(modes_map)
+            },
+        }
+    }
+
+    #[test]
+    fn resolve_falls_back_to_bundled_default_when_nothing_set() {
+        let ws = WorkspaceSettings::default();
+        let cfg = task_cfg_with(&[], &[]);
+        let r = resolve_phase_settings(&ws, &cfg, PhaseType::Implementer);
+        assert_eq!(r.permission_mode, PermissionMode::AcceptEdits);
+        assert!(r.model.is_none());
+        let a = resolve_phase_settings(&ws, &cfg, PhaseType::Auditor);
+        assert_eq!(a.permission_mode, PermissionMode::Plan);
+    }
+
+    #[test]
+    fn resolve_uses_workspace_default_when_no_task_override() {
+        let ws = ws_with_phase_settings(&[
+            (
+                PhaseType::Implementer,
+                Some("claude-opus-4-5"),
+                Some(PermissionMode::BypassPermissions),
+            ),
+            (
+                PhaseType::Auditor,
+                Some("claude-sonnet-4-5"),
+                Some(PermissionMode::AcceptEdits),
+            ),
+        ]);
+        let cfg = task_cfg_with(&[], &[]);
+        let r = resolve_phase_settings(&ws, &cfg, PhaseType::Implementer);
+        assert_eq!(r.permission_mode, PermissionMode::BypassPermissions);
+        assert_eq!(r.model.as_deref(), Some("claude-opus-4-5"));
+        let a = resolve_phase_settings(&ws, &cfg, PhaseType::Auditor);
+        assert_eq!(a.permission_mode, PermissionMode::AcceptEdits);
+    }
+
+    #[test]
+    fn resolve_task_override_wins_over_workspace_default() {
+        let ws = ws_with_phase_settings(&[(
+            PhaseType::Implementer,
+            Some("claude-sonnet-4-5"),
+            Some(PermissionMode::AcceptEdits),
+        )]);
+        let cfg = task_cfg_with(
+            &[(PhaseType::Implementer, "claude-opus-4-5")],
+            &[(PhaseType::Implementer, PermissionMode::BypassPermissions)],
+        );
+        let r = resolve_phase_settings(&ws, &cfg, PhaseType::Implementer);
+        assert_eq!(r.permission_mode, PermissionMode::BypassPermissions);
+        assert_eq!(r.model.as_deref(), Some("claude-opus-4-5"));
+    }
+
+    #[test]
+    fn resolve_legacy_default_models_still_honoured_when_no_phase_settings_entry() {
+        let mut ws = WorkspaceSettings::default();
+        ws.default_models.insert(
+            "implementer".into(),
+            ModelChoice {
+                provider: "claude".into(),
+                model: "legacy-model".into(),
+            },
+        );
+        let cfg = task_cfg_with(&[], &[]);
+        let r = resolve_phase_settings(&ws, &cfg, PhaseType::Implementer);
+        assert_eq!(r.model.as_deref(), Some("legacy-model"));
+    }
+
+    #[test]
+    fn resolve_clamps_bypass_for_auditor_at_workspace_level() {
+        // A bypassPermissions value lurking in stored settings for the auditor must
+        // never reach the runtime; clamped down to acceptEdits.
+        let ws = ws_with_phase_settings(&[(
+            PhaseType::Auditor,
+            None,
+            Some(PermissionMode::BypassPermissions),
+        )]);
+        let cfg = task_cfg_with(&[], &[]);
+        let r = resolve_phase_settings(&ws, &cfg, PhaseType::Auditor);
+        assert_eq!(r.permission_mode, PermissionMode::Plan); // invalid → bundled default
+    }
+
+    #[test]
+    fn resolve_clamps_bypass_for_auditor_at_task_level() {
+        let ws = WorkspaceSettings::default();
+        let cfg = task_cfg_with(
+            &[],
+            &[(PhaseType::Auditor, PermissionMode::BypassPermissions)],
+        );
+        let r = resolve_phase_settings(&ws, &cfg, PhaseType::Auditor);
+        // The task-level override is filtered out as not-available-for-auditor and
+        // we fall through to the workspace default (which is the bundled default `plan`).
+        assert_eq!(r.permission_mode, PermissionMode::Plan);
+    }
+
+    #[test]
+    fn resolve_filters_plan_mode_for_write_phases() {
+        let ws = ws_with_phase_settings(&[(
+            PhaseType::Implementer,
+            None,
+            Some(PermissionMode::Plan),
+        )]);
+        let cfg = task_cfg_with(&[], &[]);
+        let r = resolve_phase_settings(&ws, &cfg, PhaseType::Implementer);
+        assert_eq!(r.permission_mode, PermissionMode::AcceptEdits);
+    }
+
+    #[test]
+    fn permission_mode_round_trips_via_serde() {
+        for m in [
+            PermissionMode::Plan,
+            PermissionMode::AcceptEdits,
+            PermissionMode::BypassPermissions,
+        ] {
+            let s = serde_json::to_string(&m).unwrap();
+            let back: PermissionMode = serde_json::from_str(&s).unwrap();
+            assert_eq!(m, back);
+            assert_eq!(PermissionMode::parse(m.as_str()), Some(m));
+        }
     }
 
     #[test]

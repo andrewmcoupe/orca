@@ -86,8 +86,8 @@ impl Provider for ClaudeProvider {
                 default: "acceptEdits".into(),
                 choices: vec![
                     SelectChoice {
-                        value: "default".into(),
-                        label: "Default (prompt — likely to deadlock)".into(),
+                        value: "plan".into(),
+                        label: "Plan (read-only)".into(),
                     },
                     SelectChoice {
                         value: "acceptEdits".into(),
@@ -95,7 +95,7 @@ impl Provider for ClaudeProvider {
                     },
                     SelectChoice {
                         value: "bypassPermissions".into(),
-                        label: "Bypass all permissions (dangerous)".into(),
+                        label: "Bypass permissions (dangerous)".into(),
                     },
                 ],
             },
@@ -117,28 +117,30 @@ impl Provider for ClaudeProvider {
             "--include-partial-messages".into(),
         ];
 
-        // Permission flow:
-        //   1. The user picks a value in the per-task / per-workspace UI; that
-        //      lands in `options.permission_mode` via `start_real_phase`'s
-        //      `merge_options(default_options(), overrides)` call.
-        //   2. Default is `acceptEdits` (set in `default_options` above) — agents
-        //      run typecheck/test/lint without prompting, but Claude still asks
-        //      before touching the network or other privileged tools. This is
-        //      what we want for non-interactive operation: any unattended
-        //      prompt would deadlock the subprocess (which has no TTY and a
-        //      closed stdin — see the subprocess module for the hardening
-        //      guarantees).
-        //   3. `bypassPermissions` translates to `--dangerously-skip-permissions`
-        //      (the CLI flag); the user opts into this knowingly via the
-        //      "dangerous" label on the picker.
-        //   4. `default` is offered for completeness but warns "likely to
-        //      deadlock" in the picker — Claude prompts on every tool call,
-        //      and our subprocess EOF-on-stdin means it'll error out fast
-        //      rather than hang forever.
-        let permission_mode = options
+        // Permission flow: the resolved mode lands in `options.permission_mode` via the
+        // resolution layer in `commands::start_real_phase`. The provider trusts that
+        // value — except for the auditor, where we re-clamp `bypassPermissions` to
+        // `acceptEdits` defensively. `bypassPermissions` maps to the CLI's
+        // `--dangerously-skip-permissions` flag; everything else passes through to
+        // `--permission-mode <mode>`. The CLI's own `default` (prompt-on-every-action)
+        // is never selected — it would deadlock against our closed-stdin subprocess.
+        let raw_mode = options
             .get("permission_mode")
             .and_then(|v| v.as_str())
             .unwrap_or("acceptEdits");
+        let phase = options.get("phase").and_then(|v| v.as_str());
+        // Defence-in-depth: the auditor never gets `bypassPermissions`. The resolution
+        // layer already clamps; if a stale call site somehow slips it through anyway we
+        // downgrade here too rather than handing the agent full trust on a read-only
+        // verification phase.
+        let permission_mode = if phase == Some("auditor") && raw_mode == "bypassPermissions" {
+            eprintln!(
+                "claude provider: refusing bypassPermissions for auditor phase; downgrading to acceptEdits"
+            );
+            "acceptEdits"
+        } else {
+            raw_mode
+        };
 
         if permission_mode == "bypassPermissions" {
             args.push("--dangerously-skip-permissions".into());
@@ -231,5 +233,59 @@ impl Provider for ClaudeProvider {
             // pull token_usage out of `result` for PhaseRunCompleted.
             _ => vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts(phase: &str, mode: &str) -> Value {
+        json!({ "phase": phase, "model": "claude-sonnet-4-5", "permission_mode": mode })
+    }
+
+    #[test]
+    fn auditor_bypass_downgrades_to_accept_edits() {
+        let invocation = ClaudeProvider.build_invocation("hi", &opts("auditor", "bypassPermissions"));
+        // The downgrade should produce `--permission-mode acceptEdits` rather than the
+        // dangerous `--dangerously-skip-permissions` flag.
+        let args = invocation.args.join(" ");
+        assert!(
+            args.contains("--permission-mode acceptEdits"),
+            "expected downgrade, got: {args}"
+        );
+        assert!(
+            !args.contains("--dangerously-skip-permissions"),
+            "auditor must never get full bypass: {args}"
+        );
+    }
+
+    #[test]
+    fn implementer_bypass_passes_through() {
+        let invocation =
+            ClaudeProvider.build_invocation("hi", &opts("implementer", "bypassPermissions"));
+        let args = invocation.args.join(" ");
+        assert!(
+            args.contains("--dangerously-skip-permissions"),
+            "implementer should keep bypass: {args}"
+        );
+    }
+
+    #[test]
+    fn plan_mode_passes_through() {
+        let invocation = ClaudeProvider.build_invocation("hi", &opts("auditor", "plan"));
+        let args = invocation.args.join(" ");
+        assert!(args.contains("--permission-mode plan"), "got: {args}");
+    }
+
+    #[test]
+    fn accept_edits_passes_through() {
+        let invocation =
+            ClaudeProvider.build_invocation("hi", &opts("implementer", "acceptEdits"));
+        let args = invocation.args.join(" ");
+        assert!(
+            args.contains("--permission-mode acceptEdits"),
+            "got: {args}"
+        );
     }
 }

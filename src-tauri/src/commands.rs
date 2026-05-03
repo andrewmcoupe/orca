@@ -16,6 +16,7 @@ use crate::events::{append::append_events_in_tx, AppendError};
 use crate::phases::{self, InflightRuns};
 use crate::providers::{self, KnownModel, OptionDecl, ProviderCache, ProviderStatus};
 use crate::recent_events::{self, RecentEventRow};
+use crate::settings::{self, PermissionMode, PhaseConfig, PhaseType};
 use crate::subprocess::{ChildTracker, StreamOptions};
 use crate::workspace_db::open_workspace_db;
 use crate::{ActiveWorkspace, ActiveWorkspaceState, GlobalDb};
@@ -1135,19 +1136,12 @@ pub async fn start_real_phase(
     retry_context: Option<String>,
     is_retry_of: Option<String>,
 ) -> Result<String, String> {
-    if phase != "implementer" && phase != "test_author" && phase != "auditor" {
-        return Err(format!(
+    let phase_typed = PhaseType::parse(&phase).ok_or_else(|| {
+        format!(
             "only 'implementer', 'test_author', and 'auditor' phases are supported, got '{}'",
             phase
-        ));
-    }
-
-    let provider_id = provider_id.unwrap_or_else(|| "claude".to_string());
-    let provider = providers::get(&provider_id)
-        .ok_or_else(|| format!("unknown provider: {}", provider_id))?;
-
-    // Merge user-supplied options over defaults so missing keys still get sensible values.
-    let options = merge_options(provider.default_options(), options.unwrap_or(json!({})));
+        )
+    })?;
 
     let (workspace_id, workspace_path) = {
         let active_state = app.state::<ActiveWorkspaceState>();
@@ -1158,15 +1152,64 @@ pub async fn start_real_phase(
         (aw.id.clone(), aw.path.clone())
     };
 
-    let (spec_markdown, task_title) = {
+    let (spec_markdown, task_title, task_phase_config) = {
         let active_state = app.state::<ActiveWorkspaceState>();
         let mut guard = active_state.0.lock().map_err(|e| e.to_string())?;
         let aw = require_active_workspace(&mut guard)?;
         let task = projections::get_task(&aw.conn, &task_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("task not found: {}", task_id))?;
-        (task.spec_markdown, task.title)
+        let cfg: PhaseConfig = serde_json::from_value(task.phase_config.clone())
+            .unwrap_or_else(|_| PhaseConfig::bundled_default());
+        (task.spec_markdown, task.title, cfg)
     };
+
+    // Resolve provider/model/permission_mode from settings; caller-supplied options
+    // win where present (e.g. the legacy run-real form lets the user pick ad-hoc).
+    let workspace_settings = crate::pipeline::load_workspace_settings(&app, &workspace_id);
+    let resolved =
+        settings::resolve_phase_settings(&workspace_settings, &task_phase_config, phase_typed);
+
+    let caller_options = options.unwrap_or_else(|| json!({}));
+    let provider_id = provider_id
+        .or_else(|| resolved.provider.clone())
+        .unwrap_or_else(|| "claude".to_string());
+    let provider = providers::get(&provider_id)
+        .ok_or_else(|| format!("unknown provider: {}", provider_id))?;
+
+    // Final permission_mode = caller override (if valid for the phase) > resolved.
+    // Auditor clamp applies last so `bypassPermissions` can never reach the runner.
+    let permission_mode = caller_options
+        .get("permission_mode")
+        .and_then(|v| v.as_str())
+        .and_then(PermissionMode::parse)
+        .filter(|m| m.is_available_for(phase_typed))
+        .unwrap_or(resolved.permission_mode)
+        .clamp_for(phase_typed);
+
+    // Compose the options dict the provider sees. Defaults from the provider, then any
+    // resolved values, then caller overrides. The permission_mode and model fields are
+    // always written from the final resolved values so the provider sees consistent
+    // state with what gets recorded on PhaseRunStarted.
+    let mut options = merge_options(provider.default_options(), caller_options);
+    if let Some(map) = options.as_object_mut() {
+        map.insert(
+            "permission_mode".into(),
+            serde_json::Value::String(permission_mode.as_str().to_string()),
+        );
+        // Surface the phase to the provider so it can apply phase-specific safety
+        // checks (e.g. claude's auditor downgrade). Distinct from the event's `phase`
+        // — this one is a hint for the provider only.
+        map.insert(
+            "phase".into(),
+            serde_json::Value::String(phase_typed.as_str().to_string()),
+        );
+        if !map.contains_key("model") || map.get("model") == Some(&serde_json::Value::String(String::new())) {
+            if let Some(model) = &resolved.model {
+                map.insert("model".into(), serde_json::Value::String(model.clone()));
+            }
+        }
+    }
 
     // Resolve the binary path via the cached detection — refresh if the cached entry says
     // not-installed, in case the user just fixed it.
@@ -1235,6 +1278,7 @@ pub async fn start_real_phase(
                     provider,
                     provider_path,
                     options,
+                    permission_mode,
                     cancel,
                     stream_options,
                     extra_env,
@@ -1252,6 +1296,7 @@ pub async fn start_real_phase(
                     provider,
                     provider_path,
                     options,
+                    permission_mode,
                     cancel,
                     stream_options,
                     extra_env,
@@ -1270,6 +1315,7 @@ pub async fn start_real_phase(
                     provider,
                     provider_path,
                     options,
+                    permission_mode,
                     cancel,
                     is_retry: is_retry.unwrap_or(false),
                     retry_context,

@@ -1,7 +1,8 @@
-import { ArrowRight } from "@phosphor-icons/react";
+import { ArrowRight, Lock } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { PhaseConfig, PhaseType } from "@/features/tasks/types";
+import { PERMISSION_MODE_LABEL, type PermissionMode } from "@/features/workspaces/types";
 import type { PhaseRun } from "../types";
 
 type PhaseStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -128,9 +129,24 @@ function PhaseCardRow({
           </Badge>
         </div>
         {latest && (
-          <div className="text-muted-foreground text-[11px] tabular-nums">
-            {latest.provider} · {latest.model}
-            {duration && <> · {duration}</>}
+          <div className="text-muted-foreground space-y-0.5 text-[11px] tabular-nums">
+            <div>
+              {latest.provider} · {latest.model}
+              {duration && <> · {duration}</>}
+            </div>
+            {latest.permission_mode && (
+              <div className="inline-flex items-center gap-1">
+                {latest.permission_mode === "plan" && (
+                  <Lock className="size-3" aria-label="read-only" />
+                )}
+                <span>
+                  mode:{" "}
+                  {PERMISSION_MODE_LABEL[
+                    latest.permission_mode as PermissionMode
+                  ] ?? latest.permission_mode}
+                </span>
+              </div>
+            )}
           </div>
         )}
       </button>

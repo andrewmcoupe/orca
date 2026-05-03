@@ -15,7 +15,7 @@ use crate::events::projections;
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::prompts::{self, PromptContext};
 use crate::providers::{Provider, ProviderEvent};
-use crate::settings::PhaseType;
+use crate::settings::{PermissionMode, PhaseType};
 use crate::subprocess::{self, ChildTracker, StreamOptions};
 use crate::workspace_db::open_workspace_db;
 use crate::worktree;
@@ -45,6 +45,9 @@ pub struct TestAuthorInput {
     pub provider: Box<dyn Provider>,
     pub provider_path: String,
     pub options: Value,
+    /// Resolved at dispatch time; recorded on `PhaseRunStarted` and passed to the
+    /// provider so the event reflects what the provider actually saw.
+    pub permission_mode: PermissionMode,
     pub cancel: CancellationToken,
     pub stream_options: StreamOptions,
     pub extra_env: std::collections::HashMap<String, String>,
@@ -65,6 +68,7 @@ pub async fn run(
         provider,
         provider_path,
         options,
+        permission_mode,
         cancel,
         stream_options,
         extra_env,
@@ -108,6 +112,7 @@ pub async fn run(
                 &task_id,
                 provider.id(),
                 if model.is_empty() { provider.id() } else { &model },
+                permission_mode,
                 &prompt_template_hash,
                 "",
                 "",
@@ -171,6 +176,7 @@ pub async fn run(
         &task_id,
         provider.id(),
         if model.is_empty() { provider.id() } else { &model },
+        permission_mode,
         &prompt_template_hash,
         &worktree_path_str,
         &base_commit,
@@ -389,6 +395,7 @@ fn started_payload(
     task_id: &str,
     provider: &str,
     model: &str,
+    permission_mode: PermissionMode,
     prompt_template_hash: &str,
     worktree_path: &str,
     base_commit: &str,
@@ -398,6 +405,7 @@ fn started_payload(
         "phase": PHASE_NAME,
         "provider": provider,
         "model": model,
+        "permission_mode": permission_mode.as_str(),
         "prompt_template_hash": prompt_template_hash,
         "worktree_path": worktree_path,
         "base_commit": base_commit,

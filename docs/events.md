@@ -43,6 +43,9 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 **WorkspaceSettingsChanged** — settings updated.
 - `settings: object` — full new settings snapshot (not a diff — simpler to reason about). Pipeline-relevant fields:
   - `default_phase_config: PhaseConfig` — phase config that new tasks inherit at creation time. Bundled default: `{ phases: ["implementer", "auditor"], gate_overrides: null }`.
+  - `default_phase_settings: { [phase_name]: { model?: { provider, model }, permission_mode?: "plan" | "acceptEdits" | "bypassPermissions" } }` — per-phase defaults that new tasks inherit. Either field may be absent (in which case the bundled default applies: `acceptEdits` for `test_author`/`implementer`, `plan` for `auditor`; no model — provider picks). The auditor entry is treated as `acceptEdits` if it somehow holds `bypassPermissions` — defence-in-depth against stale settings. Bundled default: empty map.
+  - `default_models: { [phase_name]: { provider, model } }` — legacy per-phase model defaults. Superseded by `default_phase_settings[phase].model` but retained for back-compat with workspaces written before per-phase permission modes landed. Readers prefer `default_phase_settings` and fall back here.
+  - `skip_preview_for_quick_tasks: boolean` — when true, the ⌘N quick-task dialog skips the per-phase preview screen and runs the task immediately. Default `false` so users see exactly what's about to run while building a mental model of the modes.
   - `gates: { [name]: { command: string, timeout_seconds: integer } }` — named gate definitions. Bundled default: empty.
   - `phase_gates: { [phase_name]: string[] }` — which gates run after which phases. Bundled default: empty.
   - `worktree_init: { enabled: bool, detection_enabled: bool, user_command: string | null, timeout_seconds: integer }` — controls the M3 init step that runs after `WorktreeCreated`. Bundled defaults: `{ enabled: true, detection_enabled: true, user_command: null, timeout_seconds: 600 }`.
@@ -55,7 +58,9 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 ```
 {
   phases: ("test_author" | "implementer" | "auditor")[],   // ordered list
-  gate_overrides: { [phase_name]: string[] } | null         // per-phase gate name overrides; null = use workspace default
+  gate_overrides: { [phase_name]: string[] } | null,        // per-phase gate name overrides; null = use workspace default
+  models?: { [phase_name]: { provider, model } } | null,    // per-phase model overrides; missing entries inherit workspace default
+  permission_modes?: { [phase_name]: "plan" | "acceptEdits" | "bypassPermissions" } | null   // per-phase permission mode overrides; missing entries inherit workspace default. The auditor never accepts `bypassPermissions` — invalid values fall through to the workspace default.
 }
 ```
 
@@ -159,6 +164,7 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 - `phase: "test_author" | "implementer" | "auditor"`
 - `provider: string` — e.g. `"claude_code"`, `"codex"`
 - `model: string` — e.g. `"claude-sonnet-4-5"`
+- `permission_mode: "plan" | "acceptEdits" | "bypassPermissions"` — the resolved permission mode for this run, captured at start time so retroactive settings changes don't rewrite history. The auditor is guaranteed to never carry `bypassPermissions` here even if the request asked for it (the resolution layer and the provider both clamp).
 - `prompt_template_id: string` — legacy; carried for backwards compatibility. New code should rely on `prompt_template_hash`.
 - `prompt_template_hash: string` — content hash of the rendered prompt at execution time. Lets us compare runs that nominally used the same template but resolved to different content (because variables differed, or because the user edited the template between runs).
 - `worktree_path: string`

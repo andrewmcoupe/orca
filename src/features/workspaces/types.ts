@@ -20,10 +20,44 @@ export type ModelChoice = {
   model: string;
 };
 
+export type PermissionMode = "plan" | "acceptEdits" | "bypassPermissions";
+
+/** Modes the UI is allowed to surface for each phase. The auditor never sees
+ * `bypassPermissions`; write phases never see `plan` (they need to write). */
+export const PERMISSION_MODES_FOR_PHASE: Record<PhaseType, PermissionMode[]> = {
+  test_author: ["acceptEdits", "bypassPermissions"],
+  implementer: ["acceptEdits", "bypassPermissions"],
+  auditor: ["plan", "acceptEdits"],
+};
+
+export const PERMISSION_MODE_LABEL: Record<PermissionMode, string> = {
+  plan: "Plan (read-only)",
+  acceptEdits: "Accept edits",
+  bypassPermissions: "Bypass permissions",
+};
+
+export const PERMISSION_MODE_HELP: Record<PermissionMode, string> = {
+  plan: "Read-only. The agent can analyse but cannot modify files or run commands.",
+  acceptEdits:
+    "Auto-accepts file edits within the working directory. Shell commands still prompt — but our subprocess harness denies prompts non-interactively, so unsafe shells fail fast.",
+  bypassPermissions:
+    "Full trust: the agent runs anything without prompting. Use only when you've decided to trust the agent for this run.",
+};
+
+export function bundledDefaultPermissionMode(phase: PhaseType): PermissionMode {
+  return phase === "auditor" ? "plan" : "acceptEdits";
+}
+
+export type DefaultPhaseSetting = {
+  model?: ModelChoice | null;
+  permission_mode?: PermissionMode | null;
+};
+
 export type PhaseConfig = {
   phases: PhaseType[];
   gate_overrides: Record<string, string[]> | null;
   models?: Record<string, ModelChoice> | null;
+  permission_modes?: Record<string, PermissionMode> | null;
 };
 
 export type GateConfig = {
@@ -51,11 +85,44 @@ export type WorkspaceSettings = {
   default_phase_config: PhaseConfig;
   gates: Record<string, GateConfig>;
   phase_gates: Record<string, string[]>;
+  /** Legacy field kept for back-compat; prefer `default_phase_settings[phase].model`. */
   default_models: Record<string, ModelChoice>;
+  /** Per-phase model + permission mode defaults. Tasks inherit these on creation. */
+  default_phase_settings?: Record<string, DefaultPhaseSetting>;
+  /** When true, ⌘N quick-task skips the per-phase preview screen. Default false. */
+  skip_preview_for_quick_tasks?: boolean;
   worktree_init?: WorktreeInitSettings;
   phase_timeouts?: PhaseTimeoutSettings;
   subprocess?: SubprocessSettings;
 };
+
+/**
+ * Resolve the (model, permission_mode) for a phase using the same precedence as the
+ * backend: task `phase_config` overrides > workspace `default_phase_settings` >
+ * legacy `default_models` > bundled fallback. Mirrors `settings::resolve_phase_settings`
+ * in Rust; if you change the order there, change it here too.
+ */
+export function resolvePhaseSettings(
+  workspace: WorkspaceSettings,
+  taskPhaseConfig: PhaseConfig,
+  phase: PhaseType,
+): { model: ModelChoice | null; permission_mode: PermissionMode } {
+  const allowed = PERMISSION_MODES_FOR_PHASE[phase];
+  const taskMode = taskPhaseConfig.permission_modes?.[phase];
+  const wsSetting = workspace.default_phase_settings?.[phase];
+  const wsMode = wsSetting?.permission_mode;
+  const candidate =
+    (taskMode && allowed.includes(taskMode) && taskMode) ||
+    (wsMode && allowed.includes(wsMode) && wsMode) ||
+    bundledDefaultPermissionMode(phase);
+
+  const taskModel = taskPhaseConfig.models?.[phase] ?? null;
+  const wsModelNew = wsSetting?.model ?? null;
+  const wsModelLegacy = workspace.default_models?.[phase] ?? null;
+  const model = taskModel ?? wsModelNew ?? wsModelLegacy ?? null;
+
+  return { model, permission_mode: candidate };
+}
 
 export const DEFAULT_WORKTREE_INIT: WorktreeInitSettings = {
   enabled: true,

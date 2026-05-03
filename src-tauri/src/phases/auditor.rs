@@ -20,7 +20,7 @@ use crate::events::projections;
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::prompts::{self, PromptContext};
 use crate::providers::{Provider, ProviderEvent};
-use crate::settings::PhaseType;
+use crate::settings::{PermissionMode, PhaseType};
 use crate::subprocess::{self, ChildTracker, StreamOptions};
 use crate::workspace_db::open_workspace_db;
 use crate::worktree;
@@ -51,6 +51,10 @@ pub struct AuditorInput {
     pub provider: Box<dyn Provider>,
     pub provider_path: String,
     pub options: Value,
+    /// Resolved at dispatch time. The auditor is guaranteed to never see
+    /// `bypassPermissions` here — `start_real_phase` clamps before constructing this
+    /// input. Recorded on `PhaseRunStarted` and forwarded into the provider's options.
+    pub permission_mode: PermissionMode,
     pub cancel: CancellationToken,
     pub stream_options: StreamOptions,
     pub extra_env: std::collections::HashMap<String, String>,
@@ -80,10 +84,14 @@ pub async fn run(
         provider,
         provider_path,
         options,
+        permission_mode,
         cancel,
         stream_options,
         extra_env,
     } = input;
+    // Belt-and-braces: even if a stale or hand-crafted dispatch supplied
+    // `bypassPermissions`, the auditor never gets full bypass.
+    let permission_mode = permission_mode.clamp_for(PhaseType::Auditor);
 
     let mut conn = open_workspace_db(&workspace_path).map_err(|e| e.to_string())?;
 
@@ -138,6 +146,7 @@ pub async fn run(
         &task_id,
         provider.id(),
         model_str,
+        permission_mode,
         &prompt_template_hash,
         &prior_phase_commits,
         &worktree_path_str,
@@ -507,6 +516,7 @@ fn started_payload(
     task_id: &str,
     provider: &str,
     model: &str,
+    permission_mode: PermissionMode,
     prompt_template_hash: &str,
     prior_phase_commits: &std::collections::HashMap<String, String>,
     worktree_path: &str,
@@ -517,6 +527,7 @@ fn started_payload(
         "phase": PHASE_NAME,
         "provider": provider,
         "model": model,
+        "permission_mode": permission_mode.as_str(),
         "prompt_template_hash": prompt_template_hash,
         "prior_phase_commits": prior_phase_commits,
         "worktree_path": worktree_path,
