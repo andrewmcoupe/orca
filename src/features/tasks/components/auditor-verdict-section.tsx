@@ -1,5 +1,8 @@
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { tasksApi } from "../api";
 import {
@@ -31,6 +34,7 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
   const passBack = usePassBackToImplementer();
   const reject = useRejectTask();
   const approveAnyway = useApproveTaskAnyway();
+  const [feedback, setFeedback] = useState("");
 
   if (verdictQ.isLoading || !verdictQ.data) return null;
   const v = verdictQ.data;
@@ -38,6 +42,14 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
   const showActions = kind === "revise" || kind === "reject";
   const pending =
     passBack.isPending || reject.isPending || approveAnyway.isPending;
+
+  const onPassBack = () => {
+    const trimmed = feedback.trim();
+    passBack.mutate(
+      { taskId, userFeedback: trimmed.length > 0 ? trimmed : null },
+      { onSuccess: () => setFeedback("") },
+    );
+  };
 
   return (
     <section className="space-y-3">
@@ -70,10 +82,27 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
           </ul>
         )}
         {showActions && (
-          <div className="flex flex-wrap items-center gap-2 pt-2">
+          <div className="space-y-2 pt-2">
+            <div className="space-y-1.5">
+              <Label
+                htmlFor="passback-feedback"
+                className="text-muted-foreground text-[11px] uppercase tracking-wide"
+              >
+                Your feedback (optional)
+              </Label>
+              <Textarea
+                id="passback-feedback"
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                rows={3}
+                placeholder="Anything to add or override? Combined with the auditor's concerns when passing back. The implementer treats your feedback as authoritative if it conflicts."
+                disabled={pending}
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
-              onClick={() => passBack.mutate(taskId)}
+              onClick={onPassBack}
               disabled={pending}
             >
               Pass back to implementer
@@ -101,6 +130,7 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
                 )}
               </p>
             )}
+            </div>
           </div>
         )}
       </div>

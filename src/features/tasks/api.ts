@@ -30,8 +30,11 @@ export const tasksApi = {
     invoke<void>("cancel_task", { taskId, reason }),
   deleteWorktree: (taskId: string, force: boolean) =>
     invoke<void>("delete_worktree", { taskId, force }),
-  passBackToImplementer: (taskId: string) =>
-    invoke<string>("pass_back_to_implementer", { taskId }),
+  passBackToImplementer: (taskId: string, userFeedback: string | null) =>
+    invoke<string>("pass_back_to_implementer", {
+      taskId,
+      userFeedback,
+    }),
   reject: (taskId: string) => invoke<void>("reject_task", { taskId }),
   approveAnyway: (taskId: string) =>
     invoke<void>("approve_task_anyway", { taskId }),

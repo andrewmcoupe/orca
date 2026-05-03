@@ -1404,6 +1404,7 @@ pub fn cancel_task(
 pub async fn pass_back_to_implementer(
     app: AppHandle,
     task_id: String,
+    user_feedback: Option<String>,
 ) -> Result<String, String> {
     let (retry_context, prior_implementer_run_id) = {
         let active = app.state::<ActiveWorkspaceState>();
@@ -1422,10 +1423,18 @@ pub async fn pass_back_to_implementer(
             .rev()
             .find(|r| r.phase == "implementer")
             .map(|r| r.id.clone());
-        (
-            format_concerns_for_retry(&latest.summary, &latest.concerns),
-            prior,
-        )
+        let trimmed_feedback = user_feedback
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let payload = json!({
+            "auditor_summary": latest.summary,
+            "auditor_concerns": latest.concerns,
+            "user_feedback": trimmed_feedback,
+        })
+        .to_string();
+        (payload, prior)
     };
 
     start_real_phase(
@@ -1527,35 +1536,6 @@ pub fn get_latest_auditor_verdict_for_task(
     Ok(verdicts.into_iter().next())
 }
 
-fn format_concerns_for_retry(summary: &str, concerns: &serde_json::Value) -> String {
-    let mut out = String::new();
-    if !summary.trim().is_empty() {
-        out.push_str("Auditor summary:\n");
-        out.push_str(summary.trim());
-        out.push_str("\n\n");
-    }
-    out.push_str("Concerns to address:\n");
-    if let Some(arr) = concerns.as_array() {
-        for c in arr {
-            let severity = c.get("severity").and_then(|v| v.as_str()).unwrap_or("");
-            let category = c.get("category").and_then(|v| v.as_str()).unwrap_or("");
-            let rationale = c.get("rationale").and_then(|v| v.as_str()).unwrap_or("");
-            let anchor = c
-                .get("anchor")
-                .and_then(|a| {
-                    let path = a.get("path").and_then(|v| v.as_str())?;
-                    let line = a.get("line").and_then(|v| v.as_i64())?;
-                    Some(format!(" ({}:{})", path, line))
-                })
-                .unwrap_or_default();
-            out.push_str(&format!(
-                "- [{}] {}{}: {}\n",
-                severity, category, anchor, rationale
-            ));
-        }
-    }
-    out
-}
 
 #[tauri::command]
 pub fn delete_worktree(
@@ -2089,37 +2069,6 @@ mod tests {
         assert_eq!(plan_completion_eligible(&conn, "nope").unwrap(), None);
     }
 
-    #[test]
-    fn format_concerns_includes_summary_severity_anchor_and_rationale() {
-        let concerns = serde_json::json!([
-            {
-                "category": "tests",
-                "severity": "blocking",
-                "anchor": { "path": "src/foo.rs", "line": 42 },
-                "rationale": "missing assertion",
-                "reference_proposition_id": null
-            },
-            {
-                "category": "style",
-                "severity": "advisory",
-                "anchor": null,
-                "rationale": "prefer let-else",
-                "reference_proposition_id": null
-            }
-        ]);
-        let out = format_concerns_for_retry("Looks close but two issues.", &concerns);
-        assert!(out.contains("Auditor summary:"));
-        assert!(out.contains("Looks close but two issues."));
-        assert!(out.contains("[blocking] tests (src/foo.rs:42): missing assertion"));
-        assert!(out.contains("[advisory] style: prefer let-else"));
-    }
-
-    #[test]
-    fn format_concerns_handles_empty() {
-        let out = format_concerns_for_retry("", &serde_json::json!([]));
-        assert!(out.contains("Concerns to address:"));
-        assert!(!out.contains("Auditor summary:"));
-    }
 }
 
 type ApplyFn = fn(&rusqlite::Transaction, &crate::events::types::AppendedEvent) -> Result<(), projections::ProjectionError>;

@@ -39,7 +39,15 @@ pub struct PromptContext {
     pub prior_phase_commits: HashMap<String, String>,
     pub git_diff: Option<String>,
     pub is_retry: bool,
+    /// Legacy / fallback: a single pre-formatted retry block. Set when the caller had
+    /// nothing structured to pass — the bundled prompt prefers the structured fields
+    /// below when available.
     pub retry_context: Option<String>,
+    /// Pre-formatted bullet list of the auditor's concerns (severity, category, anchor,
+    /// rationale), suitable for direct inclusion in a markdown prompt section.
+    pub retry_auditor_block: Option<String>,
+    /// Free-text feedback the user typed when passing back to the implementer.
+    pub retry_user_feedback: Option<String>,
 }
 
 /// The path a customised prompt file would live at, regardless of whether it exists.
@@ -143,6 +151,8 @@ mod tests {
             git_diff: Some("diff --git a/x b/x\n".into()),
             is_retry: true,
             retry_context: Some("- be more careful".into()),
+            retry_auditor_block: None,
+            retry_user_feedback: None,
         }
     }
 

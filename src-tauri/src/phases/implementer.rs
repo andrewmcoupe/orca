@@ -88,6 +88,8 @@ pub async fn run(
     let workspace_path_buf = std::path::PathBuf::from(&workspace_path);
     let template = prompts::resolve(&workspace_path_buf, PhaseType::Implementer)
         .map_err(|e| e.to_string())?;
+    let (retry_auditor_block, retry_user_feedback) =
+        parse_retry_context(retry_context.as_deref());
     let context = PromptContext {
         task_title: task_title.clone(),
         task_spec_markdown: spec_markdown.clone(),
@@ -95,6 +97,8 @@ pub async fn run(
         prior_phase_commits: prior_phase_commits.clone(),
         is_retry,
         retry_context: retry_context.clone(),
+        retry_auditor_block,
+        retry_user_feedback,
         ..Default::default()
     };
     let prompt = prompts::render(&template, &context).map_err(|e| e.to_string())?;
@@ -410,6 +414,78 @@ fn ensure_task_worktree(
 /// and `is_retry_of` (set later when retry plumbing lands; for now just a flag in
 /// `is_retry`). The applier currently only reads the legacy fields, so the additional
 /// fields ride along for replay/audit but don't affect projections yet.
+/// Pull the structured fields out of the `retry_context` JSON payload built by
+/// `pass_back_to_implementer`. Returns `(auditor_block, user_feedback)`.
+///
+/// The payload shape is `{ auditor_summary, auditor_concerns: [...], user_feedback }`.
+/// If the input is `None`, empty, or unparseable (legacy plain-text retry contexts), we
+/// return `(None, None)` and the prompt falls back to its `retry_context` variable.
+fn parse_retry_context(raw: Option<&str>) -> (Option<String>, Option<String>) {
+    let s = match raw {
+        Some(s) if !s.trim().is_empty() => s,
+        _ => return (None, None),
+    };
+    let v: serde_json::Value = match serde_json::from_str(s) {
+        Ok(v) => v,
+        Err(_) => return (None, None),
+    };
+
+    let summary = v
+        .get("auditor_summary")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let concerns = v.get("auditor_concerns").cloned().unwrap_or(json!([]));
+    let formatted = format_auditor_block(&summary, &concerns);
+    let auditor_block = if formatted.trim().is_empty() {
+        None
+    } else {
+        Some(formatted)
+    };
+
+    let user_feedback = v
+        .get("user_feedback")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    (auditor_block, user_feedback)
+}
+
+fn format_auditor_block(summary: &str, concerns: &serde_json::Value) -> String {
+    let mut out = String::new();
+    if !summary.is_empty() {
+        out.push_str("Auditor summary:\n");
+        out.push_str(summary);
+        out.push_str("\n\n");
+    }
+    if let Some(arr) = concerns.as_array() {
+        if !arr.is_empty() {
+            out.push_str("Concerns to address:\n");
+            for c in arr {
+                let severity = c.get("severity").and_then(|v| v.as_str()).unwrap_or("");
+                let category = c.get("category").and_then(|v| v.as_str()).unwrap_or("");
+                let rationale = c.get("rationale").and_then(|v| v.as_str()).unwrap_or("");
+                let anchor = c
+                    .get("anchor")
+                    .and_then(|a| {
+                        let path = a.get("path").and_then(|v| v.as_str())?;
+                        let line = a.get("line").and_then(|v| v.as_i64())?;
+                        Some(format!(" ({}:{})", path, line))
+                    })
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "- [{}] {}{}: {}\n",
+                    severity, category, anchor, rationale
+                ));
+            }
+        }
+    }
+    out
+}
+
 fn started_payload(
     task_id: &str,
     provider: &str,
@@ -487,4 +563,78 @@ fn handle_line(
         }
     }
     Ok(seq)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_retry_context_none_when_absent() {
+        let (a, u) = parse_retry_context(None);
+        assert!(a.is_none());
+        assert!(u.is_none());
+    }
+
+    #[test]
+    fn parse_retry_context_none_when_unparseable() {
+        let (a, u) = parse_retry_context(Some("not json"));
+        assert!(a.is_none());
+        assert!(u.is_none());
+    }
+
+    #[test]
+    fn parse_retry_context_returns_auditor_block_and_user_feedback() {
+        let payload = json!({
+            "auditor_summary": "Looks close but two issues.",
+            "auditor_concerns": [
+                {
+                    "category": "tests",
+                    "severity": "blocking",
+                    "anchor": { "path": "src/foo.rs", "line": 42 },
+                    "rationale": "missing assertion"
+                },
+                {
+                    "category": "style",
+                    "severity": "advisory",
+                    "anchor": null,
+                    "rationale": "prefer let-else"
+                }
+            ],
+            "user_feedback": "  also rename Foo to Bar  ",
+        })
+        .to_string();
+        let (a, u) = parse_retry_context(Some(&payload));
+        let a = a.expect("auditor block");
+        assert!(a.contains("Auditor summary:"));
+        assert!(a.contains("Looks close but two issues."));
+        assert!(a.contains("[blocking] tests (src/foo.rs:42): missing assertion"));
+        assert!(a.contains("[advisory] style: prefer let-else"));
+        assert_eq!(u.as_deref(), Some("also rename Foo to Bar"));
+    }
+
+    #[test]
+    fn parse_retry_context_user_feedback_only() {
+        let payload = json!({
+            "auditor_summary": "",
+            "auditor_concerns": [],
+            "user_feedback": "do the other thing",
+        })
+        .to_string();
+        let (a, u) = parse_retry_context(Some(&payload));
+        assert!(a.is_none());
+        assert_eq!(u.as_deref(), Some("do the other thing"));
+    }
+
+    #[test]
+    fn parse_retry_context_blank_user_feedback_is_none() {
+        let payload = json!({
+            "auditor_summary": "s",
+            "auditor_concerns": [],
+            "user_feedback": "   ",
+        })
+        .to_string();
+        let (_, u) = parse_retry_context(Some(&payload));
+        assert!(u.is_none());
+    }
 }

@@ -21,7 +21,13 @@ export function useLatestAuditorVerdict(taskId: string | undefined) {
 
 export function usePassBackToImplementer() {
   return useMutation({
-    mutationFn: (taskId: string) => tasksApi.passBackToImplementer(taskId),
+    mutationFn: ({
+      taskId,
+      userFeedback,
+    }: {
+      taskId: string;
+      userFeedback: string | null;
+    }) => tasksApi.passBackToImplementer(taskId, userFeedback),
   });
 }
 
