@@ -26,6 +26,10 @@ A plan groups related tasks and carries shared context — a PRD, a Linear ticke
 
 A task is a unit of work belonging to a plan. It owns its lifecycle from creation through merge or cancellation. The PRD section or external ticket that motivated the task lives on the parent Plan, not on the Task itself.
 
+### Briefing
+
+A briefing is a long-lived aggregate that captures the iterative plan-generation flow. The user describes a feature; a CLI provider produces a structured draft (title, description, tasks with relevant files, assumptions); the user edits inline, pushes back on assumptions, and iteratively refines. On acceptance, the briefing produces a Plan and N Tasks (each with its `relevant_files`). The briefing's event log doubles as an audit trail for "why does this plan look the way it does."
+
 ### PhaseRun
 
 A single execution of one phase (test-author, implementer, auditor) against one task with a specific provider and model. Modeled as its own aggregate rather than as events on Task because phase runs are self-contained, retriable, and comparable across models. A task has many phase runs over its lifetime.
@@ -73,8 +77,8 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 - `workspace_id: string`
 - `title: string`
 - `description: string` — markdown; the PRD content, Linear ticket body, or short manual description
-- `source: "manual" | "prd_file" | "linear" | "github_issue"` — extensible; only `manual` and `prd_file` are used immediately
-- `source_metadata: object | null` — provider-specific (e.g. `{ external_id: "LIN-123", url: "..." }` for Linear). Null for `manual`.
+- `source: "manual" | "prd_file" | "linear" | "github_issue" | "briefing"` — extensible; `manual`, `prd_file`, and `briefing` are used immediately
+- `source_metadata: object | null` — provider-specific (e.g. `{ external_id: "LIN-123", url: "..." }` for Linear; `{ briefing_id: string, generation_count: integer }` for `briefing`). Null for `manual`.
 
 **PlanDescriptionRevised** — title and/or description edited.
 - `title: string` — full new title
@@ -95,11 +99,12 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 
 ### Task events
 
-**TaskCreated** — new task entered the system. **Version 3.** Version 1 never existed in the wild; v2 has no upcaster (the v3 applier tolerantly defaults the new field, so any v2 events that do exist replay against v3 without loss).
+**TaskCreated** — new task entered the system. **Version 3.** Version 1 never existed in the wild; v2 has no upcaster (the v3 applier tolerantly defaults the new field, so any v2 events that do exist replay against v3 without loss). The v3 applier also tolerantly defaults `relevant_files` (added with the briefing flow) to an empty array when the field is missing — additive-evolution rules apply, so no version bump is required.
 - `plan_id: string` — the parent plan; the workspace is derived from the plan
 - `title: string`
 - `spec_markdown: string`
 - `phase_config: PhaseConfig` — the phase config for this task. Resolved at task-creation time (events are immutable: the config at creation is the config that stuck). Inherits the workspace's `default_phase_config` if no per-task override was supplied.
+- `relevant_files: RelevantFile[]` — files the plan author identified as likely targets for this task. Populated by the briefing flow; empty for tasks created via the quick-task shortcut or other paths without file awareness. Surfaced to the implementer prompt as a "Likely files to touch" section. `RelevantFile = { path: string, certainty: "Confirmed" | "Candidate", reason: string }`.
 
 **TaskBaseCommitRecorded** — the commit the task's worktree was created from. This is the diff anchor for "the diff for this task" (used by the auditor and by UI-level diff views). Emitted when the worktree is provisioned for the task; conceptually a Task-level fact, kept on the Task aggregate so it survives worktree recreation.
 - `commit_sha: string`
@@ -156,6 +161,106 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 - `duration_ms: u64`
 - `output: string` — captured stdout+stderr, truncated as above
 - `detection_kind: string` — same enum as `WorktreeInitialized`
+
+### Briefing events
+
+All Briefing events live in the per-workspace event store, keyed by `aggregate_type = "briefing"`. The aggregate id is the briefing's ULID.
+
+**`BriefingStarted`** — user opened the briefing flow with an initial description. Always seq 1.
+- `workspace_id: string`
+- `initial_description: string` — what the user typed in the setup screen
+- `provider: string` — provider id (e.g. `"claude"`)
+- `model: string`
+
+**`BriefingDraftProduced`** — a draft (initial or refined) came back from the model and was validated. The applier replaces the projection's `current_draft_json` with this draft.
+- `draft: BriefingDraft` — full draft contents (see schema below)
+- `generation_index: integer` — 1 for the initial draft, 2+ for refinements
+- `prompt_template_hash: string` — content hash of the rendered prompt used (lets you correlate drafts with prompt versions later)
+- `duration_ms: integer`
+- `validation_results: { task_id: string, path: string, exists: bool }[]` — file-existence check results. Surfaced in the UI as warnings on non-existent paths.
+
+**`BriefingDraftEdited`** — user's pending edits to the most recent draft. Recorded before refinement so the model sees what the user changed. Does not mutate `current_draft_json`; the projection's `pending_edits_json` field tracks the latest edits.
+- `edits: BriefingEdits` — see schema
+
+**`BriefingPushedBack`** — user explicitly pushed back on a single assumption. Modeled separately from generic edits because the model treats pushbacks as direction it must respond to.
+- `assumption_id: string`
+- `pushback: string` — freeform comment
+
+**`BriefingRefineRequested`** — bookmarks the user's "refine again" click before the next CLI call. The result is a `BriefingDraftProduced` with `generation_index = previous + 1`.
+
+**`BriefingCompleted`** — user accepted the draft. A Plan and its Tasks have been emitted on their own aggregate streams.
+- `plan_id: string`
+- `final_generation_index: integer`
+
+**`BriefingCancelled`** — briefing abandoned.
+- `reason: "user_cancelled" | "generation_failed_repeatedly"`
+
+#### Briefing schema
+
+```
+BriefingDraft {
+  title: string,
+  description: string,                 // markdown
+  tasks: DraftTask[],
+  assumptions: DraftAssumption[],
+}
+
+DraftTask {
+  id: string,                          // ULID, stable across refinements where possible
+  title: string,
+  spec_markdown: string,               // acceptance criteria
+  relevant_files: RelevantFile[],
+}
+
+RelevantFile {
+  path: string,
+  certainty: "Confirmed" | "Candidate",
+  reason: string,
+}
+
+DraftAssumption {
+  id: string,                          // ULID, stable across refinements
+  statement: string,
+}
+
+BriefingEdits {
+  title: string | null,
+  description: string | null,
+  task_edits: TaskEdit[],
+  task_additions: DraftTask[],
+  task_removals: string[],             // task ids
+  assumption_pushbacks: AssumptionPushback[],
+}
+
+TaskEdit {
+  task_id: string,
+  title: string | null,
+  spec_markdown: string | null,
+  file_additions: RelevantFile[],
+  file_removals: string[],             // paths to remove
+}
+
+AssumptionPushback {
+  assumption_id: string,
+  pushback: string,
+}
+```
+
+#### Typical event flow
+
+```
+BriefingStarted
+BriefingDraftProduced (gen=1)
+[user edits in UI]
+BriefingDraftEdited
+BriefingPushedBack (one per pushback)
+BriefingRefineRequested
+BriefingDraftProduced (gen=2)
+[user accepts]
+PlanCreated
+TaskCreated (xN)
+BriefingCompleted
+```
 
 ### PhaseRun events
 
@@ -259,6 +364,7 @@ Stored projections. The frontend reads projections via simple SQL; the event app
 - **`phase_run_projection`** — one row per phase run. Status, provider, model, summary, token usage, timing.
 - **`phase_run_output`** — denormalized streaming text. Treated as a projection of `PhaseRunOutputAppended` events. The events remain source of truth; this table is for fast reads.
 - **`auditor_verdict_projection`** — one row per `AuditorVerdictRendered` event, keyed by the auditor `phase_run_id`. Stores verdict, confidence, summary, and concerns JSON for fast UI reads.
+- **`briefing_projection`** — one row per briefing. Columns: `id`, `workspace_id`, `status` (`active | completed | cancelled`), `current_draft_json`, `pending_edits_json`, `validation_results_json`, `generation_count`, `provider`, `model`, `initial_description`, `final_plan_id`, `cancel_reason`, `created_at`, `updated_at`. The current draft is updated on each `BriefingDraftProduced`; edits and pushbacks accumulate in `pending_edits_json` (cleared after the next `BriefingDraftProduced`).
 
 Projections can be dropped and rebuilt from events at any time. A `rebuild_projections` Tauri command exists from day one — it's a development necessity, not a debugging tool.
 

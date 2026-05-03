@@ -9,7 +9,8 @@ use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::events::projections::{
-    self, apply_phase_run_event, apply_plan_event, apply_task_event, apply_workspace_event,
+    self, apply_briefing_event, apply_phase_run_event, apply_plan_event, apply_task_event,
+    apply_workspace_event,
 };
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::events::{append::append_events_in_tx, AppendError};
@@ -37,6 +38,10 @@ fn new_command_id() -> String {
 }
 
 fn make_metadata(actor: &str) -> EventMetadata {
+    make_metadata_for(actor)
+}
+
+pub(crate) fn make_metadata_for(actor: &str) -> EventMetadata {
     EventMetadata {
         command_id: new_command_id(),
         actor: actor.to_string(),
@@ -45,7 +50,7 @@ fn make_metadata(actor: &str) -> EventMetadata {
     }
 }
 
-fn emit_projection_updated(
+pub(crate) fn emit_projection_updated(
     app: &AppHandle,
     workspace_id: Option<&str>,
     aggregate_type: &str,
@@ -2281,6 +2286,7 @@ pub fn rebuild_projections(
     let do_plan = aggregate_type.as_deref().map_or(true, |t| t == "plan");
     let do_task = aggregate_type.as_deref().map_or(true, |t| t == "task");
     let do_phase_run = aggregate_type.as_deref().map_or(true, |t| t == "phase_run");
+    let do_briefing = aggregate_type.as_deref().map_or(true, |t| t == "briefing");
 
     // --- Workspace (global db) ---
     if do_workspace {
@@ -2301,7 +2307,7 @@ pub fn rebuild_projections(
     }
 
     // --- Per-workspace projections ---
-    if do_plan || do_task || do_phase_run {
+    if do_plan || do_task || do_phase_run || do_briefing {
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         if let Some(aw) = guard.as_mut() {
             let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
@@ -2314,6 +2320,7 @@ pub fn rebuild_projections(
                  DROP TABLE IF EXISTS task_merge_attempt_projection;
                  DROP TABLE IF EXISTS task_projection;
                  DROP TABLE IF EXISTS plan_projection;
+                 DROP TABLE IF EXISTS briefing_projection;
                  DROP TABLE IF EXISTS recent_events;",
             )
             .map_err(|e| e.to_string())?;
@@ -2342,6 +2349,12 @@ pub fn rebuild_projections(
                 |tx, ev| crate::recent_events::record_event(tx, ev).map_err(|e| e.into()),
                 &mut sink,
             )?;
+            replay_into(
+                &tx,
+                "briefing",
+                |tx, ev| crate::recent_events::record_event(tx, ev).map_err(|e| e.into()),
+                &mut sink,
+            )?;
             rebuilt.push("recent_events".into());
 
             if do_plan {
@@ -2363,9 +2376,18 @@ pub fn rebuild_projections(
                 )?;
                 rebuilt.push(format!("phase_run ({} events)", count));
             }
+            if do_briefing {
+                let count = replay_into(
+                    &tx,
+                    "briefing",
+                    apply_briefing_event_wrapper,
+                    &mut events_replayed,
+                )?;
+                rebuilt.push(format!("briefing ({} events)", count));
+            }
 
             tx.commit().map_err(|e| e.to_string())?;
-        } else if aggregate_type.as_deref().map_or(false, |t| t == "task" || t == "phase_run") {
+        } else if aggregate_type.as_deref().map_or(false, |t| t == "task" || t == "phase_run" || t == "briefing") {
             return Err("no active workspace; cannot rebuild task/phase_run projections".into());
         }
     }
@@ -2517,6 +2539,12 @@ fn apply_phase_run_event_wrapper(
     ev: &crate::events::types::AppendedEvent,
 ) -> Result<(), projections::ProjectionError> {
     apply_phase_run_event(tx, ev)
+}
+fn apply_briefing_event_wrapper(
+    tx: &rusqlite::Transaction,
+    ev: &crate::events::types::AppendedEvent,
+) -> Result<(), projections::ProjectionError> {
+    apply_briefing_event(tx, ev)
 }
 
 fn replay_into(

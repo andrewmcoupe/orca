@@ -10,10 +10,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use handlebars::Handlebars;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::briefing::{FileCertainty, RelevantFile};
 use crate::settings::PhaseType;
 
 const BUNDLED_TEST_AUTHOR: &str = include_str!("defaults/test_author.md");
@@ -48,6 +49,41 @@ pub struct PromptContext {
     pub retry_auditor_block: Option<String>,
     /// Free-text feedback the user typed when passing back to the implementer.
     pub retry_user_feedback: Option<String>,
+    /// Files the briefing flow flagged as likely targets for the task. Empty for
+    /// tasks created via the quick-task shortcut or other paths without file
+    /// awareness; the implementer template renders nothing in that case.
+    #[serde(default)]
+    pub relevant_files: Vec<RelevantFileForPrompt>,
+}
+
+/// Template-friendly view of `RelevantFile`. Carries `is_candidate` derived from
+/// `certainty` so the bundled implementer prompt can branch on it without needing a
+/// custom Handlebars `eq` helper. Construct via `From<&RelevantFile>`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RelevantFileForPrompt {
+    pub path: String,
+    pub reason: String,
+    pub is_candidate: bool,
+}
+
+impl From<&RelevantFile> for RelevantFileForPrompt {
+    fn from(f: &RelevantFile) -> Self {
+        Self {
+            path: f.path.clone(),
+            reason: f.reason.clone(),
+            is_candidate: matches!(f.certainty, FileCertainty::Candidate),
+        }
+    }
+}
+
+/// Convenience: convert a `serde_json::Value` (typically `task_projection.relevant_files`)
+/// into the template-friendly form. Returns an empty vec on any parse failure so a malformed
+/// projection row never blocks a phase from running.
+pub fn relevant_files_from_value(v: &serde_json::Value) -> Vec<RelevantFileForPrompt> {
+    serde_json::from_value::<Vec<RelevantFile>>(v.clone())
+        .ok()
+        .map(|files| files.iter().map(RelevantFileForPrompt::from).collect())
+        .unwrap_or_default()
 }
 
 /// The path a customised prompt file would live at, regardless of whether it exists.
@@ -153,6 +189,7 @@ mod tests {
             retry_context: Some("- be more careful".into()),
             retry_auditor_block: None,
             retry_user_feedback: None,
+            relevant_files: vec![],
         }
     }
 
@@ -192,6 +229,62 @@ mod tests {
         assert!(out.contains("abc123"));
         assert!(out.contains("- be more careful"));
         assert!(out.contains("- it works"));
+    }
+
+    #[test]
+    fn render_implementer_omits_relevant_files_section_when_empty() {
+        let out = render(BUNDLED_IMPLEMENTER, &ctx()).unwrap();
+        assert!(!out.contains("Likely files to touch"));
+    }
+
+    #[test]
+    fn render_implementer_includes_relevant_files_with_candidate_marker() {
+        let mut c = ctx();
+        c.relevant_files = vec![
+            RelevantFileForPrompt {
+                path: "src/foo.ts".into(),
+                reason: "contains the X logic".into(),
+                is_candidate: false,
+            },
+            RelevantFileForPrompt {
+                path: "src/bar.ts".into(),
+                reason: "suspected".into(),
+                is_candidate: true,
+            },
+        ];
+        let out = render(BUNDLED_IMPLEMENTER, &c).unwrap();
+        assert!(out.contains("Likely files to touch"));
+        assert!(out.contains("`src/foo.ts` — contains the X logic"));
+        // Confirmed file gets no candidate marker.
+        let foo_line = out
+            .lines()
+            .find(|l| l.contains("src/foo.ts"))
+            .expect("foo line");
+        assert!(!foo_line.contains("candidate"));
+        // Candidate file is marked.
+        let bar_line = out
+            .lines()
+            .find(|l| l.contains("src/bar.ts"))
+            .expect("bar line");
+        assert!(bar_line.contains("*(candidate)*"));
+    }
+
+    #[test]
+    fn relevant_files_from_value_returns_empty_on_garbage() {
+        let v = serde_json::json!("not an array");
+        assert!(relevant_files_from_value(&v).is_empty());
+    }
+
+    #[test]
+    fn relevant_files_from_value_parses_array_of_relevant_file() {
+        let v = serde_json::json!([
+            { "path": "a.rs", "certainty": "Confirmed", "reason": "r1" },
+            { "path": "b.rs", "certainty": "Candidate", "reason": "r2" },
+        ]);
+        let out = relevant_files_from_value(&v);
+        assert_eq!(out.len(), 2);
+        assert!(!out[0].is_candidate);
+        assert!(out[1].is_candidate);
     }
 
     #[test]

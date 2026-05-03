@@ -1,0 +1,542 @@
+//! Briefing: iterative plan generation. A user describes a feature; a CLI provider
+//! produces a structured draft (title, description, tasks with relevant_files,
+//! assumptions); the user edits/pushes back/refines; on accept, a Plan + N Tasks
+//! are created. Briefing is its own aggregate; events live in the per-workspace
+//! store under `aggregate_type = "briefing"`.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+use tokio_util::sync::CancellationToken;
+
+use crate::providers::Provider;
+use crate::subprocess::{self, ChildTracker};
+
+const BUNDLED_BRIEFING_PROMPT: &str = include_str!("prompts/defaults/briefing.md");
+const BRIEFING_PROMPT_FILENAME: &str = "briefing.md";
+
+// ============================================================================
+// Domain types
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub enum FileCertainty {
+    Confirmed,
+    Candidate,
+}
+
+impl Default for FileCertainty {
+    fn default() -> Self {
+        FileCertainty::Candidate
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelevantFile {
+    pub path: String,
+    pub certainty: FileCertainty,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftTask {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub spec_markdown: String,
+    #[serde(default)]
+    pub relevant_files: Vec<RelevantFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftAssumption {
+    pub id: String,
+    pub statement: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BriefingDraft {
+    pub title: String,
+    pub description: String,
+    pub tasks: Vec<DraftTask>,
+    pub assumptions: Vec<DraftAssumption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TaskEdit {
+    pub task_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub spec_markdown: Option<String>,
+    #[serde(default)]
+    pub file_additions: Vec<RelevantFile>,
+    #[serde(default)]
+    pub file_removals: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssumptionPushback {
+    pub assumption_id: String,
+    pub pushback: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BriefingEdits {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub task_edits: Vec<TaskEdit>,
+    #[serde(default)]
+    pub task_additions: Vec<DraftTask>,
+    #[serde(default)]
+    pub task_removals: Vec<String>,
+    #[serde(default)]
+    pub assumption_pushbacks: Vec<AssumptionPushback>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PathValidationResult {
+    pub task_id: String,
+    pub path: String,
+    pub exists: bool,
+}
+
+// ============================================================================
+// Errors
+// ============================================================================
+
+#[derive(Debug, Error)]
+pub enum BriefingError {
+    #[error("workspace path not found: {0}")]
+    WorkspaceNotFound(String),
+    #[error("provider not installed or unavailable: {0}")]
+    ProviderUnavailable(String),
+    #[error("CLI invocation failed: {0}")]
+    CliInvocationFailed(String),
+    #[error("model output could not be parsed as JSON after retry")]
+    ParseFailed { last_output: String, last_error: String },
+    #[error("prompt template error: {0}")]
+    Prompt(String),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+// ============================================================================
+// Prompt templating
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+struct BriefingPromptContext<'a> {
+    user_description: &'a str,
+    previous_draft: bool,
+    previous_draft_json: Option<String>,
+    user_feedback_json: Option<String>,
+}
+
+fn briefing_prompt_path(workspace_path: &Path) -> PathBuf {
+    workspace_path
+        .join(crate::workspace_db::WORKSPACE_DIR)
+        .join("prompts")
+        .join(BRIEFING_PROMPT_FILENAME)
+}
+
+pub fn resolve_briefing_prompt(workspace_path: &Path) -> Result<String, BriefingError> {
+    let p = briefing_prompt_path(workspace_path);
+    match std::fs::read_to_string(&p) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(BUNDLED_BRIEFING_PROMPT.to_string())
+        }
+        Err(e) => Err(BriefingError::Io(e)),
+    }
+}
+
+pub fn render_briefing_prompt(
+    template: &str,
+    user_description: &str,
+    previous_draft: Option<&BriefingDraft>,
+    user_feedback: Option<&BriefingEdits>,
+) -> Result<String, BriefingError> {
+    let mut hb = handlebars::Handlebars::new();
+    hb.set_strict_mode(false);
+    hb.register_escape_fn(handlebars::no_escape);
+    let ctx = BriefingPromptContext {
+        user_description,
+        previous_draft: previous_draft.is_some(),
+        previous_draft_json: previous_draft
+            .map(|d| serde_json::to_string_pretty(d).unwrap_or_default()),
+        user_feedback_json: user_feedback
+            .map(|f| serde_json::to_string_pretty(f).unwrap_or_default()),
+    };
+    hb.render_template(template, &ctx)
+        .map_err(|e| BriefingError::Prompt(e.to_string()))
+}
+
+// ============================================================================
+// JSON extraction
+// ============================================================================
+
+/// The model is instructed to emit JSON only. Real CLIs wrap text with prose,
+/// chain-of-thought, or markdown fences. Locate the outermost JSON object by
+/// scanning for the first `{` and matching braces (string-aware).
+fn extract_json_object(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let start = bytes.iter().position(|&b| b == b'{')?;
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut escape = false;
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        if in_str {
+            if escape {
+                escape = false;
+            } else if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[start..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_draft(raw: &str) -> Result<BriefingDraft, (String, String)> {
+    let candidate = extract_json_object(raw).unwrap_or(raw);
+    serde_json::from_str::<BriefingDraft>(candidate)
+        .map_err(|e| (candidate.to_string(), e.to_string()))
+}
+
+// ============================================================================
+// File path validation
+// ============================================================================
+
+pub fn validate_draft_paths(
+    workspace_path: &Path,
+    draft: &BriefingDraft,
+) -> Vec<PathValidationResult> {
+    let mut out = Vec::new();
+    for task in &draft.tasks {
+        for f in &task.relevant_files {
+            let candidate = workspace_path.join(&f.path);
+            out.push(PathValidationResult {
+                task_id: task.id.clone(),
+                path: f.path.clone(),
+                exists: candidate.exists(),
+            });
+        }
+    }
+    out
+}
+
+// ============================================================================
+// CLI invocation
+// ============================================================================
+
+/// Result of one generation attempt: parsed draft + the rendered prompt that produced it.
+pub struct GenerationOutcome {
+    pub draft: BriefingDraft,
+    pub rendered_prompt: String,
+    pub duration_ms: u64,
+}
+
+/// Run one briefing generation pass. Calls the CLI provider in `--print`-equivalent mode
+/// (whatever `provider.build_invocation` resolves to), captures stdout, extracts the JSON
+/// draft, and returns it. Retries once with a stricter suffix on parse failure.
+///
+/// The CWD for the subprocess is the workspace root.
+pub async fn run_briefing_generation(
+    workspace_path: &Path,
+    provider_path: &str,
+    provider: &dyn Provider,
+    model: &str,
+    user_description: &str,
+    previous_draft: Option<&BriefingDraft>,
+    user_feedback: Option<&BriefingEdits>,
+    tracker: Arc<ChildTracker>,
+    cancel: CancellationToken,
+) -> Result<GenerationOutcome, BriefingError> {
+    if !workspace_path.exists() {
+        return Err(BriefingError::WorkspaceNotFound(
+            workspace_path.display().to_string(),
+        ));
+    }
+
+    let template = resolve_briefing_prompt(workspace_path)?;
+    let base_prompt = render_briefing_prompt(
+        &template,
+        user_description,
+        previous_draft,
+        user_feedback,
+    )?;
+
+    let mut last_parse_err: Option<(String, String)> = None;
+    for attempt in 0..2 {
+        let prompt = if attempt == 0 {
+            base_prompt.clone()
+        } else {
+            format!(
+                "{}\n\nIMPORTANT: respond with ONLY a JSON object matching the schema. \
+                 No markdown fences, no prose, no explanation — JSON only.",
+                base_prompt
+            )
+        };
+
+        let options = build_provider_options(provider, model);
+        let invocation = provider.build_invocation(&prompt, &options);
+
+        let started = std::time::Instant::now();
+        let collected = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let collected_cb = std::sync::Arc::clone(&collected);
+
+        let args_owned = invocation.args.clone();
+        let args_refs: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
+
+        let result = subprocess::run_streaming(
+            provider_path,
+            &args_refs,
+            workspace_path,
+            invocation.env.clone(),
+            invocation.stdin.clone(),
+            // No timeouts at this layer; the user's UI shows elapsed time and they can
+            // cancel. Briefings are pre-task, no worktree, so the standard phase timeouts
+            // don't apply.
+            subprocess::StreamOptions::default(),
+            cancel.clone(),
+            &tracker,
+            move |chunk| {
+                if let Ok(mut g) = collected_cb.lock() {
+                    g.push_str(&chunk.text);
+                }
+            },
+        )
+        .await
+        .map_err(|e| BriefingError::CliInvocationFailed(e.to_string()))?;
+
+        if result.exit_code != 0 {
+            return Err(BriefingError::CliInvocationFailed(format!(
+                "provider exited with code {}",
+                result.exit_code
+            )));
+        }
+
+        let raw = collected.lock().map(|g| g.clone()).unwrap_or_default();
+        // For stream-json providers, extract the human-readable text out of the JSONL.
+        // We don't need precise parsing here — `extract_json_object` will hunt for a
+        // JSON object inside whatever blob we collect.
+        let visible = collect_text_from_provider_stream(provider, &raw);
+        match parse_draft(&visible) {
+            Ok(mut draft) => {
+                ensure_draft_ids(&mut draft);
+                return Ok(GenerationOutcome {
+                    draft,
+                    rendered_prompt: prompt,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                });
+            }
+            Err(err) => {
+                last_parse_err = Some(err);
+            }
+        }
+    }
+
+    let (output, error) = last_parse_err.unwrap_or_default();
+    Err(BriefingError::ParseFailed {
+        last_output: output,
+        last_error: error,
+    })
+}
+
+/// Best-effort: feed each line through `provider.parse_line` and collect the text chunks.
+/// Falls back to the raw blob if the provider produced nothing parseable (e.g. a plain
+/// stdout-printing CLI). The combined text is what we hunt for JSON in.
+fn collect_text_from_provider_stream(provider: &dyn Provider, raw: &str) -> String {
+    let mut out = String::new();
+    let mut any_parsed = false;
+    for line in raw.lines() {
+        for ev in provider.parse_line(line) {
+            if let crate::providers::ProviderEvent::TextChunk(t) = ev {
+                out.push_str(&t);
+                any_parsed = true;
+            }
+        }
+    }
+    if any_parsed {
+        out
+    } else {
+        raw.to_string()
+    }
+}
+
+fn build_provider_options(provider: &dyn Provider, model: &str) -> serde_json::Value {
+    let mut opts = provider.default_options();
+    if let Some(map) = opts.as_object_mut() {
+        if !model.is_empty() {
+            map.insert("model".into(), serde_json::Value::String(model.into()));
+        }
+        // Briefings explore the codebase but should not edit anything. plan-mode is the
+        // safest default; providers without a "plan" mode treat it as their nearest
+        // read-only equivalent.
+        map.insert(
+            "permission_mode".into(),
+            serde_json::Value::String("plan".into()),
+        );
+        // The Claude provider clamps `bypassPermissions` for the auditor by inspecting
+        // `phase`; we reuse the same hint so the briefing inherits the read-only clamp.
+        map.insert(
+            "phase".into(),
+            serde_json::Value::String("auditor".into()),
+        );
+    }
+    opts
+}
+
+/// Models occasionally omit task ids or assumption ids; backfill ULIDs so the rest of
+/// the system has stable references.
+fn ensure_draft_ids(draft: &mut BriefingDraft) {
+    let mut seen: HashMap<String, ()> = HashMap::new();
+    for t in &mut draft.tasks {
+        if t.id.trim().is_empty() || seen.contains_key(&t.id) {
+            t.id = format!("dt_{}", ulid::Ulid::new());
+        }
+        seen.insert(t.id.clone(), ());
+    }
+    let mut seen_a: HashMap<String, ()> = HashMap::new();
+    for a in &mut draft.assumptions {
+        if a.id.trim().is_empty() || seen_a.contains_key(&a.id) {
+            a.id = format!("da_{}", ulid::Ulid::new());
+        }
+        seen_a.insert(a.id.clone(), ());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_draft() -> BriefingDraft {
+        BriefingDraft {
+            title: "T".into(),
+            description: "D".into(),
+            tasks: vec![DraftTask {
+                id: "t1".into(),
+                title: "first".into(),
+                spec_markdown: "do it".into(),
+                relevant_files: vec![RelevantFile {
+                    path: "src/foo.ts".into(),
+                    certainty: FileCertainty::Confirmed,
+                    reason: "x".into(),
+                }],
+            }],
+            assumptions: vec![DraftAssumption {
+                id: "a1".into(),
+                statement: "x".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn render_without_previous_draft_omits_block() {
+        let template = include_str!("prompts/defaults/briefing.md");
+        let out = render_briefing_prompt(template, "build a thing", None, None).unwrap();
+        assert!(out.contains("build a thing"));
+        assert!(!out.contains("Previous draft"));
+    }
+
+    #[test]
+    fn render_with_previous_draft_includes_block() {
+        let template = include_str!("prompts/defaults/briefing.md");
+        let draft = sample_draft();
+        let edits = BriefingEdits::default();
+        let out = render_briefing_prompt(template, "build", Some(&draft), Some(&edits)).unwrap();
+        assert!(out.contains("Previous draft"));
+        assert!(out.contains("first"));
+    }
+
+    #[test]
+    fn extract_json_object_pulls_from_prose() {
+        let raw = "Here is the plan:\n```json\n{\"title\":\"T\",\"tasks\":[]}\n```\nDone.";
+        let extracted = extract_json_object(raw).unwrap();
+        assert!(extracted.starts_with('{') && extracted.ends_with('}'));
+        let v: serde_json::Value = serde_json::from_str(extracted).unwrap();
+        assert_eq!(v["title"], "T");
+    }
+
+    #[test]
+    fn extract_json_object_handles_nested_braces_and_strings() {
+        let raw = r#"prefix {"a":"with } inside","b":{"c":1}} suffix"#;
+        let extracted = extract_json_object(raw).unwrap();
+        let v: serde_json::Value = serde_json::from_str(extracted).unwrap();
+        assert_eq!(v["b"]["c"], 1);
+    }
+
+    #[test]
+    fn validate_draft_paths_marks_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("real.txt"), "x").unwrap();
+        let draft = BriefingDraft {
+            title: "".into(),
+            description: "".into(),
+            assumptions: vec![],
+            tasks: vec![DraftTask {
+                id: "t".into(),
+                title: "".into(),
+                spec_markdown: "".into(),
+                relevant_files: vec![
+                    RelevantFile {
+                        path: "real.txt".into(),
+                        certainty: FileCertainty::Confirmed,
+                        reason: "".into(),
+                    },
+                    RelevantFile {
+                        path: "missing.txt".into(),
+                        certainty: FileCertainty::Candidate,
+                        reason: "".into(),
+                    },
+                ],
+            }],
+        };
+        let results = validate_draft_paths(dir.path(), &draft);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().any(|r| r.path == "real.txt" && r.exists));
+        assert!(results.iter().any(|r| r.path == "missing.txt" && !r.exists));
+    }
+
+    #[test]
+    fn ensure_draft_ids_backfills_blank() {
+        let mut draft = BriefingDraft {
+            title: "".into(),
+            description: "".into(),
+            tasks: vec![DraftTask {
+                id: "".into(),
+                title: "".into(),
+                spec_markdown: "".into(),
+                relevant_files: vec![],
+            }],
+            assumptions: vec![DraftAssumption {
+                id: "".into(),
+                statement: "".into(),
+            }],
+        };
+        ensure_draft_ids(&mut draft);
+        assert!(!draft.tasks[0].id.is_empty());
+        assert!(!draft.assumptions[0].id.is_empty());
+    }
+}

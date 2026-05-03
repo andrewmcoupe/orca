@@ -187,6 +187,7 @@ CREATE TABLE IF NOT EXISTS task_projection (
     worktree_status     TEXT,                 -- 'active' | 'removed' | NULL if never created
     worktree_removal_reason TEXT,
     phase_config        TEXT NOT NULL DEFAULT '{}', -- resolved phase config JSON for this task
+    relevant_files      TEXT NOT NULL DEFAULT '[]', -- RelevantFile[] JSON populated by briefing flow; empty for other paths
     task_base_commit    TEXT,                 -- diff anchor for the task (TaskBaseCommitRecorded)
     created_at          INTEGER NOT NULL,
     updated_at          INTEGER NOT NULL
@@ -269,6 +270,24 @@ CREATE TABLE IF NOT EXISTS auditor_verdict_projection (
     created_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_auditor_verdict_task ON auditor_verdict_projection (task_id);
+
+CREATE TABLE IF NOT EXISTS briefing_projection (
+    id                      TEXT PRIMARY KEY,
+    workspace_id            TEXT NOT NULL,
+    status                  TEXT NOT NULL,            -- active | completed | cancelled
+    initial_description     TEXT NOT NULL,
+    provider                TEXT NOT NULL,
+    model                   TEXT NOT NULL,
+    current_draft_json      TEXT,                     -- BriefingDraft JSON, NULL until first draft lands
+    pending_edits_json      TEXT,                     -- BriefingEdits JSON, NULL when no edits pending
+    validation_results_json TEXT,                     -- PathValidationResult[] JSON, NULL until first draft
+    generation_count        INTEGER NOT NULL DEFAULT 0,
+    final_plan_id           TEXT,
+    cancel_reason           TEXT,
+    created_at              INTEGER NOT NULL,
+    updated_at              INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_briefing_projection_workspace ON briefing_projection (workspace_id);
 "#;
 
 pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<()> {
@@ -292,6 +311,9 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
         // Per-phase permission mode (M-permission-modes): captured on PhaseRunStarted
         // so the UI surfaces what mode the run actually used. Old events are NULL.
         "ALTER TABLE phase_run_projection ADD COLUMN permission_mode TEXT",
+        // Briefing flow: relevant files identified by the plan author per task.
+        // Empty array for tasks created via paths without file awareness.
+        "ALTER TABLE task_projection ADD COLUMN relevant_files TEXT NOT NULL DEFAULT '[]'",
     ];
     for sql in migrations {
         match conn.execute(sql, []) {
@@ -497,6 +519,10 @@ pub struct TaskProjection {
     pub worktree_removal_reason: Option<String>,
     /// Resolved phase config JSON for this task (the value at create time — events are immutable).
     pub phase_config: serde_json::Value,
+    /// `RelevantFile[]` populated by the briefing flow. Empty array for tasks created
+    /// via paths without file awareness (quick-task shortcut, manual creation).
+    #[serde(default)]
+    pub relevant_files: serde_json::Value,
     pub task_base_commit: Option<String>,
     /// 'initialized' (success or user-skipped) | 'failed' | NULL (not yet run).
     /// Phase runners check this before running; if NULL the runner triggers init,
@@ -561,6 +587,10 @@ struct TaskCreatedPayload {
     /// (which lack the field) replay cleanly with bundled defaults.
     #[serde(default)]
     phase_config: Option<serde_json::Value>,
+    /// Files the plan author flagged as likely targets. Optional so events written before
+    /// the briefing flow landed replay cleanly with an empty array.
+    #[serde(default)]
+    relevant_files: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -678,10 +708,15 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                 Some(v) => v.to_string(),
                 None => serde_json::to_string(&crate::settings::PhaseConfig::bundled_default())?,
             };
+            let relevant_files_json = p
+                .relevant_files
+                .as_ref()
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "[]".to_string());
             tx.execute(
                 "INSERT INTO task_projection
-                    (id, workspace_id, plan_id, title, spec_markdown, status, phase_config, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'created', ?6, ?7, ?7)",
+                    (id, workspace_id, plan_id, title, spec_markdown, status, phase_config, relevant_files, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'created', ?6, ?7, ?8, ?8)",
                 params![
                     event.aggregate_id,
                     workspace_id,
@@ -689,6 +724,7 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                     p.title,
                     p.spec_markdown,
                     phase_config_json,
+                    relevant_files_json,
                     event.created_at,
                 ],
             )?;
@@ -1112,6 +1148,9 @@ fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
     let phase_config_str: String = r.get(18)?;
     let phase_config = serde_json::from_str(&phase_config_str)
         .unwrap_or_else(|_| serde_json::json!({}));
+    let relevant_files_str: String = r.get(19)?;
+    let relevant_files = serde_json::from_str(&relevant_files_str)
+        .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
     Ok(TaskProjection {
         id: r.get(0)?,
         workspace_id: r.get(1)?,
@@ -1132,19 +1171,20 @@ fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
         worktree_status: r.get(16)?,
         worktree_removal_reason: r.get(17)?,
         phase_config,
-        task_base_commit: r.get(19)?,
-        worktree_init_status: r.get(20)?,
-        worktree_init_command: r.get(21)?,
-        worktree_init_exit_code: r.get(22)?,
-        worktree_init_duration_ms: r.get(23)?,
-        worktree_init_detection_kind: r.get(24)?,
-        worktree_init_output: r.get(25)?,
-        created_at: r.get(26)?,
-        updated_at: r.get(27)?,
+        relevant_files,
+        task_base_commit: r.get(20)?,
+        worktree_init_status: r.get(21)?,
+        worktree_init_command: r.get(22)?,
+        worktree_init_exit_code: r.get(23)?,
+        worktree_init_duration_ms: r.get(24)?,
+        worktree_init_detection_kind: r.get(25)?,
+        worktree_init_output: r.get(26)?,
+        created_at: r.get(27)?,
+        updated_at: r.get(28)?,
     })
 }
 
-const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, merge_target_branch, merged_at, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, phase_config, task_base_commit, worktree_init_status, worktree_init_command, worktree_init_exit_code, worktree_init_duration_ms, worktree_init_detection_kind, worktree_init_output, created_at, updated_at";
+const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, merge_target_branch, merged_at, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, phase_config, relevant_files, task_base_commit, worktree_init_status, worktree_init_command, worktree_init_exit_code, worktree_init_duration_ms, worktree_init_detection_kind, worktree_init_output, created_at, updated_at";
 
 pub fn list_tasks_in_plan(
     conn: &Connection,
@@ -1365,6 +1405,228 @@ pub fn latest_merge_attempt_for_task(
     } else {
         Ok(None)
     }
+}
+
+// ============================================================================
+// Briefing projection
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BriefingProjection {
+    pub id: String,
+    pub workspace_id: String,
+    pub status: String,
+    pub initial_description: String,
+    pub provider: String,
+    pub model: String,
+    pub current_draft: Option<serde_json::Value>,
+    pub pending_edits: Option<serde_json::Value>,
+    pub validation_results: Option<serde_json::Value>,
+    pub generation_count: i64,
+    pub final_plan_id: Option<String>,
+    pub cancel_reason: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BriefingStartedPayload {
+    workspace_id: String,
+    initial_description: String,
+    provider: String,
+    model: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BriefingDraftProducedPayload {
+    draft: serde_json::Value,
+    generation_index: i64,
+    #[serde(default)]
+    #[allow(dead_code)]
+    prompt_template_hash: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    duration_ms: Option<i64>,
+    #[serde(default)]
+    validation_results: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BriefingDraftEditedPayload {
+    edits: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct BriefingPushedBackPayload {
+    assumption_id: String,
+    pushback: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BriefingCompletedPayload {
+    plan_id: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    final_generation_index: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BriefingCancelledPayload {
+    reason: String,
+}
+
+pub fn apply_briefing_event(
+    tx: &Transaction,
+    event: &AppendedEvent,
+) -> Result<(), ProjectionError> {
+    match event.event_type.as_str() {
+        "BriefingStarted" => {
+            let p: BriefingStartedPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "INSERT INTO briefing_projection
+                    (id, workspace_id, status, initial_description, provider, model,
+                     generation_count, created_at, updated_at)
+                 VALUES (?1, ?2, 'active', ?3, ?4, ?5, 0, ?6, ?6)",
+                params![
+                    event.aggregate_id,
+                    p.workspace_id,
+                    p.initial_description,
+                    p.provider,
+                    p.model,
+                    event.created_at,
+                ],
+            )?;
+        }
+        "BriefingDraftProduced" => {
+            let p: BriefingDraftProducedPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE briefing_projection
+                 SET current_draft_json = ?1,
+                     validation_results_json = ?2,
+                     pending_edits_json = NULL,
+                     generation_count = ?3,
+                     updated_at = ?4
+                 WHERE id = ?5",
+                params![
+                    p.draft.to_string(),
+                    p.validation_results.as_ref().map(|v| v.to_string()),
+                    p.generation_index,
+                    event.created_at,
+                    event.aggregate_id,
+                ],
+            )?;
+        }
+        "BriefingDraftEdited" => {
+            let p: BriefingDraftEditedPayload = serde_json::from_str(&event.payload)?;
+            // Replace pending edits with the latest snapshot. The frontend sends a
+            // complete BriefingEdits each time so the projection mirrors current state
+            // without us having to merge.
+            tx.execute(
+                "UPDATE briefing_projection
+                 SET pending_edits_json = ?1, updated_at = ?2
+                 WHERE id = ?3",
+                params![p.edits.to_string(), event.created_at, event.aggregate_id],
+            )?;
+        }
+        "BriefingPushedBack" => {
+            // Pushbacks are recorded in the event log for the audit trail; the projection
+            // only needs to bump updated_at because pending_edits_json (also stamped by
+            // the most recent BriefingDraftEdited) is what the UI/refine step consumes.
+            let _: BriefingPushedBackPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE briefing_projection SET updated_at = ?1 WHERE id = ?2",
+                params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        "BriefingRefineRequested" => {
+            tx.execute(
+                "UPDATE briefing_projection SET updated_at = ?1 WHERE id = ?2",
+                params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        "BriefingCompleted" => {
+            let p: BriefingCompletedPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE briefing_projection
+                 SET status = 'completed', final_plan_id = ?1, updated_at = ?2
+                 WHERE id = ?3",
+                params![p.plan_id, event.created_at, event.aggregate_id],
+            )?;
+        }
+        "BriefingCancelled" => {
+            let p: BriefingCancelledPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE briefing_projection
+                 SET status = 'cancelled', cancel_reason = ?1, updated_at = ?2
+                 WHERE id = ?3",
+                params![p.reason, event.created_at, event.aggregate_id],
+            )?;
+        }
+        other => return Err(ProjectionError::UnknownEventType(other.to_string())),
+    }
+    Ok(())
+}
+
+const BRIEFING_COLUMNS: &str = "id, workspace_id, status, initial_description, provider, model, current_draft_json, pending_edits_json, validation_results_json, generation_count, final_plan_id, cancel_reason, created_at, updated_at";
+
+fn read_briefing(r: &rusqlite::Row) -> rusqlite::Result<BriefingProjection> {
+    let current_draft_str: Option<String> = r.get(6)?;
+    let pending_edits_str: Option<String> = r.get(7)?;
+    let validation_results_str: Option<String> = r.get(8)?;
+    Ok(BriefingProjection {
+        id: r.get(0)?,
+        workspace_id: r.get(1)?,
+        status: r.get(2)?,
+        initial_description: r.get(3)?,
+        provider: r.get(4)?,
+        model: r.get(5)?,
+        current_draft: current_draft_str
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
+        pending_edits: pending_edits_str
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
+        validation_results: validation_results_str
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
+        generation_count: r.get(9)?,
+        final_plan_id: r.get(10)?,
+        cancel_reason: r.get(11)?,
+        created_at: r.get(12)?,
+        updated_at: r.get(13)?,
+    })
+}
+
+pub fn get_briefing(
+    conn: &Connection,
+    id: &str,
+) -> rusqlite::Result<Option<BriefingProjection>> {
+    let sql = format!("SELECT {BRIEFING_COLUMNS} FROM briefing_projection WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params![id])?;
+    if let Some(r) = rows.next()? {
+        Ok(Some(read_briefing(r)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn list_active_briefings(
+    conn: &Connection,
+    workspace_id: &str,
+) -> rusqlite::Result<Vec<BriefingProjection>> {
+    let sql = format!(
+        "SELECT {BRIEFING_COLUMNS} FROM briefing_projection
+         WHERE workspace_id = ?1 AND status = 'active'
+         ORDER BY updated_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![workspace_id], read_briefing)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

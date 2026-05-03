@@ -135,6 +135,19 @@ pub fn summarize(event: &AppendedEvent) -> String {
             let confidence = payload.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
             format!("Auditor verdict: {} ({:.0}%)", verdict, confidence * 100.0)
         }
+        "BriefingStarted" => "Briefing started".into(),
+        "BriefingDraftProduced" => {
+            let gen = payload
+                .get("generation_index")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            format!("Briefing draft produced (gen {})", gen)
+        }
+        "BriefingDraftEdited" => "Briefing edits applied".into(),
+        "BriefingPushedBack" => format!("Briefing pushback on assumption {}", s("assumption_id")),
+        "BriefingRefineRequested" => "Briefing refine requested".into(),
+        "BriefingCompleted" => format!("Briefing completed → plan {}", s("plan_id")),
+        "BriefingCancelled" => format!("Briefing cancelled: {}", s("reason")),
         "GateRan" => {
             let passed = payload
                 .get("passed")

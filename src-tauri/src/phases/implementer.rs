@@ -104,6 +104,15 @@ pub async fn run(
         .map_err(|e| e.to_string())?;
     let (retry_auditor_block, retry_user_feedback) =
         parse_retry_context(retry_context.as_deref());
+
+    // Pull the task's `relevant_files` from the projection. This is task-level data
+    // (set on TaskCreated by the briefing flow); empty array for tasks created via
+    // other paths, in which case the prompt section is omitted entirely.
+    let relevant_files = projections::get_task(&conn, &task_id)
+        .map_err(|e| e.to_string())?
+        .map(|t| prompts::relevant_files_from_value(&t.relevant_files))
+        .unwrap_or_default();
+
     let context = PromptContext {
         task_title: task_title.clone(),
         task_spec_markdown: spec_markdown.clone(),
@@ -113,6 +122,7 @@ pub async fn run(
         retry_context: retry_context.clone(),
         retry_auditor_block,
         retry_user_feedback,
+        relevant_files,
         ..Default::default()
     };
     let prompt = prompts::render(&template, &context).map_err(|e| e.to_string())?;

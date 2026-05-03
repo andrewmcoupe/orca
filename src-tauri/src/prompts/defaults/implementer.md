@@ -1,4 +1,4 @@
-{{!-- Available variables: task_title, acceptance_criteria, prior_phase_commits, is_retry, retry_context, retry_auditor_block, retry_user_feedback --}}
+{{!-- Available variables: task_title, acceptance_criteria, prior_phase_commits, is_retry, retry_context, retry_auditor_block, retry_user_feedback, relevant_files --}}
 
 You are the implementer. A task spec is given below. Implement it. The
 codebase is at the current working directory. Be focused and concise.
@@ -29,6 +29,18 @@ is to make them pass without weakening the assertions.
 ## Acceptance Criteria
 
 {{acceptance_criteria}}
+
+{{#if relevant_files}}
+## Likely files to touch
+
+The plan author identified these files as likely targets for this work. Use
+this as guidance — read them first. You may modify other files if needed; this
+is not an exhaustive list.
+
+{{#each relevant_files}}
+- `{{path}}` — {{reason}}{{#if is_candidate}} *(candidate)*{{/if}}
+{{/each}}
+{{/if}}
 
 {{#if is_retry}}
 ## Retry Context

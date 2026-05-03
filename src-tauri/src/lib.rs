@@ -1,3 +1,4 @@
+mod briefing;
 mod db;
 mod diff;
 mod diff_service;
@@ -16,6 +17,7 @@ mod worktree;
 mod worktree_init;
 
 mod commands;
+mod commands_briefing;
 
 use std::sync::{Arc, Mutex};
 
@@ -112,6 +114,16 @@ pub fn run() {
             diff_service::get_task_diff,
             diff_service::refresh_task_diff,
             diff_service::get_unchanged_file_content,
+            commands_briefing::start_briefing,
+            commands_briefing::generate_briefing_draft,
+            commands_briefing::apply_briefing_edits,
+            commands_briefing::refine_briefing,
+            commands_briefing::accept_briefing,
+            commands_briefing::cancel_briefing,
+            commands_briefing::get_briefing,
+            commands_briefing::list_active_briefings,
+            commands_briefing::list_briefing_history,
+            commands_briefing::validate_briefing_paths,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
