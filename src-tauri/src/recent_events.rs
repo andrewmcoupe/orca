@@ -93,6 +93,24 @@ pub fn summarize(event: &AppendedEvent) -> String {
         "WorktreeRemovalFailed" => {
             format!("Worktree removal failed ({}): {}", s("reason"), s("error"))
         }
+        "WorktreeInitialized" => {
+            let cmd = s("command");
+            let kind = s("detection_kind");
+            let dur = payload.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            if kind == "user_skipped" {
+                "Worktree init skipped by user".to_string()
+            } else {
+                format!("Worktree initialized: `{}` in {} ms", cmd, dur)
+            }
+        }
+        "WorktreeInitializationFailed" => {
+            let cmd = s("command");
+            let exit = payload
+                .get("exit_code")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(-1);
+            format!("Worktree init failed: `{}` exited {}", cmd, exit)
+        }
         "PhaseRunStarted" => format!(
             "Phase run started: {} ({})",
             s("phase"),

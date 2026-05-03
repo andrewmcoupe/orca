@@ -65,6 +65,14 @@ export type Task = {
   worktree_base_commit: string | null;
   worktree_status: string | null;
   worktree_removal_reason: string | null;
+  /** 'initialized' (success or user-skipped) | 'failed' | null (not yet run). */
+  worktree_init_status: string | null;
+  worktree_init_command: string | null;
+  worktree_init_exit_code: number | null;
+  worktree_init_duration_ms: number | null;
+  /** Mirrors the `detection_kind` field on the init events. */
+  worktree_init_detection_kind: string | null;
+  worktree_init_output: string | null;
   phase_config: PhaseConfig;
   task_base_commit: string | null;
   created_at: number;

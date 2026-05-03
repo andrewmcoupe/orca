@@ -278,6 +278,15 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
     let migrations = &[
         "ALTER TABLE task_projection ADD COLUMN merge_target_branch TEXT",
         "ALTER TABLE task_projection ADD COLUMN merged_at INTEGER",
+        // M3: worktree initialization. `worktree_init_status` is the load-bearing
+        // column — phase runners and the pipeline check it to decide whether to
+        // run init or proceed. The other columns are display-only for the UI.
+        "ALTER TABLE task_projection ADD COLUMN worktree_init_status TEXT",
+        "ALTER TABLE task_projection ADD COLUMN worktree_init_command TEXT",
+        "ALTER TABLE task_projection ADD COLUMN worktree_init_exit_code INTEGER",
+        "ALTER TABLE task_projection ADD COLUMN worktree_init_duration_ms INTEGER",
+        "ALTER TABLE task_projection ADD COLUMN worktree_init_detection_kind TEXT",
+        "ALTER TABLE task_projection ADD COLUMN worktree_init_output TEXT",
     ];
     for sql in migrations {
         match conn.execute(sql, []) {
@@ -484,6 +493,21 @@ pub struct TaskProjection {
     /// Resolved phase config JSON for this task (the value at create time — events are immutable).
     pub phase_config: serde_json::Value,
     pub task_base_commit: Option<String>,
+    /// 'initialized' (success or user-skipped) | 'failed' | NULL (not yet run).
+    /// Phase runners check this before running; if NULL the runner triggers init,
+    /// if 'failed' the runner refuses until the user retries or skips.
+    #[serde(default)]
+    pub worktree_init_status: Option<String>,
+    #[serde(default)]
+    pub worktree_init_command: Option<String>,
+    #[serde(default)]
+    pub worktree_init_exit_code: Option<i64>,
+    #[serde(default)]
+    pub worktree_init_duration_ms: Option<i64>,
+    #[serde(default)]
+    pub worktree_init_detection_kind: Option<String>,
+    #[serde(default)]
+    pub worktree_init_output: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -596,6 +620,17 @@ struct WorktreeRemovedPayload {
     #[allow(dead_code)]
     worktree_path: String,
     reason: String,
+}
+
+/// Shared payload shape for `WorktreeInitialized` and `WorktreeInitializationFailed`.
+/// They differ only in event_type and what status the projection ends up in.
+#[derive(Debug, Deserialize)]
+struct WorktreeInitializedPayload {
+    command: String,
+    exit_code: i32,
+    duration_ms: u64,
+    output: String,
+    detection_kind: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -738,6 +773,8 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
         }
         "WorktreeCreated" => {
             let p: WorktreeCreatedPayload = serde_json::from_str(&event.payload)?;
+            // Reset init status fields too — a fresh worktree is uninitialized,
+            // even if a prior worktree on the same task had been initialized.
             tx.execute(
                 "UPDATE task_projection
                  SET worktree_path = ?1,
@@ -745,6 +782,12 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                      worktree_base_commit = ?3,
                      worktree_status = 'active',
                      worktree_removal_reason = NULL,
+                     worktree_init_status = NULL,
+                     worktree_init_command = NULL,
+                     worktree_init_exit_code = NULL,
+                     worktree_init_duration_ms = NULL,
+                     worktree_init_detection_kind = NULL,
+                     worktree_init_output = NULL,
                      updated_at = ?4
                  WHERE id = ?5",
                 params![
@@ -765,6 +808,52 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                      updated_at = ?2
                  WHERE id = ?3",
                 params![p.reason, event.created_at, event.aggregate_id],
+            )?;
+        }
+        "WorktreeInitialized" => {
+            let p: WorktreeInitializedPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE task_projection
+                 SET worktree_init_status = 'initialized',
+                     worktree_init_command = ?1,
+                     worktree_init_exit_code = ?2,
+                     worktree_init_duration_ms = ?3,
+                     worktree_init_detection_kind = ?4,
+                     worktree_init_output = ?5,
+                     updated_at = ?6
+                 WHERE id = ?7",
+                params![
+                    p.command,
+                    p.exit_code,
+                    p.duration_ms as i64,
+                    p.detection_kind,
+                    p.output,
+                    event.created_at,
+                    event.aggregate_id,
+                ],
+            )?;
+        }
+        "WorktreeInitializationFailed" => {
+            let p: WorktreeInitializedPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE task_projection
+                 SET worktree_init_status = 'failed',
+                     worktree_init_command = ?1,
+                     worktree_init_exit_code = ?2,
+                     worktree_init_duration_ms = ?3,
+                     worktree_init_detection_kind = ?4,
+                     worktree_init_output = ?5,
+                     updated_at = ?6
+                 WHERE id = ?7",
+                params![
+                    p.command,
+                    p.exit_code,
+                    p.duration_ms as i64,
+                    p.detection_kind,
+                    p.output,
+                    event.created_at,
+                    event.aggregate_id,
+                ],
             )?;
         }
         "WorktreeRemovalFailed" => {
@@ -1030,12 +1119,18 @@ fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
         worktree_removal_reason: r.get(17)?,
         phase_config,
         task_base_commit: r.get(19)?,
-        created_at: r.get(20)?,
-        updated_at: r.get(21)?,
+        worktree_init_status: r.get(20)?,
+        worktree_init_command: r.get(21)?,
+        worktree_init_exit_code: r.get(22)?,
+        worktree_init_duration_ms: r.get(23)?,
+        worktree_init_detection_kind: r.get(24)?,
+        worktree_init_output: r.get(25)?,
+        created_at: r.get(26)?,
+        updated_at: r.get(27)?,
     })
 }
 
-const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, merge_target_branch, merged_at, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, phase_config, task_base_commit, created_at, updated_at";
+const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, merge_target_branch, merged_at, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, phase_config, task_base_commit, worktree_init_status, worktree_init_command, worktree_init_exit_code, worktree_init_duration_ms, worktree_init_detection_kind, worktree_init_output, created_at, updated_at";
 
 pub fn list_tasks_in_plan(
     conn: &Connection,

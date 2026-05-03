@@ -1,809 +1,269 @@
-# Brief for Claude Code: Multi-Phase Pipeline
-
-## Progress so far (resume here)
-
-**Done — M1 (schema and config plumbing), committed on `main` as `a70db4a`:**
-
-- New `src-tauri/src/settings.rs` module: typed `WorkspaceSettings`,
-  `PhaseConfig`, `GateConfig`, `PhaseType` enum. Serde-tolerant —
-  missing pipeline fields materialise bundled defaults via
-  `WorkspaceSettings::from_json_str`. Bundled `PhaseConfig::bundled_default()`
-  is `{ phases: ["implementer", "auditor"], gate_overrides: None }`.
-- `TaskCreated` bumped to **v3** with `phase_config` field. Resolved at
-  create time in `commands::create_task` from a per-task override or
-  the workspace's stored `default_phase_config`. Decision: no upcaster
-  written; the v3 applier deserializes `phase_config` as `Option` and
-  defaults to bundled when absent, so any v2 events on disk replay
-  losslessly. (This diverges slightly from the brief's "wipe again"
-  suggestion — preserved dev data instead.)
-- New events: `TaskBaseCommitRecorded` (Task aggregate; payload
-  `{ commit_sha }`) and `AuditorVerdictRendered` (PhaseRun aggregate;
-  payload `{ phase_run_id, verdict, confidence, summary, concerns }`).
-  Both have appliers in `events/projections.rs`.
-- `task_projection` gains `phase_config TEXT NOT NULL DEFAULT '{}'`
-  and `task_base_commit TEXT` columns. New `auditor_verdict_projection`
-  table keyed by auditor `phase_run_id`, with `get_auditor_verdict`
-  and `list_auditor_verdicts_for_task` reads.
-- `WorkspaceSettingsChanged` applier unchanged (it stores raw JSON);
-  tolerance is at read time via `WorkspaceSettings::from_json_str`.
-  No command exists yet to emit `WorkspaceSettingsChanged` — that
-  comes with M9's settings UI.
-- `recent_events::summarize` extended for `TaskBaseCommitRecorded` and
-  `AuditorVerdictRendered`.
-- `docs/events.md` updated: TaskCreated v3 with PhaseConfig spec, the
-  two new events, expanded `WorkspaceSettingsChanged` settings shape
-  (default_phase_config, gates, phase_gates), PhaseRunStarted gains
-  `prior_phase_commits`, `prompt_template_hash`, `is_retry_of`, GateRan
-  gate_name no longer a closed enum and carries
-  `triggering_phase_run_id`.
-- Frontend `src/features/tasks/types.ts` gains `PhaseType`,
-  `PhaseConfig`, and the new fields on `Task`. `tasksApi.create`
-  accepts an optional `phaseConfig` override.
-
-**Known state to be aware of when starting M2:**
-
-- Existing per-workspace event DB at
-  `/Users/andycoupe/web-dev/orchestrator/.orca/events.sqlite` was
-  **not** wiped. It still has its old `task_projection` shape (no
-  `phase_config` column). Run `rebuild_projections` against that
-  workspace once before creating new tasks, otherwise the v3 applier
-  will hit "no such column: phase_config" on insert.
-- `cargo test --lib` is green (20 tests). `pnpm tsc --noEmit` is clean.
-- `PhaseRunStarted` applier was **not** updated to consume the new
-  optional fields (`prior_phase_commits`, `prompt_template_hash`,
-  `is_retry_of`). The current applier struct only deserializes the
-  fields it uses, so emitting them is a no-op at the projection level
-  — fine for M1, but M3-M5 will need to either store them on
-  `phase_run_projection` or read them off the events directly.
-- `PhaseRunStarted` payload version was **not** bumped. Per the brief
-  the new fields are additive; old events still replay. If a future
-  milestone wants to enforce the new fields, bump there.
-- The `auditor_verdict_projection` reads (`get_auditor_verdict`,
-  `list_auditor_verdicts_for_task`) are currently dead code (compiler
-  warning suppressed) — they wire up in M5/M8/M10 when the auditor
-  emits and the UI reads.
-- No Tauri commands yet for reading/writing workspace settings or for
-  the new prompt/gate concepts — those land in later milestones.
-
-**Done — M2 (prompt files and templating):**
-
-- New `src-tauri/src/prompts/` module with `resolve`, `render`, `hash`,
-  `save`, `reset`, `is_customised`, `prompt_file_path`, `bundled_default`,
-  `ensure_prompts_dir`. Templating via `handlebars` crate; hash is hex
-  SHA-256 (`sha2`).
-- Bundled defaults at `src-tauri/src/prompts/defaults/{test_author,implementer,auditor}.md`,
-  embedded at compile time via `include_str!`. Each file leads with a
-  Handlebars comment block listing the available variables. Implementer's
-  default includes the `prior_phase_commits.test_author` conditional block;
-  the auditor's default includes the `git_diff` block at the end. The
-  user's "validated" prompt bodies were not provided in the brief — wrote
-  reasonable working defaults; user can edit per-workspace via the M9 UI.
-- `PromptContext` matches the brief's shape exactly: `task_title`,
-  `task_spec_markdown`, `acceptance_criteria`, `prior_phase_commits`,
-  `git_diff: Option<String>`, `is_retry: bool`, `retry_context: Option<String>`.
-  `Default` impl provided so phases that don't use every field can build
-  the context easily.
-- `Handlebars` configured with `set_strict_mode(false)` (missing vars
-  render empty, matching the brief's tolerance) and `no_escape` (auditor
-  diffs contain `<` `>` `&` and must not be HTML-escaped).
-- `<workspace>/.orca/prompts/` is created on workspace activation —
-  `open_workspace_db` calls `prompts::ensure_prompts_dir`. Prompt path
-  uses `WORKSPACE_DIR` (`.orca`); the brief's `.yourapp/` was a placeholder.
-- Tauri commands: `get_prompt(phase)`, `save_prompt(phase, content)`,
-  `reset_prompt(phase)`. All operate on the active workspace
-  (consistent with how every other per-workspace command works in this
-  codebase — the brief's `(workspace_id, phase)` signature was advisory).
-  `get_prompt` returns `{ phase, content, is_customised }`.
-- `PhaseType::parse(&str) -> Option<Self>` added so commands can take the
-  phase as a string.
-- Tests (12, all green): variable substitution, `{{#if}}` blocks, nested
-  `prior_phase_commits.test_author` resolution, no-HTML-escaping for
-  diffs, full implementer + auditor template renders, hash stability /
-  uniqueness / format, resolve fallback to bundled, save→resolve
-  round-trip, reset removes file + idempotent on missing file, all
-  bundled defaults non-empty.
-- `cargo build --lib` clean, `cargo test --lib` green (32 tests, 20
-  prior + 12 new).
-- New crate deps: `handlebars = "5"`, `sha2 = "0.10"`.
-
-**Known state for M3 (test-author phase):**
-
-- No frontend `promptsApi` yet — added in M9 alongside the editor UI.
-- The `prompt_template_hash` field on `PhaseRunStarted` is still produced
-  by phase runners themselves; M3-M5 will switch from
-  `PROMPT_TEMPLATE_ID = "implementer.v1"` (hardcoded in
-  `phases/implementer.rs`) to `prompts::resolve(...)` →
-  `prompts::render(...)` → `prompts::hash(...)` and emit the hash.
-- The implementer phase still uses its own ad-hoc `build_prompt`
-  function. M4 swaps it for `prompts::resolve`/`render`. Left untouched
-  in M2 to keep the diff focused.
-
-**Done — M3 (test-author phase):**
-
-- New `src-tauri/src/phases/test_author.rs`. Mirrors the structure of
-  `phases/implementer.rs` but: resolves and renders the bundled
-  test-author prompt via `prompts::resolve` + `prompts::render` before
-  the worktree dance (so a templating error fails fast); commits with
-  message `[phase: test_author] {task_title}`; uses
-  `system:test_author` as the actor in event metadata.
-- `PhaseRunStarted` payload includes `prompt_template_hash` (SHA-256 of
-  the rendered prompt) instead of the legacy `prompt_template_id`. The
-  applier struct in `events/projections.rs` only deserializes the
-  fields it cares about, so this is forward-compatible without an
-  applier change. Implementer still emits the legacy
-  `prompt_template_id` — M4 will switch it over.
-- Empty-commit guard: relies on `worktree::commit_all`, which already
-  detects an unchanged tree and returns the parent commit SHA without
-  creating a commit. Surfaced uniformly across both phases.
-- `start_real_phase` now accepts `phase = "test_author"` and dispatches
-  to the right runner. Other phase names still error out.
-- Test-author has no prior phase commits and no diff, so its
-  `PromptContext` is just `{ task_title, task_spec_markdown,
-  acceptance_criteria }`; everything else is `Default`.
-- Did NOT factor out a shared subprocess-phase helper between
-  test_author and implementer yet — most of the runner is duplicated.
-  M4 is the natural moment to extract a `runner::run_subprocess_phase`
-  once we know what implementer needs from the new prompt context.
-- `cargo build --lib` clean, `cargo test --lib` green (32 tests).
-
-**Done — M4 (implementer phase updates):**
-
-- `phases/implementer.rs` now resolves and renders its prompt via the
-  `prompts` module (PhaseType::Implementer), the same way test_author
-  does. Removed the ad-hoc `build_prompt` and the legacy
-  `PROMPT_TEMPLATE_ID = "implementer.v1"` constant.
-- `ImplementerInput` gains `is_retry: bool` and `retry_context:
-  Option<String>` (used by M8's `pass_back_to_implementer`). The current
-  `start_real_phase` dispatcher passes `false` / `None` — manual
-  invocations are always fresh attempts.
-- The `phase` field on the input is preserved for the dispatcher's sake
-  but unused by the runner; the runner emits a constant `PHASE_NAME =
-  "implementer"` on its events instead. Ditto for the commit message,
-  which is now `[phase: implementer] {task_title}` regardless.
-- New `phases/implementer.rs::started_payload` carries
-  `prompt_template_hash`, `prior_phase_commits`, and `is_retry` on
-  `PhaseRunStarted`. (test_author still has its own simpler started
-  payload — it never has prior phases.)
-- `prior_phase_commits` is built from `phase_run_projection` via the
-  new helper `events::projections::prior_phase_commits(conn, task_id)`,
-  which takes the most recent `head_commit_after` for each phase that
-  has at least one completed run on this task.
-- **Schema**: `phase_run_projection` gains a `head_commit_after TEXT`
-  column. `PhaseRunCompleted` applier now persists it.
-  `PhaseRunCompletedPayload` deserializes the field as `Option<String>`
-  (legacy events without the field replay cleanly).
-  `PhaseRunProjection` Rust struct gets the field too.
-- `list_phase_runs_for_task` query updated to read the new column.
-- Existing dev DB note (still relevant): if there's a per-workspace
-  events.sqlite predating M4, run `rebuild_projections` so the
-  `phase_run_projection.head_commit_after` column materialises before
-  starting new phases. Otherwise the applier hits "no such column".
-- The implementer's bundled prompt's `{{#if prior_phase_commits.test_author}}`
-  block now renders correctly: when a test_author phase has run and
-  succeeded for this task, the prompt instructs the implementer to read
-  the failing tests from that commit.
-- `cargo build --lib` clean, `cargo test --lib` green (32 tests).
-
-**Done — M5 (auditor phase):**
-
-- New `phases/auditor.rs`. Reads the task's `task_base_commit` (set by
-  `TaskBaseCommitRecorded` — see below), computes
-  `worktree::diff_against_base(...)`, truncates to 50 KB via
-  `worktree::truncate_diff(...)`, and renders the auditor prompt with
-  `git_diff` + `prior_phase_commits` populated.
-- The provider trait stays streaming-only for v1. The auditor's
-  `invoke_and_parse` runs the same subprocess flow as the other phase
-  runners, accumulates the streamed text, then attempts to extract a
-  verdict JSON object. Three parse strategies, in order: whole text →
-  fenced ```json``` block → largest balanced top-level `{...}`. On
-  failure, the auditor retries the subprocess once with a clarifying
-  suffix asking for JSON only. After two failed attempts it emits
-  `PhaseRunFailed` with `error_kind = "auditor_parse_error"` and the
-  truncated raw response in `error_message`.
-- On success: empty-commit guard via `worktree::commit_all` (the
-  auditor may modify code as part of review), then `PhaseRunCompleted`
-  with `head_commit_after`, then `AuditorVerdictRendered` with
-  `{ phase_run_id, verdict, confidence, summary, concerns }` matching
-  the M1 schema. The applier for `AuditorVerdictRendered` is the one
-  added in M1.
-- New helpers in `worktree.rs`:
-  - `diff_against_base(worktree_path, base_sha) -> String` — git2
-    tree-to-tree patch text.
-  - `truncate_diff(diff, max_bytes, base_sha) -> String` — UTF-8-safe
-    truncation with the brief's "...diff truncated, X bytes total. The
-    full diff can be inspected by running `git diff
-    {base_commit}..HEAD` in the worktree." marker appended.
-- `TaskBaseCommitRecorded` now actually fires. Both implementer and
-  test_author runners emit it immediately after `WorktreeCreated`,
-  with `commit_sha = info.head_commit`. Idempotent in practice because
-  the worktree is created exactly once per task. The auditor reads
-  `task.task_base_commit` (falling back to `worktree_base_commit` for
-  pre-M5 tasks) as the diff anchor.
-- `start_real_phase` dispatcher accepts `phase = "auditor"` and routes
-  to the new runner. Other phase names still error.
-- The auditor doesn't accept retry plumbing — auditor retries are
-  handled by the pipeline (M7) re-emitting a fresh phase run, not by
-  passing context through the runner.
-- Tests (11 new):
-  - `parse_verdict` strategies (4 happy paths + garbage + braces inside
-    strings).
-  - `truncate_for_error_caps_length`.
-  - Worktree diff tests (added file shows up, empty when unchanged,
-    truncate marker, passthrough when small).
-- `cargo build --lib` clean, `cargo test --lib` green (43 tests, 32
-  prior + 11 new).
-
-**Done — M6 (gate runner):**
-
-- New `src-tauri/src/gates.rs` module: `pub async fn run_gate(
-  worktree_path, gate_name, gate_command, timeout, triggering_phase_run_id,
-  tracker) -> Result<GateResult, GateError>`.
-- Commands run via the platform shell (`sh -c` on Unix, `cmd /C` on
-  Windows) so user gate commands can use `&&`, pipes, env-var
-  expansion etc. naturally — important since the brief explicitly
-  wants "user writes `pnpm test` (or `pytest`, or `cargo test`) and it
-  Just Works".
-- Output: combined stdout+stderr accumulated into a single string,
-  capped at 64 KB with a "[gate output truncated]" suffix when the
-  cap is hit.
-- Timeout: a side timer fires `cancel.cancel()` on the existing
-  subprocess cancellation token, and a flag distinguishes timeout-fail
-  from clean non-zero exit. `GateResult` carries `timed_out: bool`.
-- Non-zero exits are NOT errors — they're a normal failed-gate
-  outcome. Only spawn failure produces `Err(GateError::SpawnFailed)`.
-- `GateResult` shape: `{ gate_name, passed, output, duration_ms,
-  exit_code, timed_out, triggering_phase_run_id }`. The orchestrator
-  in M7 will translate this into a `GateRan` event on the phase_run
-  aggregate. `GateError` and `GateResult` are marked
-  `#[allow(dead_code)]` for now — fields wire up in M7.
-- Tests (4): pass on zero exit, fail on non-zero exit, shell chaining
-  (`echo x && echo y`), timeout fires and reports `timed_out=true`
-  with the timeout marker in the output. `cargo test --lib` green
-  (47 tests, 43 prior + 4 new).
-- The events.md schema and `phase_run_gate` projection table already
-  carry `gate_name, passed, output, duration_ms` from prior work — no
-  schema change needed in M6. M1's note about "GateRan...carries
-  `triggering_phase_run_id`" still holds: the runner returns it on
-  GateResult; M7 will include it on the emitted event payload (current
-  applier ignores extra fields, so adding it is additive).
-
-**Done — M7 (pipeline orchestrator), committed as `f1f7858`:**
-
-- New `src-tauri/src/pipeline.rs` module. Public surface:
-  - `start_task(app, task_id) -> Result<String, PipelineError>` — reads
-    the task's resolved `phase_config`, dispatches the first phase. Also
-    exposed as the `start_task` Tauri command.
-  - `on_phase_completed(app, workspace_id, phase_run_id)` — hook fired
-    after `PhaseRunCompleted` lands. Identifies the phase, runs gates,
-    dispatches the next phase. Auditor short-circuits here (its
-    progression is owned by the verdict hook).
-  - `on_auditor_verdict(app, workspace_id, phase_run_id)` — hook fired
-    after `AuditorVerdictRendered` lands. Runs auditor gates, then
-    stops; the user takes the next action via the M8 UI regardless of
-    verdict (approve / revise / reject all stop auto-progression — the
-    brief explicitly says approve "stops; user can approve and merge").
-- Pure decision helpers, fully unit-tested without a live workspace:
-  - `decide_next_phase(config, completed) -> Option<PhaseType>` — index
-    lookup, returns next; `None` if completed phase isn't in the config
-    (defensive — don't progress an off-config phase) or is the last.
-  - `gates_for_phase(settings, task_phase_config, phase) ->
-    Vec<(name, command, timeout_seconds)>` — task-level
-    `gate_overrides[phase]` wins over workspace `phase_gates[phase]`;
-    gate names not present in `settings.gates` are silently skipped (UI
-    can flag unresolved names later).
-- Wiring lives in `phases/runtime.rs::append_phase_run_step`: after
-  the tx commits, the loop scans the just-appended events and
-  `tokio::spawn`s the matching pipeline hook. Sync caller doesn't
-  block; spawn errors are logged. Phase runners already execute inside
-  a tokio task so the runtime context is available.
-- Gate execution path: `pipeline::run_gates_for_phase` opens a fresh
-  per-workspace DB connection (the active connection is held by phase
-  runners), invokes `gates::run_gate` per gate, appends a `GateRan`
-  event per result via `append_phase_run_step`. Spawn failure is
-  treated as a failed gate with the error in `output`. Any failure
-  stops further gates and progression.
-- `commands::start_real_phase` gains optional `is_retry: Option<bool>`
-  and `retry_context: Option<String>` so the orchestrator and M8's
-  `pass_back_to_implementer` route through the same dispatcher
-  (provider detection, options merge, inflight registration). Frontend
-  `phaseRunsApi.startReal` exposes both as optional.
-- Frontend `phaseRunsApi.startTask(taskId)` added.
-- Tests (8 new): `decide_next_phase` (4 cases — implementer→auditor,
-  test_author→implementer, last-phase→None, off-config→None) and
-  `gates_for_phase` (4 cases — workspace default, task override wins,
-  unknown gate names skipped, empty when no gates configured).
-- `cargo test --lib` green (55 tests, 47 prior + 8 new).
-  `pnpm tsc --noEmit` clean.
-
-**Known state for M8 (auditor failure UI actions):**
-
-- `pipeline::on_auditor_verdict` doesn't currently *read* the verdict —
-  it just runs gates and stops. M8's three commands
-  (`pass_back_to_implementer`, `reject_task`, `approve_task_anyway`)
-  are user-triggered, so the orchestrator never needs to branch on
-  verdict for auto-progression. If the user clicks "pass back to
-  implementer" the command should call `start_real_phase` with
-  `phase = "implementer"`, `is_retry = true`, and `retry_context =
-  <formatted concerns>` — the existing dispatch path is already wired.
-- `auditor_verdict_projection` reads (`get_auditor_verdict`,
-  `list_auditor_verdicts_for_task`) are still dead-code; M8 will
-  surface them via `get_latest_auditor_verdict_for_task` (or similar)
-  Tauri commands that the verdict UI consumes.
-- `PipelineError::Dispatch` carries the underlying error string; if
-  M8 wants typed errors crossing the boundary, we can promote it.
-
-**Done — M8 (auditor failure UI actions):**
-
-- Three new Tauri commands in `commands.rs`:
-  - `pass_back_to_implementer(task_id)` — reads the latest auditor
-    verdict via `list_auditor_verdicts_for_task`, formats summary +
-    concerns into a `retry_context` string, then calls
-    `start_real_phase` with `phase = "implementer"`, `is_retry = true`.
-    Errors with "no auditor verdict for task" if there isn't one.
-  - `reject_task(task_id)` — thin wrapper over `cancel_task` with
-    `reason = "auditor_rejected"`. Triggers the same `TaskCancelled`
-    event + worktree cleanup path the manual cancel uses.
-  - `approve_task_anyway(task_id)` — emits `TaskApproved` with
-    `by = "user:local"`. Does NOT clean up the worktree (approval is
-    not a terminal state — merge still has to happen via
-    `mark_task_merged`, which already handles cleanup).
-- New read command `get_latest_auditor_verdict_for_task(task_id)` —
-  returns the most recent `AuditorVerdictProjection` for a task, or
-  null. Drives the verdict UI.
-- New helper command `open_in_editor(task_id, path, line)` — resolves
-  the task's worktree path, joins the relative path, and spawns
-  `code --goto <abs>:<line>`. Used for the clickable concern anchors.
-- `AuditorVerdictRendered` payload now also carries `task_id`. The
-  applier already keys the projection by `task_id`, but emitting it on
-  the event makes the runtime hook able to also fire a `task` aggregate
-  `projection_updated` notification (so task-scoped queries refetch on
-  verdict landing). Doc updated in `docs/events.md`. Old payloads on
-  disk still replay — the applier reads `task_id` off the parent
-  `phase_run_projection.task_id` row, not the payload.
-- `phases/runtime.rs::append_phase_run_step` now sets `affected_task`
-  from the verdict payload too (was only `PhaseRunStarted` before),
-  so the post-commit Tauri emit reaches the task's verdict query.
-- Frontend:
-  - New `auditor-verdict-section.tsx` component shown above the
-    worktree section on the task detail view. Renders only when a
-    verdict exists. Verdict badge (approve/revise/reject), confidence
-    percentage, summary, concerns list with severity badges and
-    file:line anchor buttons. Action buttons (Pass back, Approve
-    anyway, Reject) only render for `revise` / `reject` verdicts —
-    `approve` shows the verdict but no actions.
-  - `AuditorVerdict`, `AuditorConcern`, `AuditorConcernAnchor`,
-    `AuditorVerdictKind` added to `features/tasks/types.ts`.
-  - `tasksApi` extended with `passBackToImplementer`, `reject`,
-    `approveAnyway`, `getLatestAuditorVerdict`, `openInEditor`.
-  - `useLatestAuditorVerdict`, `usePassBackToImplementer`,
-    `useRejectTask`, `useApproveTaskAnyway` hooks added. Verdict
-    query key is `["task", taskId, "latestAuditorVerdict"]` so the
-    existing global `projection_updated` listener (which invalidates
-    `["task", taskId]` prefix matches) refreshes it.
-- Tests (2 new): `format_concerns_for_retry` covers the happy path
-  (severity, anchor, rationale formatting + summary header) and the
-  empty case (no summary header when summary is empty). `cargo test
-  --lib` green (57 tests, 55 prior + 2 new). `pnpm tsc --noEmit` clean.
-
-**Done — M9 (configuration UI):**
-
-- Backend commands `get_workspace_settings(workspace_id)` and
-  `update_workspace_settings(workspace_id, settings)`. The update path
-  emits `WorkspaceSettingsChanged` v1 on the workspace aggregate
-  (global DB) with the full typed settings JSON; applier persists into
-  `workspace_projection.settings_json`. Existing workspaces with empty
-  `{}` settings still parse via the M1 tolerance code, so the first
-  GET returns bundled defaults until the user saves.
-- Frontend types: `WorkspaceSettings`, `PhaseConfig`, `GateConfig`,
-  `PhaseType` added to `features/workspaces/types.ts` and exported
-  from the workspaces api/hooks. `useWorkspaceSettings` /
-  `useUpdateWorkspaceSettings` hooks (key `["workspace", id,
-  "settings"]`).
-- New `features/prompts/{api,hooks}.ts` wrapping the M2 Tauri
-  commands (`get_prompt`, `save_prompt`, `reset_prompt`).
-- Three settings panels in
-  `features/workspaces/components/`:
-  - `phase-config-panel.tsx` — checkboxes for `test_author` / `auditor`
-    (implementer is fixed-on, order is fixed `[test_author?,
-    implementer, auditor?]` per the brief). Save = update mutation.
-  - `gate-config-panel.tsx` — table of `{ name, command,
-    timeout_seconds }` with add/remove rows, plus a per-phase
-    multiselect of which gates run after each phase. Filters
-    `phase_gates` to drop names that no longer exist on save, blocks
-    saving with duplicate gate names.
-  - `prompts-panel.tsx` — three `<Textarea>`s (one per phase) bound to
-    `usePrompt` / `useSavePrompt` / `useResetPrompt`. Shows
-    customised/bundled badge, lists the variables available to each
-    phase template. Reset is disabled when the prompt is already
-    bundled.
-- `routes/workspace/workspace-settings.tsx` rewritten to host the
-  three panels above + the existing "Remove workspace" danger zone.
-- `features/tasks/components/new-task-dialog.tsx` gains an Advanced
-  disclosure: an "Override phase config for this task" checkbox plus
-  the same fixed-order checkboxes. When unchecked the task inherits
-  the workspace default (resolved server-side at create time, the M1
-  behaviour). When checked, the dialog passes a `PhaseConfig` override
-  through to `tasksApi.create`.
-- `cargo test --lib` green (57 tests, no new tests). `pnpm tsc
-  --noEmit` clean. No new Rust unit tests — the settings round-trip
-  is already covered by `settings.rs` tests, and the new commands are
-  thin wrappers over `append_events_in_tx` + the existing applier.
-
-**Known state for M10 (pipeline visualisation):**
-
-- The new task dialog reads the workspace default phases via
-  `useWorkspaceSettings(activeWs.id)`. M10's pipeline UI on the task
-  detail can read phases off `task.phase_config` directly (already on
-  the `Task` type from M1).
-- `phase_gates` for `test_author` is configurable in the settings UI
-  even though the orchestrator only fires gates after a phase that's
-  actually in a task's phase_config — the panel is workspace-level so
-  it lists all three slots regardless.
-- Gate `gate_overrides` per task is intentionally not in the UI for
-  v1 (per the brief's "Out of scope"), but the schema field is plumbed
-  through and the dialog could expose it later.
-
-**Done — M10 (pipeline visualisation):**
-
-- `phase_run_projection` gains an `is_retry_of TEXT` column.
-  `PhaseRunStartedPayload` now reads `is_retry_of` (and `prompt_template_id` /
-  `worktree_path` made optional with `#[serde(default)]` so the post-M3 phase
-  runners that emit `prompt_template_hash` instead still parse cleanly).
-  `PhaseRunProjection` Rust struct + `list_phase_runs_for_task` query updated.
-- `start_real_phase` Tauri command takes an optional `is_retry_of` argument
-  and threads it into `ImplementerInput`. `pass_back_to_implementer` looks up
-  the most recent prior implementer phase_run on the task and passes its id
-  as `is_retry_of`. `pipeline.rs::dispatch_phase` passes `None` (auto-progression
-  is never a retry).
-- Implementer's `started_payload` now emits `is_retry_of` on
-  `PhaseRunStarted`. test_author and auditor never produce retries through
-  this path so they're unchanged.
-- **Heads-up for any per-workspace events.sqlite predating M10**: run
-  `rebuild_projections` once before starting new phase runs so the new
-  `phase_run_projection.is_retry_of` column materialises. Same drill as the
-  M4 `head_commit_after` note.
-- Frontend:
-  - `PhaseRun` type gains `is_retry_of` and `head_commit_after` fields.
-  - `phaseRunsApi.startReal` accepts an optional `isRetryOf` param (kept
-    type-narrowed; not currently used by any UI caller — the backend wires
-    it in `pass_back_to_implementer`).
-  - `useStartTask` hook (calls the existing `start_task` Tauri command).
-  - New `pipeline-cards.tsx` — cards for *every* phase in `task.phase_config`,
-    not just completed ones. Pending = muted dashed border, running = subtle
-    pulse, completed/failed/cancelled have their own colours. Each card shows
-    phase name, status badge, provider/model, and a duration when completed.
-    Clickable cards have a hover state (currently no-op for `onSelectRun` —
-    M10's "phase run detail" route isn't built; clicking a card is reserved
-    for that). Arrows between cards.
-  - New `phase-runs-trail.tsx` — collapsible chronological audit trail of
-    every phase run, including retries. Each row is `#N`, phase, status, and
-    a "↶ retry of #M" link when `is_retry_of` is set; clicking a row expands
-    the existing `PhaseRunCard` (so the streamed output and error message stay
-    one click away).
-  - `task-detail.tsx` rewritten: AuditorVerdictSection ABOVE the pipeline
-    cards (per the brief's "show it prominently as a separate section above
-    the phase cards"); the pipeline section gets a "Start pipeline" /
-    "Restart" primary button calling `start_task` plus the existing
-    "Run (fake)" debug button. Below: collapsed Audit trail. Worktree
-    section moved below.
-  - `RunRealForm` and `useStartRealPhase` are no longer wired up from the
-    task detail view — kept exported for now since direct manual phase
-    invocation could be useful as a debug escape hatch (not strictly
-    decommissioned in this brief).
-- `cargo test --lib` green (57 tests). `pnpm tsc --noEmit` clean.
-
-**M1-M10 of BRIEF_4 are complete.** The app is now an actual orchestrator:
-configurable per-task pipelines, three real phases, structured auditor
-verdicts, gates, editable prompts, the configuration UI for all of it,
-auditor-failure user actions, and a pipeline visualisation that shows the
-configured phases plus the full retry audit trail.
-
-**Outstanding items deliberately deferred per the brief's "Out of scope":**
-automatic retries / retry budgets, codex provider, real merge logic, gate
-auto-detection, PRD ingestion, Linear integration, per-task gate-override UI,
-confidence-threshold gating, and notification on phase completion.
+# Brief for Claude Code: Reliability — Worktree Init, Non-Interactive Guarantees, Stall Detection
 
 ## Context
 
-The app currently runs a single phase (implementer) per task. This brief turns that into a real pipeline: configurable phases per task, real test-author and auditor phases, gate runners, structured auditor verdicts, editable prompts, and the UI to drive it all.
+Three related problems block the app from being usable for real work:
 
-This is the product-defining phase. Until this lands, the app is "claude in a window with an event log." After this, it's an actual orchestrator.
+1. **Worktrees aren't ready to run.** A fresh worktree has no `node_modules`, no virtualenv, no installed deps. The first phase that needs them (typecheck, test, even just imports) fails.
+2. **Subprocesses can hang on interactive prompts.** Tools that prompt for input (`pnpm install`, `gh auth login`, npm package post-install scripts, anything reading stdin) wait forever because there's no human to respond. The agent appears to be working but is silently stalled.
+3. **Phases can run unboundedly long.** A model going off the rails or stalled can burn tokens and time without ever completing or failing.
+
+This brief addresses all three. It's prerequisite to dogfooding — without these, the pipeline appears unreliable in ways that are environmental, not architectural, and you'll waste dogfooding sessions debugging the wrong things.
 
 **Prerequisites already in place:**
 
-- Plan / Task / PhaseRun aggregates with their projections
-- Per-task git worktrees, lazy-created on first phase, branch `yourapp/<task_id>`
-- Auto-commit per phase with `head_commit_after` recorded; structured commit messages
-- TanStack Router (code-based) with the workspace → plan → task hierarchy
-- shadcn/ui with Tailwind v4
-- Provider trait with `claude` working; `codex` not yet implemented (still out of scope for this brief)
-- Subprocess module with cancellation, output streaming, orphan cleanup
-- Recent events strip at the bottom of the app
+- Subprocess module with cancellation and output streaming (phase 2)
+- Per-task worktrees auto-created on first phase (phase 3)
+- `WorktreeCreated` event on Task aggregate
+- Workspace settings system with `WorkspaceSettingsChanged` event
+- Provider trait with permission mode configurable
+- Recent events strip showing app activity
 
-Read `docs/events.md` first. You'll be updating it as part of this work.
+Read `docs/events.md` first.
 
 ## Goals
 
-1. Phases are configurable per task (which phases run, in what order). Workspace-level defaults that tasks inherit and can override.
-2. Three real phases working: test-author, implementer, auditor. Auditor uses structured output for its verdict.
-3. Gates configurable per workspace, runnable after specific phases, tech-stack-agnostic.
-4. Editable prompts per phase, stored as files in the workspace, with template variable substitution.
-5. Empty-commit guard across all phases.
-6. UI for: phase configuration, prompt editing, gate config, auditor verdict display, retry/reject actions on auditor failure.
-
-## Design notes (read before implementing)
-
-**Pipeline progression is mostly auto, decisions are user-driven.** When a phase completes successfully, the orchestrator auto-starts the next phase. When a phase fails, or the auditor returns `revise` or `reject`, the pipeline stops and waits for the user. No automatic retries, no retry budgets — the user clicks "retry" / "pass back to implementer" / "reject" / "approve anyway" explicitly.
-
-**Phases are configurable, not pluggable.** The phase types (`test_author`, `implementer`, `auditor`) are a closed enum. What's configurable is *which phases run for a given task* and *in what order*. Adding new phase types is a code change, not a config change.
-
-**Auditor verdict and pipeline progression are separate events.** The auditor's `PhaseRunCompleted` records that the auditor finished. A separate `AuditorVerdictRendered` event records the verdict. The pipeline orchestrator reads the verdict event to decide what to do next.
-
-**Prompts are files in the workspace, templated at runtime.** Default prompts ship bundled. On first edit, a file is written to `<workspace>/.yourapp/prompts/{phase}.md`. The runtime reads from the file if it exists, falls back to bundled default otherwise. Templates use Handlebars syntax (or equivalent — pick a Rust crate, `handlebars` is fine).
-
-**Gates are commands, not primitives.** Gate config is `{ name, command, timeout }`. A gate "passes" if its command exits 0. The app doesn't care whether it's `pnpm test`, `pytest`, or `cargo test` — it runs the configured command from the worktree directory and checks the exit code.
+1. Worktrees are initialised (deps installed, env set up) automatically before the first phase runs.
+2. Every subprocess the app spawns runs with stdin closed and non-interactive environment variables set, so subprocesses that would prompt either error fast or proceed with defaults.
+3. Phases that produce no output for too long, or run too long overall, are killed with a clear failure reason.
+4. All of the above is configurable per workspace with sensible defaults.
 
 ## Schema additions
 
-Update `docs/events.md` and the implementation accordingly.
+Update `docs/events.md` and the implementation.
 
-### Task aggregate
+**`WorktreeInitialized`** — new event on Task aggregate. Emitted between `WorktreeCreated` and the first `PhaseRunStarted`.
+- `command: string` — the actual command that ran
+- `exit_code: i32`
+- `duration_ms: u64`
+- `output: string` — captured stdout+stderr; truncate to ~10KB if larger
+- `detection_kind: "package_json_pnpm" | "package_json_npm" | "package_json_yarn" | "pyproject_uv" | "pyproject_poetry" | "requirements_txt" | "cargo_toml" | "go_mod" | "user_configured" | "none"` — what triggered this initialization
 
-**`TaskCreated`** — gains:
-- `phase_config: PhaseConfig` — the phase config for this task. If absent, inherits workspace default at task-creation time (resolved at create time, not at runtime — events are immutable, the config at creation is the config that stuck).
+**`WorktreeInitializationFailed`** — new event on Task aggregate. Emitted when initialization runs but fails.
+- `command: string`
+- `exit_code: i32`
+- `duration_ms: u64`
+- `output: string`
+- `detection_kind: string` (same enum as above)
 
-`PhaseConfig`:
+When this fires, the pipeline does not auto-progress to the first phase. The user sees the error in the UI and can either fix the underlying issue and retry, or skip initialization for this task.
+
+**`PhaseRunFailed`** — existing event. Add new variants to the `error_kind` enum:
+- `"stalled_no_output"` — silence timeout exceeded
+- `"stalled_wall_clock"` — total runtime exceeded
+- `"non_interactive_eof"` — subprocess closed stdin and exited (this isn't an error per se, but worth distinguishing from a real crash)
+
+Existing `error_kind` values remain.
+
+**Workspace settings** extended via `WorkspaceSettingsChanged`:
+
 ```
 {
-  phases: ["test_author" | "implementer" | "auditor", ...],   // ordered list
-  gate_overrides: { [phase: string]: string[] } | null         // phase -> gate names; if null, use workspace default
+  worktree_init: {
+    enabled: bool,                       // default true
+    detection_enabled: bool,             // default true; if false, only user_command is used
+    user_command: string | null,         // override; if set, replaces detection
+    timeout_seconds: integer,            // default 600 (10 min)
+  },
+  phase_timeouts: {
+    silence_timeout_seconds: integer,    // default 300 (5 min)
+    wall_clock_timeout_seconds: integer, // default 1800 (30 min)
+  },
+  subprocess: {
+    additional_env: { [key: string]: string }  // user-defined env vars passed to all phase subprocesses
+  }
 }
 ```
 
-**`TaskBaseCommitRecorded`** — emitted when the worktree is created for a task. Captures the commit the worktree was created from. This is the reference point for "the diff for this task."
-- `commit_sha: string`
-
-### PhaseRun aggregate
-
-**`PhaseRunStarted`** — gains:
-- `prior_phase_commits: { [phase_name: string]: string }` — map of phase type to `head_commit_after` for prior completed phases on this task. Populated by the phase runner.
-- `prompt_template_hash: string` — content hash of the resolved prompt at the moment of execution. Replaces (or supplements) `prompt_template_id`.
-- `is_retry_of: string | null` — the `phase_run_id` this is a retry of, when applicable.
-
-**`AuditorVerdictRendered`** — new event. Emitted after the auditor's `PhaseRunCompleted`, by the auditor phase runner.
-- `phase_run_id: string` — the auditor phase run that produced this
-- `verdict: "approve" | "revise" | "reject"`
-- `confidence: number` — 0.0 to 1.0
-- `summary: string`
-- `concerns: Array<{ category: string, severity: "blocking" | "advisory", anchor: { path: string, line: number } | null, rationale: string, reference_proposition_id: string | null }>`
-
-### Workspace aggregate
-
-**`WorkspaceSettingsChanged`** — settings now include:
-- `default_phase_config: PhaseConfig`
-- `gates: { [name: string]: { command: string, timeout_seconds: number } }`
-- `phase_gates: { [phase_name: string]: string[] }` — which gates run after which phases
-
-### Schema versioning
-
-`TaskCreated` bumps to v3 (was v2). No upcaster needed — there are no v2 events on disk in production yet (or wipe again if there are dev events; you've done this before).
+These have defaults that work out of the box for most projects. The user only touches them if defaults are wrong.
 
 ## Milestones
 
-### Milestone 1: Schema and config plumbing
+### Milestone 1: Subprocess hardening
 
-- Update `docs/events.md` with the new events and field changes.
-- Update Rust event types and serialization.
-- Update `task_projection` to include `phase_config` (serialize the JSON; deserialize on read).
-- Update `WorkspaceSettingsChanged` applier to handle the new settings shape. If existing workspace settings don't have the new fields, populate with sensible defaults on read (this is the one place where reading old data must be tolerant — populate in-memory defaults rather than failing).
-- Bundled defaults:
-  - `default_phase_config`: `{ phases: ["implementer", "auditor"], gate_overrides: null }`
-  - `gates`: empty (user configures per workspace)
-  - `phase_gates`: empty
+This is the first piece because everything else depends on it. Audit and harden the existing subprocess module.
 
-### Milestone 2: Prompt files and templating
+**Required changes to `subprocess::run_streaming` (or whatever it's called):**
 
-- Add `<workspace>/.yourapp/prompts/` to the directories created on workspace activation.
-- Create a `prompts` Rust module:
-  - `pub fn resolve(workspace_path: &Path, phase: PhaseType) -> Result<String, PromptError>` — reads from `<workspace>/.yourapp/prompts/{phase}.md` if present, otherwise returns bundled default.
-  - `pub fn render(template: &str, context: &PromptContext) -> Result<String, PromptError>` — Handlebars substitution.
-  - `pub fn hash(rendered: &str) -> String` — content hash for `prompt_template_hash`.
-- Bundled default prompts go in `src-tauri/src/prompts/defaults/{phase}.md`, embedded at compile time (`include_str!`).
-- Use the prompts in the Provided Prompts section of this document, with the variable templating modifications described.
-- `PromptContext` shape (keep this simple — it's the variables available to all prompts):
-  ```rust
-  struct PromptContext {
-      task_title: String,
-      task_spec_markdown: String,
-      acceptance_criteria: String,         // for now, same as task_spec_markdown — can split later
-      prior_phase_commits: HashMap<String, String>,
-      git_diff: Option<String>,            // populated for auditor; None for others
-      is_retry: bool,
-      retry_context: Option<String>,        // auditor concerns from prior verdict
-  }
+- **Stdin closed by default.** The function already takes `stdin_input: Option<String>`. When that's `None`, close stdin explicitly (don't leave it inherited or open). Use `Stdio::null()` for stdin in the `tokio::process::Command` config.
+- **Default non-interactive environment variables** merged into every subprocess's env unless explicitly overridden by the caller:
   ```
-- Document the available variables at the top of each bundled default prompt as a comment block. Users editing prompts can see what they have access to.
-- Tauri commands:
-  - `get_prompt(workspace_id, phase)` — returns the current resolved prompt content (file or default) and a flag indicating whether it's been customised.
-  - `save_prompt(workspace_id, phase, content)` — writes the file.
-  - `reset_prompt(workspace_id, phase)` — deletes the file (next read returns default).
+  CI=true
+  DEBIAN_FRONTEND=noninteractive
+  NPM_CONFIG_YES=true
+  npm_config_yes=true
+  GH_PROMPT_DISABLED=1
+  GIT_TERMINAL_PROMPT=0
+  GIT_ASKPASS=                          // empty value disables credential prompts
+  SSH_ASKPASS=
+  PYTHONUNBUFFERED=1                    // makes Python output flush in real-time
+  PIP_DISABLE_PIP_VERSION_CHECK=1
+  PIP_NO_INPUT=1
+  ```
+  Implement this as a `default_env()` helper that returns a `HashMap`, merged with the caller's env (caller's env wins on conflict).
+- **No TTY allocation.** Don't allocate a PTY. Subprocesses run with plain pipes. (You may already do this — verify.)
 
-### Milestone 3: Test-author phase
+**Test additions:**
 
-- Implement test-author phase in `phases/test_author.rs`.
-- Uses the bundled test-author prompt with `task_title` and `acceptance_criteria` variables.
-- Runs claude in the worktree with the rendered prompt as input.
-- Streams output as `PhaseRunOutputAppended` events.
-- On completion, runs the empty-commit guard: `git status --porcelain` (or `git2` equivalent). If clean, skip commit; emit `PhaseRunCompleted` with `head_commit_after = base_commit`. If dirty, commit with message `[phase: test_author] {task_title}` and emit `PhaseRunCompleted` with the new commit SHA.
+Write a test that proves a subprocess *can't* read from stdin:
 
-### Milestone 4: Implementer phase updates
+```rust
+// Spawn a process that tries to read stdin. Confirm it sees EOF immediately.
+let result = run_streaming("sh", &["-c", "read line && echo got: $line || echo no_input"], ...).await?;
+assert!(result.stdout.contains("no_input"));
+```
 
-- Update implementer phase to use the new prompt template with the full variable set.
-- Specifically, the prompt now includes `prior_phase_commits.test_author` (when present) so the implementer knows where to find the tests.
-- On retry, `is_retry: true` and `retry_context` populated with the auditor's concerns from the prior verdict. The prompt includes a section addressing the retry context.
-- Empty-commit guard same as test-author.
-- Phase runner populates `prior_phase_commits` on `PhaseRunStarted` from the task's prior phase runs (read from projection).
+This test is the canary — if anyone later changes the subprocess module to inherit stdin, the test catches it.
 
-### Milestone 5: Auditor phase
+**Audit:** find every place in the codebase that spawns a subprocess outside `subprocess::run_streaming` (provider invocations, gate runs, git ops via `Command`, etc.) and confirm they go through the same module or apply equivalent hardening. If any spawn `tokio::process::Command` directly without these guarantees, fix them.
 
-- Implement auditor phase in `phases/auditor.rs`.
-- Computes the diff: `git diff {task_base_commit}..HEAD` from the worktree. If the diff is larger than ~50KB, truncate with a message ("...diff truncated, X bytes total. The full diff can be inspected by running `git diff {base_commit}..HEAD` in the worktree.").
-- Renders the prompt with `git_diff` and `acceptance_criteria` populated.
-- Runs claude *with structured output*. The provider trait needs an extension here: the existing `invoke` flow returns text; we need a way to invoke with a tool/function definition and receive a structured object back.
-  - Add `invoke_structured(prompt, schema) -> Result<serde_json::Value, ProviderError>` to the provider trait.
-  - For claude, this means using claude CLI's tool-use mode (or whatever invocation pattern produces structured output reliably). If the CLI doesn't support this directly, fall back to: run normally, parse JSON from response, retry once on parse failure, then escalate.
-  - The schema corresponds to the `AuditorVerdict` struct (matches the `AuditorVerdictRendered` payload).
-- After getting the verdict, emit `PhaseRunCompleted` (auditor may modify code as part of review — empty-commit guard still applies), then emit `AuditorVerdictRendered` with the parsed verdict.
-- If verdict parsing fails entirely (after one retry), emit `PhaseRunFailed` with `error_kind: "auditor_parse_error"`.
+### Milestone 2: Project-type detection
 
-### Milestone 6: Gate runner
+A new module `worktree_init` that handles detection and initialization.
 
-- Implement `gates` Rust module.
-- `pub async fn run_gate(workspace_path, gate_name, gate_command, timeout, triggering_phase_run_id) -> GateResult`
-- Spawns subprocess via the existing subprocess module, captures output, exit code, duration.
-- Emits `GateRan` event with `passed: bool`, `output: string`, `duration_ms`, `triggering_phase_run_id`.
-- Pipeline orchestrator (Milestone 7) calls `run_gate` after each phase as configured.
+**Detection helpers:**
 
-### Milestone 7: Pipeline orchestrator
+```rust
+pub enum InitKind {
+    PackageJsonPnpm,    // pnpm-lock.yaml present
+    PackageJsonYarn,    // yarn.lock present
+    PackageJsonNpm,     // package-lock.json or just package.json
+    PyprojectUv,        // pyproject.toml + uv.lock
+    PyprojectPoetry,    // pyproject.toml + poetry.lock
+    RequirementsTxt,
+    CargoToml,
+    GoMod,
+    None,
+}
 
-This is the heart of this brief. A new `pipeline` Rust module that owns "what happens next."
+pub fn detect(worktree_path: &Path) -> InitKind;
+```
 
-- `pub async fn start_task(task_id) -> Result<(), PipelineError>` — kicks off the task's first phase.
-- `pub async fn on_phase_completed(phase_run_id) -> Result<(), PipelineError>` — called when any phase emits `PhaseRunCompleted`. Decides what's next.
-- The `on_phase_completed` logic, in order:
-  1. Read the task's `phase_config`.
-  2. Identify the completed phase. Check if any gates are configured to run after it.
-  3. If gates are configured, run them sequentially. On gate failure, stop the pipeline (don't progress) and emit no further events. The user sees the gate failure in the UI and decides what to do.
-  4. If the completed phase is the auditor, wait for `AuditorVerdictRendered` (which arrives shortly after `PhaseRunCompleted` for the auditor). Read the verdict. If `approve`, the task pipeline is complete (auto-progression stops; user can approve and merge). If `revise` or `reject`, the pipeline stops and waits for user action.
-  5. Otherwise, identify the next phase in the task's `phase_config`. Start it.
-- Wiring: the existing event-emission pipeline gains a hook. After the projection_updated event for `PhaseRunCompleted`, the pipeline orchestrator's `on_phase_completed` is invoked. Async; doesn't block the event flow. Errors logged but don't propagate up.
+The function looks for marker files in priority order. First match wins. The order matters — pnpm-lock takes precedence over package.json alone, etc.
 
-### Milestone 8: Auditor failure UI actions
+**Init commands per kind:**
 
-When the auditor returns `revise` or `reject`, three actions are available in the task detail view:
+```
+PackageJsonPnpm    → pnpm install --frozen-lockfile
+PackageJsonYarn    → yarn install --frozen-lockfile
+PackageJsonNpm     → npm ci  (if package-lock.json exists) else npm install
+PyprojectUv        → uv sync
+PyprojectPoetry    → poetry install
+RequirementsTxt    → pip install -r requirements.txt   (relies on a venv being active or system pip)
+CargoToml          → cargo fetch
+GoMod              → go mod download
+None               → no command runs; emit no event
+```
 
-- **Pass back to implementer** — creates a new implementer phase run with `is_retry: true` and `retry_context` set from the auditor's concerns. Pipeline auto-runs from there.
-- **Reject** — emits `TaskCancelled` with `reason: "auditor_rejected"`.
-- **Approve anyway** — manual override. Marks the task as approved despite the auditor's verdict. Implementation: emit `TaskApproved` (this event already exists). The auditor's verdict remains in history.
+These commands use frozen/locked variants where available — the worktree should match what the user has, not auto-update deps.
 
-These are Tauri commands: `pass_back_to_implementer(task_id)`, `reject_task(task_id)`, `approve_task_anyway(task_id)`.
+For Python `requirements.txt` and Cargo, no virtual env management is attempted. If the user's project needs a venv, they configure it via `user_command` instead.
 
-The same UI also shows the auditor's verdict prominently: verdict badge (approve/revise/reject), confidence percentage, summary, and the list of concerns with their anchors clickable (open the file at the line in the worktree — `Command::new("code").arg("--goto").arg(format!("{}:{}", path, line))`).
+### Milestone 3: Initialization integration
 
-### Milestone 9: Configuration UI
+Wire the init flow into worktree creation.
 
-Three settings panels, accessed from workspace settings:
+When `WorktreeCreated` is emitted by the existing flow, before any phase runs:
 
-**Phase config (workspace defaults).** UI to choose the default phase order. Drag-and-drop or simple checkboxes-with-order. For v1, simple is fine: checkboxes for "include test_author", "include implementer", "include auditor", with the order fixed (test_author always first, auditor always last, implementer always in the middle if included). Implementer is required; the others are optional. Save updates `default_phase_config`.
+1. Read workspace settings. If `worktree_init.enabled == false`, skip everything and proceed to first phase.
+2. If `worktree_init.user_command` is set, use it. `detection_kind = "user_configured"`.
+3. Otherwise, if `worktree_init.detection_enabled == true`, run `detect()`. If result is not `None`, build the appropriate command. `detection_kind` matches the detected kind.
+4. If detection returns `None` and no user command, skip and proceed.
+5. Run the chosen command via `subprocess::run_streaming` with `cwd` set to the worktree path, `timeout` set to `worktree_init.timeout_seconds`. Capture all output.
+6. On success (exit 0): emit `WorktreeInitialized`. Pipeline proceeds to the first phase.
+7. On failure: emit `WorktreeInitializationFailed`. Pipeline stops; user must intervene.
 
-**Gate config.** A table of gates with name, command, timeout. Add/remove rows. Plus a `phase_gates` section: for each phase, a multiselect of which gates run after it.
+The init runs as part of the same task lifecycle. From the UI's perspective, "init" is a phase-like step that happens before phases — it shows up in the recent events strip and the task detail view.
 
-**Prompts.** Three textareas (one per phase) showing the current resolved prompt. "Reset to default" button per phase. Save calls `save_prompt`. Document the available variables in a help panel above the editor.
+### Milestone 4: Stall detection
 
-Per-task phase config override: on the task creation dialog, an "Advanced" disclosure that lets you override the workspace default. Most users won't touch this; tasks created through the quick-task shortcut just inherit.
+Two timeouts in the subprocess module:
 
-### Milestone 10: Pipeline visualisation
+**Silence timeout.** If no output (stdout or stderr) has been produced for `silence_timeout_seconds`, kill the subprocess. Implement with a `tokio::time::sleep` reset every time output arrives, racing with process completion via `select!`.
 
-The task detail view's phase row already shows phase cards. Update for the pipeline reality:
+**Wall-clock timeout.** Total elapsed time since spawn exceeds `wall_clock_timeout_seconds`. Same `select!` pattern — additional branch for the wall-clock timer.
 
-- Cards for *all* phases in the task's `phase_config`, not just completed ones. Pending phases shown in muted state.
-- Active phase shown with a subtle pulse.
-- Arrows between cards.
-- Each card shows: phase name, status, model used, duration if completed, link to phase run detail.
-- Below the cards: a "Phase runs" expandable list showing every phase run in chronological order, including retries. Each retry shows its `is_retry_of` link to the prior attempt. This is the audit trail.
-- When an auditor verdict exists for the latest auditor run, show it prominently as a separate section above the phase cards: verdict badge, confidence, summary, concerns list, action buttons.
+When either fires:
+- The process is killed (existing kill machinery from cancellation).
+- The function returns a typed error: `SubprocessError::StalledNoOutput { duration_ms: u64 }` or `SubprocessError::StalledWallClock { duration_ms: u64 }`.
+
+**Wiring into phases:**
+
+The phase runner reads the workspace's `phase_timeouts` settings and passes them to `run_streaming` for every phase invocation. On stall, the phase runner translates the typed error into the appropriate `PhaseRunFailed` event variant.
+
+The phase runner does *not* apply timeouts to gate runs or worktree init — those have their own timeouts (gate config has `timeout_seconds`, worktree init has its own). Each subprocess call sets its own timeouts based on its purpose.
+
+### Milestone 5: UI surfacing
+
+Three UI changes; small.
+
+**Task detail view, init state.** When `WorktreeInitialized` exists, show a small collapsed item above the phase row: "✓ Initialized · `pnpm install` · 4.2s". Clickable to expand and show the captured output. Quiet state — most of the time you don't care.
+
+When `WorktreeInitializationFailed` exists and no `WorktreeInitialized` followed it, show this prominently with the error: "✗ Initialization failed: `pnpm install` exited 1. See output." Expanded by default. With "Retry initialization" and "Skip and proceed to first phase" buttons. Both are Tauri commands; "skip" is a manual override that proceeds despite the init failure.
+
+**Phase failure rendering.** When a phase ends in `PhaseRunFailed` with `stalled_no_output` or `stalled_wall_clock`, the UI shows this distinctly:
+
+- `stalled_no_output`: "Phase killed: no output for {N} minutes. The agent may have been waiting for input or stuck."
+- `stalled_wall_clock`: "Phase killed: ran for {N} minutes (timeout). The agent may have been stuck in a loop."
+
+Both with a "Retry" button.
+
+**Workspace settings UI.** A new "Reliability" or "Execution" section in workspace settings with controls for:
+- Init enabled (toggle)
+- Init detection enabled (toggle)
+- Init user command (text input, with a help text noting that this overrides detection)
+- Init timeout (number input, seconds)
+- Phase silence timeout (number input, seconds)
+- Phase wall-clock timeout (number input, seconds)
+- Additional environment variables (key/value list, optional)
+
+Defaults visible as placeholder text. Save calls `WorkspaceSettingsChanged` with the new settings.
+
+### Milestone 6: Provider permission mode (verification)
+
+You set up provider permission configuration in an earlier phase. This milestone is verification, not new work — but worth doing now while we're thinking about non-interactive operation.
+
+Audit the provider invocation path:
+- Confirm the workspace's permission mode setting is actually being passed to the provider's CLI invocation.
+- Confirm the default for new workspaces is "bypass within worktree" or whatever permits agents to run typecheck/test/lint without prompting, but doesn't trust them with arbitrary network or filesystem operations.
+- For Claude Code specifically: confirm the relevant flag (`--permission-mode bypassPermissions` or whatever the current name is) is set when the workspace's permission mode requires it.
+
+If anything's missing, fix it. If it's all wired correctly, write a brief comment in the provider module explaining the permission flow so it's not lost knowledge.
 
 ## Conventions
 
-- Read and update `docs/events.md` before implementing.
+- All subprocess invocations go through the hardened `subprocess::run_streaming`. No direct `Command::new` for any phase, gate, init, or provider invocation.
+- Workspace settings defaults are sane out of the box. The settings UI is for power users; most users never touch it.
 - Tauri events emitted **after** transaction commit. One `projection_updated` per affected aggregate.
-- Cross-aggregate updates (Task applier updating Plan projection counts when phase runs change task state) happen in the same transaction.
-- TanStack Query for all reads, Tanstack Router for all navigation. No route loaders.
-- Typed errors with `thiserror`. No `anyhow` in library code.
-- Empty-commit guard is a phase-agnostic helper used by every phase's commit step.
-- Auto-progression in the pipeline is best-effort. Failures are logged, never propagated to user-facing errors directly. The UI reads state from projections; if the orchestrator quietly stops, the user sees a phase that didn't progress and can intervene.
-- shadcn primitives for new UI. Use `react-markdown` for rendering plan descriptions and any markdown content.
+- Typed errors with `thiserror` — new error variants added as needed.
+- shadcn primitives for new UI elements.
 
 ## Out of scope
 
-- Automatic retries / retry budgets (user-driven for now)
-- `codex` provider (next phase)
-- Real merge logic (still stubbed; comes later)
-- Test framework auto-detection for gates (user configures gates explicitly)
-- PRD ingestion (next phase)
-- Linear / external integrations
-- Per-task gate overrides (in the schema as `gate_overrides`, but UI is workspace-level only for v1)
-- Confidence threshold gating (auditor's confidence shown but doesn't gate progression)
-- Notification on phase completion (would be nice, defer)
-
-## Provided Prompts (use as bundled defaults)
-
-These are the prompts the user has already validated against real usage. Port them as bundled defaults at `src-tauri/src/prompts/defaults/{phase}.md`. The prompts are mostly portable as-is with the variable substitution wrapped around them.
-
-The structure for each bundled default file:
-
-```
-{{!-- Available variables: task_title, acceptance_criteria, prior_phase_commits, is_retry, retry_context, git_diff (auditor only) --}}
-
-[the prompt content from the user]
-
-## Acceptance Criteria
-
-{{acceptance_criteria}}
-
-{{#if is_retry}}
-## Retry Context
-
-The previous attempt was not approved. The auditor's concerns:
-
-{{retry_context}}
-{{/if}}
-```
-
-For the **implementer prompt specifically**, add this conditional block before the Acceptance Criteria:
-
-```
-{{#if prior_phase_commits.test_author}}
-## Tests
-
-The test-author has written failing tests in commit `{{prior_phase_commits.test_author}}`. Read these tests with `git show {{prior_phase_commits.test_author}}`. Your job is to make them pass.
-{{/if}}
-```
-
-For the **auditor prompt specifically**, add at the end:
-
-```
-## Diff to audit
-
-{{git_diff}}
-
-## Acceptance Criteria
-
-{{acceptance_criteria}}
-```
-
-The user's original prompt content is preserved verbatim — only the variable injection is added at the appropriate locations.
-
-[Test-author, implementer, and auditor prompt content as provided in the conversation]
+- Auto-detecting Python virtual environments (too many ways users do this; keep it explicit)
+- Automatic dependency caching across worktrees (potentially valuable but a substantial separate piece — for now, each worktree installs deps independently)
+- Detecting Docker / docker-compose projects and starting containers (too project-specific)
+- Real-time progress streams for init commands (it's a black box for now; output shows on completion)
+- Per-task init overrides (workspace-level only for v1)
+- Graceful shutdown of init on app quit (kill it, accept that next run re-installs)
+- Auto-retry on init failure (user explicitly retries)
 
 ## Deliverable
 
 A working app where:
 
-1. A workspace has configurable default phase config, gate definitions, and per-phase gate assignments.
-2. A task created in the workspace inherits the default phase config; an "Advanced" panel on task creation lets the user override.
-3. Running a task with `[test_author, implementer, auditor]` configured causes all three to run in sequence, with each phase's commit referenceable from the next.
-4. The auditor produces a structured verdict that's stored as an event and displayed in the UI with confidence percentage and clickable concerns.
-5. On `revise` or `reject` verdict, the user has three buttons: pass back to implementer (with auditor's concerns in the retry prompt), reject (cancels the task), or approve anyway.
-6. Gates configured to run after a phase actually run after that phase, and gate failures stop the pipeline.
-7. Prompts can be edited per workspace, persisted as files, and reset to defaults.
-8. The empty-commit guard prevents empty commits across all phases.
-9. The task detail view shows the full pipeline state: pending phases, active phase, completed phases, retries, and auditor verdict prominently.
-10. `docs/events.md` reflects all schema additions.
+1. Adding a new task to a Node-based workspace triggers `pnpm install` (or equivalent) automatically before the first phase, with the install output captured.
+2. A subprocess that tries to prompt for input fails fast instead of hanging.
+3. A phase that produces no output for 5 minutes is killed with a clear "stalled, no output" error.
+4. A phase that runs for 30 minutes is killed with a "stalled, wall clock" error.
+5. Workspace settings UI lets the user override init behaviour, configure timeouts, and add custom env vars.
+6. The task detail view shows initialization state and stall failures clearly.
+7. `docs/events.md` reflects the new events and `error_kind` variants.
 
 Plus tests on:
-- The pipeline orchestrator's `on_phase_completed` decision logic (state transitions are exactly the place a subtle bug would silently break the pipeline).
-- The empty-commit guard.
-- Prompt template rendering with the full variable set.
+- The "subprocess can't read stdin" canary test (Milestone 1)
+- Project type detection (a few synthetic worktrees, asserts the detected kind)
+- Stall detection — both silence and wall-clock — using a synthetic long-running subprocess
+- The init success and failure paths emitting the correct events
 
-This is a meaty phase. Commit after each milestone — the milestones are deliberately scoped to be commit-sized. Milestones 1-2 are foundation, 3-5 are individual phases, 6-7 are pipeline glue, 8-10 are UI.
+Commit after each milestone. Milestone 1 (subprocess hardening) is the foundation — get it right with the canary test before integrating with init or stall detection.

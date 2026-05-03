@@ -21,9 +21,13 @@ export function useProjectionInvalidation() {
           return;
         }
         qc.invalidateQueries({ queryKey: [aggregate_type, aggregate_id] });
-        qc.invalidateQueries({
-          queryKey: [aggregate_type, "list", workspace_id],
-        });
+        // List queries are keyed inconsistently (plans by workspace, tasks by
+        // plan, etc), so invalidate by prefix — react-query matches any
+        // queryKey starting with [aggregate_type, "list"]. Without this, a
+        // TaskMerged event would invalidate ["task", "list", workspace_id]
+        // while the actual list lives under ["task", "list", plan_id] and
+        // never refreshes.
+        qc.invalidateQueries({ queryKey: [aggregate_type, "list"] });
         if (aggregate_type !== "recent_events") {
           qc.invalidateQueries({ queryKey: ["recent_events", workspace_id] });
         } else {

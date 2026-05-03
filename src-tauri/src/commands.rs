@@ -16,7 +16,7 @@ use crate::events::{append::append_events_in_tx, AppendError};
 use crate::phases::{self, InflightRuns};
 use crate::providers::{self, KnownModel, OptionDecl, ProviderCache, ProviderStatus};
 use crate::recent_events::{self, RecentEventRow};
-use crate::subprocess::ChildTracker;
+use crate::subprocess::{ChildTracker, StreamOptions};
 use crate::workspace_db::open_workspace_db;
 use crate::{ActiveWorkspace, ActiveWorkspaceState, GlobalDb};
 
@@ -1196,6 +1196,21 @@ pub async fn start_real_phase(
             .ok_or_else(|| format!("provider '{}' has no path", provider_id))?
     };
 
+    // Pull workspace reliability settings: timeouts and any user-defined env vars.
+    // These are per-workspace so reading once at dispatch time is sufficient — a
+    // running phase intentionally keeps the timeouts it started with even if the
+    // user edits settings while it's executing.
+    let settings = crate::pipeline::load_workspace_settings(&app, &workspace_id);
+    let stream_options = StreamOptions {
+        silence_timeout: Some(std::time::Duration::from_secs(
+            settings.phase_timeouts.silence_timeout_seconds.max(1),
+        )),
+        wall_clock_timeout: Some(std::time::Duration::from_secs(
+            settings.phase_timeouts.wall_clock_timeout_seconds.max(1),
+        )),
+    };
+    let extra_env = settings.subprocess.additional_env.clone();
+
     let phase_run_id = format!("pr_{}", Ulid::new());
     let cancel = CancellationToken::new();
 
@@ -1221,6 +1236,8 @@ pub async fn start_real_phase(
                     provider_path,
                     options,
                     cancel,
+                    stream_options,
+                    extra_env,
                 };
                 phases::test_author::run(app_clone.clone(), tracker, input).await
             }
@@ -1236,6 +1253,8 @@ pub async fn start_real_phase(
                     provider_path,
                     options,
                     cancel,
+                    stream_options,
+                    extra_env,
                 };
                 phases::auditor::run(app_clone.clone(), tracker, input).await
             }
@@ -1255,6 +1274,8 @@ pub async fn start_real_phase(
                     is_retry: is_retry.unwrap_or(false),
                     retry_context,
                     is_retry_of,
+                    stream_options,
+                    extra_env,
                 };
                 phases::implementer::run(app_clone.clone(), tracker, input).await
             }
@@ -1295,6 +1316,81 @@ pub fn cancel_phase_run(
     inflight: State<'_, InflightRuns>,
 ) -> Result<bool, String> {
     Ok(inflight.cancel(&phase_run_id))
+}
+
+/// Retry worktree initialization for a task that previously failed init. Re-runs
+/// the init command (detected or user-configured) and emits the matching event.
+/// Does NOT auto-start the next phase — the user explicitly clicks "Start" or a
+/// retry once init succeeds, so the failure→retry→start path stays under their
+/// control.
+#[tauri::command]
+pub async fn retry_worktree_init(app: AppHandle, task_id: String) -> Result<(), String> {
+    let (workspace_id, workspace_path) = {
+        let active_state = app.state::<ActiveWorkspaceState>();
+        let guard = active_state.0.lock().map_err(|e| e.to_string())?;
+        let aw = guard
+            .as_ref()
+            .ok_or_else(|| "no active workspace".to_string())?;
+        (aw.id.clone(), aw.path.clone())
+    };
+
+    // Reset the projection's status so `ensure_initialized` actually re-runs (it
+    // short-circuits on `initialized`, but for `failed` we want to retry, which
+    // is the *not-yet-initialized* path — clear the row to NULL).
+    {
+        let active_state = app.state::<ActiveWorkspaceState>();
+        let mut guard = active_state.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        aw.conn
+            .execute(
+                "UPDATE task_projection SET worktree_init_status = NULL WHERE id = ?1",
+                params![task_id],
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
+
+    let tracker: Arc<ChildTracker> = app.state::<Arc<ChildTracker>>().inner().clone();
+    let cancel = CancellationToken::new();
+    match crate::worktree_init::ensure_initialized(
+        &app,
+        &workspace_id,
+        &workspace_path,
+        &task_id,
+        tracker,
+        cancel,
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        Err(crate::worktree_init::EnsureInitError::Failed) => {
+            // The failure event was already emitted; surface a friendly error to
+            // the UI so the toast can say "init failed again, see output".
+            Err("worktree initialization failed".into())
+        }
+        Err(crate::worktree_init::EnsureInitError::NoWorktree) => {
+            Err("task has no worktree to initialize".into())
+        }
+        Err(crate::worktree_init::EnsureInitError::Internal(e)) => Err(e),
+    }
+}
+
+/// Skip worktree initialization for a task: emits a `WorktreeInitialized` event
+/// with `detection_kind = "user_skipped"` so future starts treat init as done.
+/// Used when the user has resolved the underlying setup themselves and wants to
+/// proceed despite the prior failure.
+#[tauri::command]
+pub fn skip_worktree_init(app: AppHandle, task_id: String) -> Result<(), String> {
+    let (workspace_id, workspace_path) = {
+        let active_state = app.state::<ActiveWorkspaceState>();
+        let guard = active_state.0.lock().map_err(|e| e.to_string())?;
+        let aw = guard
+            .as_ref()
+            .ok_or_else(|| "no active workspace".to_string())?;
+        (aw.id.clone(), aw.path.clone())
+    };
+    crate::worktree_init::mark_skipped(&app, &workspace_id, &workspace_path, &task_id)?;
+    Ok(())
 }
 
 // ======================================================================

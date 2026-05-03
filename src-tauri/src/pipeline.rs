@@ -96,7 +96,7 @@ pub fn gates_for_phase(
 
 /// Read the workspace settings JSON for a workspace from the global db, parsing
 /// tolerantly into `WorkspaceSettings`.
-fn load_workspace_settings(app: &AppHandle, workspace_id: &str) -> WorkspaceSettings {
+pub fn load_workspace_settings(app: &AppHandle, workspace_id: &str) -> WorkspaceSettings {
     let global = match app.try_state::<GlobalDb>() {
         Some(g) => g,
         None => return WorkspaceSettings::default(),

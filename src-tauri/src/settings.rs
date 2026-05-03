@@ -74,6 +74,74 @@ pub struct GateConfig {
     pub timeout_seconds: u64,
 }
 
+/// Worktree initialization settings — what runs after a worktree is created and
+/// before the first phase. Defaults work for most projects; the user can disable
+/// detection or override with a custom command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeInitSettings {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub detection_enabled: bool,
+    /// Override: when set, this command runs instead of any detected one.
+    #[serde(default)]
+    pub user_command: Option<String>,
+    #[serde(default = "default_init_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+impl Default for WorktreeInitSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            detection_enabled: true,
+            user_command: None,
+            timeout_seconds: default_init_timeout_seconds(),
+        }
+    }
+}
+
+/// Per-phase subprocess timeouts. The phase runner reads these and passes them to
+/// `subprocess::run_streaming` so a hung agent can't burn time/tokens unboundedly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhaseTimeoutSettings {
+    #[serde(default = "default_silence_timeout_seconds")]
+    pub silence_timeout_seconds: u64,
+    #[serde(default = "default_wall_clock_timeout_seconds")]
+    pub wall_clock_timeout_seconds: u64,
+}
+
+impl Default for PhaseTimeoutSettings {
+    fn default() -> Self {
+        Self {
+            silence_timeout_seconds: default_silence_timeout_seconds(),
+            wall_clock_timeout_seconds: default_wall_clock_timeout_seconds(),
+        }
+    }
+}
+
+/// Additional, user-defined environment variables merged into every phase
+/// subprocess. Useful for `PATH` extensions, language runtime selectors, project
+/// secrets that aren't appropriate to inherit from the user's shell.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubprocessSettings {
+    #[serde(default)]
+    pub additional_env: HashMap<String, String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_init_timeout_seconds() -> u64 {
+    600
+}
+fn default_silence_timeout_seconds() -> u64 {
+    300
+}
+fn default_wall_clock_timeout_seconds() -> u64 {
+    1800
+}
+
 /// Full workspace settings. Every field is defaulted so missing keys in stored JSON
 /// produce a usable struct rather than a parse error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +159,12 @@ pub struct WorkspaceSettings {
     /// hardcoded default.
     #[serde(default)]
     pub default_models: HashMap<String, ModelChoice>,
+    #[serde(default)]
+    pub worktree_init: WorktreeInitSettings,
+    #[serde(default)]
+    pub phase_timeouts: PhaseTimeoutSettings,
+    #[serde(default)]
+    pub subprocess: SubprocessSettings,
 }
 
 impl Default for WorkspaceSettings {
@@ -100,6 +174,9 @@ impl Default for WorkspaceSettings {
             gates: HashMap::new(),
             phase_gates: HashMap::new(),
             default_models: HashMap::new(),
+            worktree_init: WorktreeInitSettings::default(),
+            phase_timeouts: PhaseTimeoutSettings::default(),
+            subprocess: SubprocessSettings::default(),
         }
     }
 }
@@ -145,6 +222,45 @@ mod tests {
         let back: PhaseConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.phases.len(), 3);
         assert_eq!(back.phases[0], PhaseType::TestAuthor);
+    }
+
+    #[test]
+    fn missing_reliability_fields_get_defaults() {
+        let s = WorkspaceSettings::from_json_str("{}");
+        assert!(s.worktree_init.enabled);
+        assert!(s.worktree_init.detection_enabled);
+        assert!(s.worktree_init.user_command.is_none());
+        assert_eq!(s.worktree_init.timeout_seconds, 600);
+        assert_eq!(s.phase_timeouts.silence_timeout_seconds, 300);
+        assert_eq!(s.phase_timeouts.wall_clock_timeout_seconds, 1800);
+        assert!(s.subprocess.additional_env.is_empty());
+    }
+
+    #[test]
+    fn reliability_fields_round_trip() {
+        let json = r#"{
+            "worktree_init": {
+                "enabled": false,
+                "detection_enabled": false,
+                "user_command": "make setup",
+                "timeout_seconds": 120
+            },
+            "phase_timeouts": {
+                "silence_timeout_seconds": 60,
+                "wall_clock_timeout_seconds": 3600
+            },
+            "subprocess": {
+                "additional_env": { "FOO": "bar" }
+            }
+        }"#;
+        let s = WorkspaceSettings::from_json_str(json);
+        assert!(!s.worktree_init.enabled);
+        assert!(!s.worktree_init.detection_enabled);
+        assert_eq!(s.worktree_init.user_command.as_deref(), Some("make setup"));
+        assert_eq!(s.worktree_init.timeout_seconds, 120);
+        assert_eq!(s.phase_timeouts.silence_timeout_seconds, 60);
+        assert_eq!(s.phase_timeouts.wall_clock_timeout_seconds, 3600);
+        assert_eq!(s.subprocess.additional_env.get("FOO").map(String::as_str), Some("bar"));
     }
 
     #[test]

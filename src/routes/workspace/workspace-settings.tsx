@@ -9,6 +9,7 @@ import { PhaseConfigPanel } from "@/features/workspaces/components/phase-config-
 import { DefaultModelsPanel } from "@/features/workspaces/components/default-models-panel";
 import { GateConfigPanel } from "@/features/workspaces/components/gate-config-panel";
 import { PromptsPanel } from "@/features/workspaces/components/prompts-panel";
+import { ReliabilityPanel } from "@/features/workspaces/components/reliability-panel";
 import { workspaceLayoutRoute } from "./layout";
 
 function WorkspaceSettingsPage() {
@@ -65,6 +66,13 @@ function WorkspaceSettingsPage() {
         description="Per-phase prompt templates for this workspace. Saved files override the bundled defaults."
       >
         <PromptsPanel workspaceId={ws.id} />
+      </SettingsSection>
+
+      <SettingsSection
+        title="Reliability"
+        description="Worktree initialization, phase timeouts, and additional environment variables. Defaults work for most projects."
+      >
+        <ReliabilityPanel workspaceId={ws.id} />
       </SettingsSection>
 
       <Separator />

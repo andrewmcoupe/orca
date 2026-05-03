@@ -14,7 +14,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
-use crate::subprocess::{self, ChildTracker, ChunkKind, SubprocessError};
+use crate::subprocess::{self, ChildTracker, StreamOptions, SubprocessError};
 
 #[derive(Debug, Error)]
 #[allow(dead_code)]
@@ -85,6 +85,9 @@ pub async fn run_gate(
         worktree_path,
         HashMap::new(),
         None,
+        // Gates manage their own timeout via the cancel token below; the subprocess
+        // module's stall guards aren't needed (and would race the gate timer).
+        StreamOptions::default(),
         cancel,
         tracker,
         move |chunk| {

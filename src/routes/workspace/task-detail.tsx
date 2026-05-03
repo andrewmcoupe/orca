@@ -7,6 +7,7 @@ import { workspaceLayoutRoute } from "./layout";
 import { useTask } from "@/features/tasks/hooks";
 import { TaskStatusBadge } from "@/features/tasks/presentation";
 import { WorktreeSection } from "@/features/tasks/components/worktree-section";
+import { WorktreeInitSection } from "@/features/tasks/components/worktree-init-section";
 import { AuditorVerdictSection } from "@/features/tasks/components/auditor-verdict-section";
 import { MergeDialog } from "@/features/tasks/components/merge-dialog";
 import { useLatestMergeAttempt } from "@/features/tasks/merge-hooks";
@@ -104,6 +105,8 @@ function TaskDetailView({
       ) : null}
 
       <AuditorVerdictSection taskId={task.id} />
+
+      <WorktreeInitSection task={task} />
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">

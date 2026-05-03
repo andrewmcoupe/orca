@@ -11,6 +11,7 @@ mod settings;
 mod subprocess;
 mod workspace_db;
 mod worktree;
+mod worktree_init;
 
 mod commands;
 
@@ -80,6 +81,8 @@ pub fn run() {
             commands::start_real_phase,
             commands::start_task,
             commands::cancel_phase_run,
+            commands::retry_worktree_init,
+            commands::skip_worktree_init,
             commands::rebuild_projections,
             commands::list_providers,
             commands::refresh_providers,

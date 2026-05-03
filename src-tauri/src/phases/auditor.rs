@@ -21,7 +21,7 @@ use crate::events::types::{EventMetadata, NewEvent};
 use crate::prompts::{self, PromptContext};
 use crate::providers::{Provider, ProviderEvent};
 use crate::settings::PhaseType;
-use crate::subprocess::{self, ChildTracker, SubprocessError};
+use crate::subprocess::{self, ChildTracker, StreamOptions};
 use crate::workspace_db::open_workspace_db;
 use crate::worktree;
 
@@ -52,6 +52,8 @@ pub struct AuditorInput {
     pub provider_path: String,
     pub options: Value,
     pub cancel: CancellationToken,
+    pub stream_options: StreamOptions,
+    pub extra_env: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +81,8 @@ pub async fn run(
         provider_path,
         options,
         cancel,
+        stream_options,
+        extra_env,
     } = input;
 
     let mut conn = open_workspace_db(&workspace_path).map_err(|e| e.to_string())?;
@@ -169,6 +173,8 @@ pub async fn run(
         cancel.clone(),
         &tracker,
         1, // starting seq for the run's first non-Started event
+        stream_options.clone(),
+        &extra_env,
     )
     .await;
 
@@ -194,6 +200,8 @@ pub async fn run(
                 cancel.clone(),
                 &tracker,
                 last_seq,
+                stream_options.clone(),
+                &extra_env,
             )
             .await
             {
@@ -336,6 +344,8 @@ async fn invoke_and_parse(
     cancel: CancellationToken,
     tracker: &Arc<ChildTracker>,
     seq_start: i64,
+    stream_options: StreamOptions,
+    extra_env: &std::collections::HashMap<String, String>,
 ) -> Result<(AuditorVerdict, i64), InvokeError> {
     let invocation = provider.build_invocation(prompt, options);
     let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -344,7 +354,7 @@ async fn invoke_and_parse(
     let cwd_for_proc = worktree_dir.to_path_buf();
     let args_owned = invocation.args.clone();
     let stdin = invocation.stdin.clone();
-    let env = invocation.env.clone();
+    let env = super::runtime::merge_extra_env(invocation.env.clone(), extra_env);
     let provider_path_clone = provider_path.to_string();
     let tracker_clone = Arc::clone(tracker);
 
@@ -356,6 +366,7 @@ async fn invoke_and_parse(
             cwd_for_proc.as_path(),
             env,
             stdin,
+            stream_options,
             cancel_for_proc,
             &tracker_clone,
             move |chunk| {
@@ -419,16 +430,10 @@ async fn invoke_and_parse(
     })?;
 
     if let Err(e) = proc_result {
-        let payload = match e {
-            SubprocessError::Cancelled => json!({
-                "error_kind": "user_cancelled",
-                "error_message": "subprocess cancelled by user",
-            }),
-            other => json!({
-                "error_kind": "subprocess_error",
-                "error_message": other.to_string(),
-            }),
-        };
+        let payload = json!({
+            "error_kind": subprocess::error_kind_for(&e),
+            "error_message": e.to_string(),
+        });
         return Err(InvokeError::Subprocess(payload.to_string(), seq));
     }
 

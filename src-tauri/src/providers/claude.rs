@@ -117,6 +117,24 @@ impl Provider for ClaudeProvider {
             "--include-partial-messages".into(),
         ];
 
+        // Permission flow:
+        //   1. The user picks a value in the per-task / per-workspace UI; that
+        //      lands in `options.permission_mode` via `start_real_phase`'s
+        //      `merge_options(default_options(), overrides)` call.
+        //   2. Default is `acceptEdits` (set in `default_options` above) — agents
+        //      run typecheck/test/lint without prompting, but Claude still asks
+        //      before touching the network or other privileged tools. This is
+        //      what we want for non-interactive operation: any unattended
+        //      prompt would deadlock the subprocess (which has no TTY and a
+        //      closed stdin — see the subprocess module for the hardening
+        //      guarantees).
+        //   3. `bypassPermissions` translates to `--dangerously-skip-permissions`
+        //      (the CLI flag); the user opts into this knowingly via the
+        //      "dangerous" label on the picker.
+        //   4. `default` is offered for completeness but warns "likely to
+        //      deadlock" in the picker — Claude prompts on every tool call,
+        //      and our subprocess EOF-on-stdin means it'll error out fast
+        //      rather than hang forever.
         let permission_mode = options
             .get("permission_mode")
             .and_then(|v| v.as_str())

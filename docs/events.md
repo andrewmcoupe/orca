@@ -45,6 +45,9 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
   - `default_phase_config: PhaseConfig` — phase config that new tasks inherit at creation time. Bundled default: `{ phases: ["implementer", "auditor"], gate_overrides: null }`.
   - `gates: { [name]: { command: string, timeout_seconds: integer } }` — named gate definitions. Bundled default: empty.
   - `phase_gates: { [phase_name]: string[] }` — which gates run after which phases. Bundled default: empty.
+  - `worktree_init: { enabled: bool, detection_enabled: bool, user_command: string | null, timeout_seconds: integer }` — controls the M3 init step that runs after `WorktreeCreated`. Bundled defaults: `{ enabled: true, detection_enabled: true, user_command: null, timeout_seconds: 600 }`.
+  - `phase_timeouts: { silence_timeout_seconds: integer, wall_clock_timeout_seconds: integer }` — applied to every phase subprocess. Bundled defaults: `{ silence_timeout_seconds: 300, wall_clock_timeout_seconds: 1800 }`.
+  - `subprocess: { additional_env: { [key]: string } }` — user-defined env vars merged into every phase subprocess (caller env wins on conflict). Bundled default: empty.
 
   Readers parse settings tolerantly: missing pipeline fields materialise as bundled defaults rather than failing. Other settings keys (theme, etc.) are preserved verbatim.
 
@@ -135,6 +138,20 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 - `error: string`
 - `reason: "task_merged" | "task_cancelled" | "manual" | "cleanup_orphan"`
 
+**WorktreeInitialized** — dependency-install / setup finished successfully against the worktree. Emitted between `WorktreeCreated` and the first `PhaseRunStarted`. Phase runners check the projection's `worktree_init_status` and run init lazily on first use; subsequent phase runs reuse the result. Skipping via the UI also emits this event with `detection_kind = "user_skipped"`, `exit_code = 0`, and an explanatory `output` string.
+- `command: string` — the actual shell command that ran (or `"<skipped by user>"` for a manual skip)
+- `exit_code: i32` — typically `0`; non-zero values would never reach this event
+- `duration_ms: u64`
+- `output: string` — captured stdout+stderr, truncated to ~10KB with a marker if larger
+- `detection_kind: "package_json_pnpm" | "package_json_npm" | "package_json_yarn" | "pyproject_uv" | "pyproject_poetry" | "requirements_txt" | "cargo_toml" | "go_mod" | "user_configured" | "user_skipped" | "none"` — what triggered (or replaced) the initialization
+
+**WorktreeInitializationFailed** — init ran but exited non-zero (or was killed by timeout). When this fires, the pipeline does not auto-progress to the first phase. The user fixes the underlying issue and triggers `retry_worktree_init`, or marks it skipped via `skip_worktree_init` (which emits a `WorktreeInitialized` event with `detection_kind = "user_skipped"`).
+- `command: string`
+- `exit_code: i32` — non-zero (or `-1` if the process was killed)
+- `duration_ms: u64`
+- `output: string` — captured stdout+stderr, truncated as above
+- `detection_kind: string` — same enum as `WorktreeInitialized`
+
 ### PhaseRun events
 
 **PhaseRunStarted** — a phase began execution.
@@ -165,7 +182,10 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 - `head_commit_after: string` — worktree HEAD after auto-commit (equal to `base_commit` from PhaseRunStarted if nothing changed)
 
 **PhaseRunFailed** — phase ended in error.
-- `error_kind: "timeout" | "subprocess_error" | "provider_error" | "user_cancelled"`
+- `error_kind: "timeout" | "subprocess_error" | "provider_error" | "user_cancelled" | "stalled_no_output" | "stalled_wall_clock" | "non_interactive_eof" | "worktree_creation_failed" | "auditor_parse_error"`
+  - `stalled_no_output` — the silence timeout (`phase_timeouts.silence_timeout_seconds`) elapsed without any subprocess output
+  - `stalled_wall_clock` — the wall-clock timeout (`phase_timeouts.wall_clock_timeout_seconds`) elapsed before the subprocess exited
+  - `non_interactive_eof` — the subprocess closed stdin and exited; reserved for distinguishing benign EOFs from genuine crashes
 - `error_message: string`
 
 **AuditorVerdictRendered** — emitted by the auditor phase runner immediately after its `PhaseRunCompleted`. The two events are kept separate so that "the auditor finished" and "the auditor decided X" are independently observable: replaying events, an auditor run that crashed mid-render is still visible as a completed run with no verdict. The pipeline orchestrator reads the verdict to decide what to do next.

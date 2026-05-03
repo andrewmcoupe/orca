@@ -14,7 +14,7 @@ use crate::events::types::{EventMetadata, NewEvent};
 use crate::prompts::{self, PromptContext};
 use crate::providers::{Provider, ProviderEvent};
 use crate::settings::PhaseType;
-use crate::subprocess::{self, ChildTracker, SubprocessError};
+use crate::subprocess::{self, ChildTracker, StreamOptions};
 use crate::workspace_db::open_workspace_db;
 use crate::worktree;
 
@@ -54,6 +54,13 @@ pub struct ImplementerInput {
     /// Persisted on `phase_run_projection.is_retry_of` so the UI can render the
     /// audit trail of retries.
     pub is_retry_of: Option<String>,
+    /// Per-phase silence/wall-clock timeouts pulled from workspace settings, plus
+    /// any caller-driven knobs.
+    pub stream_options: StreamOptions,
+    /// Workspace-level extra env vars merged into the provider's invocation env
+    /// (caller env wins). The phase runner applies these alongside the provider's
+    /// own env when spawning the subprocess.
+    pub extra_env: std::collections::HashMap<String, String>,
 }
 
 pub async fn run(
@@ -76,6 +83,8 @@ pub async fn run(
         is_retry,
         retry_context,
         is_retry_of,
+        stream_options,
+        extra_env,
     } = input;
 
     let mut conn = open_workspace_db(&workspace_path).map_err(|e| e.to_string())?;
@@ -169,6 +178,31 @@ pub async fn run(
         }
     };
 
+    // Worktree initialization (deps install). Runs once per worktree, between
+    // creation and the first phase. If init has previously succeeded (or the
+    // user explicitly skipped after a failure), this is a cheap projection-read
+    // no-op. On failure, we silently return without emitting any phase events —
+    // the user sees the `WorktreeInitializationFailed` event on the task and
+    // can retry or skip from the UI; the pipeline does not auto-progress.
+    drop(conn); // release the workspace db lock; ensure_initialized opens its own
+    match crate::worktree_init::ensure_initialized(
+        &app,
+        &workspace_id,
+        &workspace_path,
+        &task_id,
+        std::sync::Arc::clone(&tracker),
+        cancel.clone(),
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(crate::worktree_init::EnsureInitError::Failed) => return Ok(()),
+        Err(e) => {
+            return Err(format!("worktree init internal error: {:?}", e));
+        }
+    }
+    let mut conn = open_workspace_db(&workspace_path).map_err(|e| e.to_string())?;
+
     // Started.
     let worktree_path_str = worktree_dir.to_string_lossy().to_string();
     let started = started_payload(
@@ -206,9 +240,10 @@ pub async fn run(
     let tracker_clone = Arc::clone(&tracker);
     let args_owned = invocation.args.clone();
     let stdin = invocation.stdin.clone();
-    let env = invocation.env.clone();
+    let env = super::runtime::merge_extra_env(invocation.env.clone(), &extra_env);
     let provider_path_clone = provider_path.clone();
 
+    let stream_opts_for_proc = stream_options.clone();
     let proc_task = tokio::spawn(async move {
         let args_refs: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
         subprocess::run_streaming(
@@ -217,6 +252,7 @@ pub async fn run(
             cwd_for_proc.as_path(),
             env,
             stdin,
+            stream_opts_for_proc,
             cancel_for_proc,
             &tracker_clone,
             move |chunk| {
@@ -303,29 +339,9 @@ pub async fn run(
                 &make_metadata("system:implementer"),
             )?;
         }
-        Err(SubprocessError::Cancelled) => {
-            let payload = json!({
-                "error_kind": "user_cancelled",
-                "error_message": "subprocess cancelled by user",
-            })
-            .to_string();
-            append_phase_run_step(
-                &mut conn,
-                &app,
-                &workspace_id,
-                &phase_run_id,
-                seq,
-                NewEvent {
-                    event_type: "PhaseRunFailed".into(),
-                    version: 1,
-                    payload,
-                },
-                &make_metadata("system:implementer"),
-            )?;
-        }
         Err(e) => {
             let payload = json!({
-                "error_kind": "subprocess_error",
+                "error_kind": subprocess::error_kind_for(&e),
                 "error_message": e.to_string(),
             })
             .to_string();

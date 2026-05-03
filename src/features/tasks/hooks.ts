@@ -76,3 +76,15 @@ export function useDeleteWorktree() {
       tasksApi.deleteWorktree(taskId, force),
   });
 }
+
+export function useRetryWorktreeInit() {
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.retryWorktreeInit(taskId),
+  });
+}
+
+export function useSkipWorktreeInit() {
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.skipWorktreeInit(taskId),
+  });
+}

@@ -44,4 +44,8 @@ export const tasksApi = {
     }),
   openInEditor: (taskId: string, path: string, line: number) =>
     invoke<void>("open_in_editor", { taskId, path, line }),
+  retryWorktreeInit: (taskId: string) =>
+    invoke<void>("retry_worktree_init", { taskId }),
+  skipWorktreeInit: (taskId: string) =>
+    invoke<void>("skip_worktree_init", { taskId }),
 };

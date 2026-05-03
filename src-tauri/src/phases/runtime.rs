@@ -4,6 +4,19 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+/// Merge workspace `additional_env` into a base env (typically the provider's
+/// invocation env). User-supplied overrides win — they are the most-specific intent
+/// for this workspace.
+pub fn merge_extra_env(
+    mut base: HashMap<String, String>,
+    extra: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    for (k, v) in extra {
+        base.insert(k.clone(), v.clone());
+    }
+    base
+}
+
 use rusqlite::Connection;
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
