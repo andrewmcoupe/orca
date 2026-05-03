@@ -73,9 +73,9 @@ function PlansListPage() {
   );
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-4 px-5 py-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">Plans</h1>
+        <h1 className="text-[18px] font-medium tracking-tight">Plans</h1>
         <span className="text-muted-foreground text-xs tabular-nums">
           {filtered.length} of {plans.data?.length ?? 0}
         </span>

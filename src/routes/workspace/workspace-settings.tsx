@@ -28,9 +28,9 @@ function WorkspaceSettingsPage() {
   }
 
   return (
-    <div className="space-y-8 p-4">
+    <div className="space-y-6 px-5 py-4">
       <header>
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="text-[18px] font-medium tracking-tight">
           Workspace settings
         </h1>
         <dl className="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">

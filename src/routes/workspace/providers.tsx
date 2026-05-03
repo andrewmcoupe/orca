@@ -10,9 +10,9 @@ function ProvidersPage() {
   const refresh = useRefreshProviders();
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-4 px-5 py-4">
       <header className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">Providers</h1>
+        <h1 className="text-[18px] font-medium tracking-tight">Providers</h1>
         <Button
           variant="outline"
           size="sm"

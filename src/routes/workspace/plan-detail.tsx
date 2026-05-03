@@ -41,13 +41,13 @@ function PlanDetailView({
   const navigate = useNavigate();
 
   return (
-    <div className="space-y-6 p-4">
+    <div className="space-y-6 px-5 py-4">
       <header className="space-y-3">
         <div className="flex items-start gap-3">
           <PlanSourceIcon source={plan.source} className="mt-1.5 size-5" />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h1 className="truncate text-2xl font-semibold tracking-tight">
+              <h1 className="truncate text-[20px] font-medium tracking-tight">
                 {plan.title}
               </h1>
               <PlanStatusBadge status={plan.status} />
