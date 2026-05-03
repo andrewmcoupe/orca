@@ -1,13 +1,11 @@
 import { Outlet, createRootRoute } from "@tanstack/react-router";
 import { WorkspacesSidebar } from "@/components/layout/sidebar";
-import { EventStreamStrip } from "@/components/layout/event-stream-strip";
-import { useActiveWorkspace } from "@/features/workspaces/hooks";
+import { StatusBar } from "@/components/layout/status-bar";
 import { useProjectionInvalidation } from "@/features/events/hooks";
 import { QuickTaskShortcut } from "@/features/quick-task/quick-task-shortcut";
 
 function RootLayout() {
   useProjectionInvalidation();
-  const active = useActiveWorkspace();
 
   return (
     <div className="bg-background text-foreground flex h-screen flex-col">
@@ -17,7 +15,7 @@ function RootLayout() {
           <Outlet />
         </main>
       </div>
-      <EventStreamStrip activeWorkspaceId={active.data?.id ?? null} />
+      <StatusBar />
       <QuickTaskShortcut />
     </div>
   );

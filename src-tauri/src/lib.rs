@@ -63,6 +63,7 @@ pub fn run() {
             commands::update_workspace_settings,
             commands::set_active_workspace,
             commands::get_active_workspace,
+            commands::get_workspace_branch,
             commands::create_plan,
             commands::revise_plan,
             commands::pause_plan,

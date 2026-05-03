@@ -18,6 +18,7 @@ import {
 } from "@/features/phase-runs/hooks";
 import { PipelineCards } from "@/features/phase-runs/components/pipeline-cards";
 import { PhaseRunsTrail } from "@/features/phase-runs/components/phase-runs-trail";
+import { TaskEventList } from "@/features/events/components/task-event-list";
 import { formatRelativeTime } from "@/lib/format";
 import type { Task } from "@/features/tasks/types";
 
@@ -133,6 +134,7 @@ function TaskDetailView({
 
       <section className="space-y-2.5">
         <SectionLabel>Audit trail</SectionLabel>
+        <TaskEventList workspaceId={workspaceId} taskId={task.id} />
         {phaseRuns.isLoading ? (
           <p className="text-muted-foreground text-[11px]">Loading…</p>
         ) : (

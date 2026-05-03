@@ -282,6 +282,31 @@ pub fn set_active_workspace(
     Ok(ActiveWorkspaceInfo { id: ws.id, path: ws.path })
 }
 
+/// Read the current branch of the workspace's main worktree. Returns `None`
+/// when HEAD is detached or unborn — both legitimate states for the status
+/// bar to render as "—" rather than crashing the bar with an error toast.
+#[tauri::command]
+pub fn get_workspace_branch(path: String) -> Result<Option<String>, String> {
+    let repo = match git2::Repository::discover(&path) {
+        Ok(r) => r,
+        Err(e) => return Err(e.message().to_string()),
+    };
+    let head = match repo.head() {
+        Ok(h) => h,
+        Err(e)
+            if e.code() == git2::ErrorCode::UnbornBranch
+                || e.code() == git2::ErrorCode::NotFound =>
+        {
+            return Ok(None);
+        }
+        Err(e) => return Err(e.message().to_string()),
+    };
+    if !head.is_branch() {
+        return Ok(None);
+    }
+    Ok(head.shorthand().map(|s| s.to_string()))
+}
+
 #[derive(Debug, Serialize)]
 pub struct OrphanWorktree {
     pub path: String,

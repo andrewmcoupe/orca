@@ -24,6 +24,22 @@ export function useActiveWorkspace() {
   });
 }
 
+/**
+ * Current branch of the workspace's main worktree. We don't get a backend
+ * notification when the user switches branches outside the app, so this polls
+ * on a 30s interval — frequent enough that the status bar stays roughly
+ * truthful without burning IO.
+ */
+export function useWorkspaceBranch(path: string | null | undefined) {
+  return useQuery<string | null>({
+    queryKey: ["workspace_branch", path ?? null],
+    queryFn: () => workspacesApi.getBranch(path!),
+    enabled: !!path,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+}
+
 export function useAddWorkspace() {
   const qc = useQueryClient();
   return useMutation({

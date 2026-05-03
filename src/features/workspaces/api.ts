@@ -13,6 +13,8 @@ export const workspacesApi = {
     invoke<ActiveWorkspaceInfo>("set_active_workspace", { id }),
   getActive: () =>
     invoke<ActiveWorkspaceInfo | null>("get_active_workspace"),
+  getBranch: (path: string) =>
+    invoke<string | null>("get_workspace_branch", { path }),
   getSettings: (workspaceId: string) =>
     invoke<WorkspaceSettings>("get_workspace_settings", { workspaceId }),
   updateSettings: (workspaceId: string, settings: WorkspaceSettings) =>
