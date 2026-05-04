@@ -35,14 +35,14 @@ impl Default for FileCertainty {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RelevantFile {
     pub path: String,
     pub certainty: FileCertainty,
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DraftTask {
     pub id: String,
     pub title: String,
@@ -50,6 +50,12 @@ pub struct DraftTask {
     pub spec_markdown: String,
     #[serde(default)]
     pub relevant_files: Vec<RelevantFile>,
+    /// IDs of *other tasks within this same draft* that this task depends
+    /// on. References resolve to actual task ULIDs at briefing accept-time
+    /// — see `accept_briefing` for the translation. Defaults to empty so
+    /// older drafts (and models that ignore the field) replay cleanly.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,38 +190,63 @@ pub fn render_briefing_prompt(
 // ============================================================================
 
 /// The model is instructed to emit JSON only. Real CLIs wrap text with prose,
-/// chain-of-thought, or markdown fences. Locate the outermost JSON object by
-/// scanning for the first `{` and matching braces (string-aware).
+/// chain-of-thought, or markdown fences. Codex with `--output-schema` is worse:
+/// it emits a schema-conforming *stub* up front (all fields empty) before its
+/// tool-call discovery phase, then the populated draft at the end. We can't
+/// distinguish "stub" from "real" from text alone, so we scan for every
+/// balanced top-level `{...}` object and return the longest one (the populated
+/// draft will always dwarf the stub).
 fn extract_json_object(text: &str) -> Option<&str> {
     let bytes = text.as_bytes();
-    let start = bytes.iter().position(|&b| b == b'{')?;
-    let mut depth = 0i32;
-    let mut in_str = false;
-    let mut escape = false;
-    for (i, &b) in bytes.iter().enumerate().skip(start) {
-        if in_str {
-            if escape {
-                escape = false;
-            } else if b == b'\\' {
-                escape = true;
-            } else if b == b'"' {
-                in_str = false;
-            }
+    let mut best: Option<(usize, usize)> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'{' {
+            i += 1;
             continue;
         }
-        match b {
-            b'"' => in_str = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&text[start..=i]);
+        let mut depth = 0i32;
+        let mut in_str = false;
+        let mut escape = false;
+        let mut end: Option<usize> = None;
+        for (j, &b) in bytes.iter().enumerate().skip(i) {
+            if in_str {
+                if escape {
+                    escape = false;
+                } else if b == b'\\' {
+                    escape = true;
+                } else if b == b'"' {
+                    in_str = false;
                 }
+                continue;
             }
-            _ => {}
+            match b {
+                b'"' => in_str = true,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(j);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        match end {
+            Some(j) => {
+                let len = j - i + 1;
+                if best.map(|(s, e)| (e - s + 1) < len).unwrap_or(true) {
+                    best = Some((i, j));
+                }
+                // Continue past this object — siblings (other balanced objects
+                // in the same stream) may be larger.
+                i = j + 1;
+            }
+            None => break, // unmatched `{` — no more complete objects
         }
     }
-    None
+    best.map(|(s, e)| &text[s..=e])
 }
 
 fn parse_draft(raw: &str) -> Result<BriefingDraft, (String, String)> {
@@ -299,7 +330,16 @@ pub async fn run_briefing_generation(
             )
         };
 
-        let options = build_provider_options(provider, model);
+        let mut options = build_provider_options(provider, model);
+        if provider.supports_structured_output() {
+            if let Some(map) = options.as_object_mut() {
+                map.insert("output_schema".into(), briefing_draft_schema());
+                map.insert(
+                    "cwd".into(),
+                    serde_json::Value::String(workspace_path.to_string_lossy().to_string()),
+                );
+            }
+        }
         let invocation = provider.build_invocation(&prompt, &options);
 
         let started = std::time::Instant::now();
@@ -385,6 +425,55 @@ fn collect_text_from_provider_stream(provider: &dyn Provider, raw: &str) -> Stri
     }
 }
 
+/// JSON Schema describing a `BriefingDraft`. Codex consumes this via
+/// `--output-schema` to produce a JSON object that matches our deserializer
+/// without resorting to "JSON only please" prompt tricks.
+fn briefing_draft_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "title": { "type": "string" },
+            "description": { "type": "string" },
+            "tasks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "title": { "type": "string" },
+                        "spec_markdown": { "type": "string" },
+                        "relevant_files": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": { "type": "string" },
+                                    "certainty": { "type": "string", "enum": ["Confirmed", "Candidate"] },
+                                    "reason": { "type": "string" }
+                                }
+                            }
+                        },
+                        "depends_on": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    }
+                }
+            },
+            "assumptions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "statement": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
+}
+
 fn build_provider_options(provider: &dyn Provider, model: &str) -> serde_json::Value {
     let mut opts = provider.default_options();
     if let Some(map) = opts.as_object_mut() {
@@ -447,6 +536,7 @@ mod tests {
                     certainty: FileCertainty::Confirmed,
                     reason: "x".into(),
                 }],
+                depends_on: vec![],
             }],
             assumptions: vec![DraftAssumption {
                 id: "a1".into(),
@@ -483,6 +573,20 @@ mod tests {
     }
 
     #[test]
+    fn extract_json_object_picks_largest_when_multiple_present() {
+        // Codex with --output-schema emits an empty stub before its tool calls
+        // and a populated draft after. Concatenated, both end up in the visible
+        // text — we must pick the populated one.
+        let stub = r#"{"assumptions":[],"description":"","tasks":[],"title":""}"#;
+        let real = r#"{"title":"T","description":"D","tasks":[{"id":"t1","title":"first","spec_markdown":"do it","relevant_files":[]}],"assumptions":[]}"#;
+        let combined = format!("{}{}", stub, real);
+        let extracted = extract_json_object(&combined).unwrap();
+        let v: serde_json::Value = serde_json::from_str(extracted).unwrap();
+        assert_eq!(v["title"], "T");
+        assert_eq!(v["tasks"][0]["id"], "t1");
+    }
+
+    #[test]
     fn extract_json_object_handles_nested_braces_and_strings() {
         let raw = r#"prefix {"a":"with } inside","b":{"c":1}} suffix"#;
         let extracted = extract_json_object(raw).unwrap();
@@ -514,6 +618,7 @@ mod tests {
                         reason: "".into(),
                     },
                 ],
+                depends_on: vec![],
             }],
         };
         let results = validate_draft_paths(dir.path(), &draft);
@@ -532,6 +637,7 @@ mod tests {
                 title: "".into(),
                 spec_markdown: "".into(),
                 relevant_files: vec![],
+                depends_on: vec![],
             }],
             assumptions: vec![DraftAssumption {
                 id: "".into(),

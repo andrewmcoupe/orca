@@ -398,6 +398,17 @@ fn apply_edits_to_draft(draft: &BriefingDraft, edits: &BriefingEdits) -> Briefin
     for add in &edits.task_additions {
         out.tasks.push(add.clone());
     }
+    // Scrub dangling depends_on refs: any reference to a task that no
+    // longer exists in the draft (because the user removed it) is silently
+    // dropped. The alternative — fail the accept on dangling refs — would
+    // surface a confusing error after a perfectly reasonable edit.
+    let surviving_ids: std::collections::HashSet<String> =
+        out.tasks.iter().map(|t| t.id.clone()).collect();
+    for t in &mut out.tasks {
+        t.depends_on.retain(|id| surviving_ids.contains(id));
+        // Also drop self-references in case a model produced one — defensive.
+        t.depends_on.retain(|id| id != &t.id);
+    }
     out
 }
 
@@ -501,15 +512,37 @@ pub fn accept_briefing(
         tx.commit().map_err(|e| e.to_string())?;
     }
 
+    // Allocate ULIDs up front so we can translate `depends_on` references
+    // (which point at draft task IDs like `dt_01H…`) into the actual task
+    // ULIDs we're about to emit. Draft IDs that don't resolve — typically
+    // because the user removed the referenced task in their edits — are
+    // dropped silently rather than causing the accept to fail; the brief's
+    // M5 spec has the model produce conservative deps so dangling refs
+    // post-edit are user-driven, not model bugs.
+    let draft_to_ulid: std::collections::HashMap<String, String> = final_draft
+        .tasks
+        .iter()
+        .map(|t| (t.id.clone(), format!("task_{}", Ulid::new())))
+        .collect();
+
     let mut task_ids = Vec::with_capacity(final_draft.tasks.len());
     for task in &final_draft.tasks {
-        let task_id = format!("task_{}", Ulid::new());
+        let task_id = draft_to_ulid
+            .get(&task.id)
+            .cloned()
+            .expect("draft id missing from translation map — populated above");
+        let resolved_deps: Vec<String> = task
+            .depends_on
+            .iter()
+            .filter_map(|draft_id| draft_to_ulid.get(draft_id).cloned())
+            .collect();
         let payload = json!({
             "plan_id": plan_id,
             "title": task.title,
             "spec_markdown": task.spec_markdown,
             "phase_config": default_phase_config,
             "relevant_files": task.relevant_files,
+            "depends_on": resolved_deps,
         });
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
@@ -522,7 +555,7 @@ pub fn accept_briefing(
             0,
             vec![NewEvent {
                 event_type: "TaskCreated".into(),
-                version: 3,
+                version: 4,
                 payload: payload.to_string(),
             }],
             &make_metadata_for("user:local"),
@@ -700,12 +733,14 @@ mod tests {
                         certainty: FileCertainty::Confirmed,
                         reason: "x".into(),
                     }],
+                    depends_on: vec![],
                 },
                 DraftTask {
                     id: "t2".into(),
                     title: "Second".into(),
                     spec_markdown: "old".into(),
                     relevant_files: vec![],
+                    depends_on: vec![],
                 },
             ],
             assumptions: vec![DraftAssumption {
@@ -713,6 +748,42 @@ mod tests {
                 statement: "x".into(),
             }],
         }
+    }
+
+    #[test]
+    fn apply_edits_scrubs_dangling_depends_on_after_task_removal() {
+        // t1 -> [t2]; user removes t2; the surviving t1's depends_on should be empty
+        // rather than carrying a dangling reference that would fail at accept time.
+        let mut d = draft_with_two_tasks();
+        d.tasks[0].depends_on = vec!["t2".into()];
+        let e = BriefingEdits {
+            task_removals: vec!["t2".into()],
+            ..Default::default()
+        };
+        let out = apply_edits_to_draft(&d, &e);
+        assert_eq!(out.tasks.len(), 1);
+        assert_eq!(out.tasks[0].id, "t1");
+        assert!(
+            out.tasks[0].depends_on.is_empty(),
+            "dangling depends_on ref should be scrubbed",
+        );
+    }
+
+    #[test]
+    fn apply_edits_drops_self_dependency() {
+        let mut d = draft_with_two_tasks();
+        d.tasks[0].depends_on = vec!["t1".into()]; // self-loop the model snuck through
+        let e = BriefingEdits::default();
+        let out = apply_edits_to_draft(&d, &e);
+        assert!(
+            out.tasks
+                .iter()
+                .find(|t| t.id == "t1")
+                .unwrap()
+                .depends_on
+                .is_empty(),
+            "self-references should be dropped",
+        );
     }
 
     #[test]
@@ -760,6 +831,7 @@ mod tests {
                 title: "Third".into(),
                 spec_markdown: "new".into(),
                 relevant_files: vec![],
+                depends_on: vec![],
             }],
             ..Default::default()
         };
