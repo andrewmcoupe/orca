@@ -86,6 +86,7 @@ pub fn run() {
             commands::start_fake_phase,
             commands::start_real_phase,
             commands::start_task,
+            commands::start_task_phase,
             commands::cancel_phase_run,
             commands::retry_worktree_init,
             commands::skip_worktree_init,

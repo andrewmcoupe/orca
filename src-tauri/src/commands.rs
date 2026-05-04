@@ -1386,6 +1386,27 @@ pub async fn start_task(app: AppHandle, task_id: String) -> Result<String, Strin
         .map_err(|e| e.to_string())
 }
 
+/// Spawn a specific phase for a task using the task's resolved settings — used by
+/// the toolbar's "Re-run auditor only" overflow action. Routes through the same
+/// pipeline dispatcher as auto-progression so provider/model resolution stays
+/// in one place.
+#[tauri::command]
+pub async fn start_task_phase(
+    app: AppHandle,
+    task_id: String,
+    phase: String,
+) -> Result<String, String> {
+    let phase_typed = PhaseType::parse(&phase).ok_or_else(|| {
+        format!(
+            "only 'implementer', 'test_author', and 'auditor' phases are supported, got '{}'",
+            phase
+        )
+    })?;
+    crate::pipeline::dispatch_task_phase(app, task_id, phase_typed)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn cancel_phase_run(
     phase_run_id: String,

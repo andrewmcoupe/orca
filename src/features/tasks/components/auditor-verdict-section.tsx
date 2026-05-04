@@ -1,18 +1,8 @@
-import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import { ContentColumn } from "@/components/layout/content-column";
 import { cn } from "@/lib/utils";
 import { diffModalController } from "@/features/diff/modal-controller";
-import {
-  useApproveTaskAnyway,
-  useLatestAuditorVerdict,
-  usePassBackToImplementer,
-  useRejectTask,
-  useTask,
-} from "../hooks";
+import { useLatestAuditorVerdict } from "../hooks";
 import type { AuditorConcern, AuditorVerdictKind } from "../types";
 
 const VERDICT_STYLES: Record<string, string> = {
@@ -31,46 +21,17 @@ const SEVERITY_STYLES: Record<string, string> = {
     "bg-zinc-500/15 text-zinc-700 dark:text-zinc-300 border-zinc-500/30",
 };
 
+/**
+ * Auditor verdict card — purely informational. The action buttons
+ * (approve / pass back / reject) live in the task action toolbar; the user
+ * goes there when they want to act, comes here when they want to read why the
+ * auditor said what it said.
+ */
 export function AuditorVerdictSection({ taskId }: { taskId: string }) {
   const verdictQ = useLatestAuditorVerdict(taskId);
-  const passBack = usePassBackToImplementer();
-  const reject = useRejectTask();
-  const approveAnyway = useApproveTaskAnyway();
-  const [feedback, setFeedback] = useState("");
-
-  const taskQ = useTask(taskId);
-
   if (verdictQ.isLoading || !verdictQ.data) return null;
   const v = verdictQ.data;
   const kind = v.verdict as AuditorVerdictKind;
-  // Suppress action buttons once the user has already acted on this verdict
-  // (the task status moved to a terminal-ish state). Without this guard the
-  // verdict section would keep offering to re-approve / re-reject after the
-  // fact.
-  const taskStatus = taskQ.data?.status;
-  const alreadyResolved =
-    taskStatus === "approved" ||
-    taskStatus === "merged" ||
-    taskStatus === "cancelled" ||
-    taskStatus === "archived";
-  const showActions =
-    !alreadyResolved &&
-    (kind === "approve" || kind === "revise" || kind === "reject");
-  // The verdict alone doesn't change task state — the user always confirms.
-  // On "approve" we surface a single confirmation button; on revise/reject we
-  // show the full set (pass-back / approve-anyway / reject) with a feedback
-  // box for pass-back.
-  const showFeedback = kind === "revise" || kind === "reject";
-  const pending =
-    passBack.isPending || reject.isPending || approveAnyway.isPending;
-
-  const onPassBack = () => {
-    const trimmed = feedback.trim();
-    passBack.mutate(
-      { taskId, userFeedback: trimmed.length > 0 ? trimmed : null },
-      { onSuccess: () => setFeedback("") },
-    );
-  };
 
   return (
     <section className="space-y-2">
@@ -109,70 +70,6 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
               />
             ))}
           </ul>
-        )}
-        {showActions && (
-          <div className="space-y-2 pt-2">
-            {showFeedback && (
-              <div className="space-y-1.5">
-                <Label
-                  htmlFor="passback-feedback"
-                  className="text-muted-foreground text-[11px] uppercase tracking-wide"
-                >
-                  Your feedback (optional)
-                </Label>
-                <Textarea
-                  id="passback-feedback"
-                  value={feedback}
-                  onChange={(e) => setFeedback(e.target.value)}
-                  rows={3}
-                  placeholder="Anything to add or override? Combined with the auditor's concerns when passing back. The implementer treats your feedback as authoritative if it conflicts."
-                  disabled={pending}
-                />
-              </div>
-            )}
-            <div className="flex flex-wrap items-center gap-2">
-              {kind === "approve" ? (
-                <Button
-                  size="sm"
-                  onClick={() => approveAnyway.mutate(taskId)}
-                  disabled={pending}
-                >
-                  {approveAnyway.isPending
-                    ? "Approving…"
-                    : "Approve & ready to merge"}
-                </Button>
-              ) : (
-                <>
-                  <Button size="sm" onClick={onPassBack} disabled={pending}>
-                    Pass back to implementer
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => approveAnyway.mutate(taskId)}
-                    disabled={pending}
-                  >
-                    Approve anyway
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    onClick={() => reject.mutate(taskId)}
-                    disabled={pending}
-                  >
-                    Reject
-                  </Button>
-                </>
-              )}
-              {(passBack.error || reject.error || approveAnyway.error) && (
-                <p className="text-destructive text-xs">
-                  {String(
-                    passBack.error ?? reject.error ?? approveAnyway.error,
-                  )}
-                </p>
-              )}
-            </div>
-          </div>
         )}
       </ContentColumn>
     </section>

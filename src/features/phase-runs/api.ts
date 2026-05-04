@@ -19,6 +19,11 @@ export const phaseRunsApi = {
   }) => invoke<string>("start_real_phase", params),
   /** Pipeline entry point — starts the first phase from the task's phase_config. */
   startTask: (taskId: string) => invoke<string>("start_task", { taskId }),
+  /** Dispatch a single phase using the task's resolved settings. Used for the
+   *  toolbar's "Re-run auditor only" action so the user doesn't have to walk back
+   *  through the prior phases. */
+  startTaskPhase: (taskId: string, phase: string) =>
+    invoke<string>("start_task_phase", { taskId, phase }),
   cancel: (phaseRunId: string) =>
     invoke<boolean>("cancel_phase_run", { phaseRunId }),
 };

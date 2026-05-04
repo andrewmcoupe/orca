@@ -179,6 +179,53 @@ fn task_is_terminal(app: &AppHandle, task_id: &str) -> Result<bool, PipelineErro
     ))
 }
 
+/// Pure decision: should auto-progression be skipped for a task whose plan has
+/// `plan_status`? The orchestrator's contract: a paused plan still allows
+/// in-flight phases to complete, but does not auto-start the next phase. The
+/// user can still manually trigger phases via the toolbar.
+pub fn plan_status_blocks_auto_progression(plan_status: &str) -> bool {
+    plan_status == "paused"
+}
+
+/// Look up the task's plan status. Returns `None` if the task or its plan can't
+/// be found (callers treat this defensively — a missing plan shouldn't block
+/// progression that would otherwise have happened).
+fn task_plan_status(app: &AppHandle, task_id: &str) -> Result<Option<String>, PipelineError> {
+    let active = app
+        .try_state::<ActiveWorkspaceState>()
+        .ok_or(PipelineError::NoActiveWorkspace)?;
+    let mut guard = active
+        .0
+        .lock()
+        .map_err(|e| PipelineError::Internal(e.to_string()))?;
+    let aw = guard
+        .as_mut()
+        .ok_or(PipelineError::NoActiveWorkspace)?;
+    let row: Option<String> = aw
+        .conn
+        .query_row(
+            "SELECT p.status \
+             FROM task_projection t \
+             JOIN plan_projection p ON p.id = t.plan_id \
+             WHERE t.id = ?1",
+            params![task_id],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok(row)
+}
+
+/// Spawn a specific phase for a task using its resolved settings. Public so a
+/// tauri command can offer "re-run this phase only" without re-implementing the
+/// provider/options resolution that `on_phase_completed` relies on.
+pub async fn dispatch_task_phase(
+    app: AppHandle,
+    task_id: String,
+    phase: PhaseType,
+) -> Result<String, PipelineError> {
+    dispatch_phase(app, task_id, phase, false, None).await
+}
+
 /// Spawn the next phase for a task. Defers to `commands::start_real_phase` so the
 /// dispatcher logic (provider detection, options merge, inflight-run tracking) lives in
 /// exactly one place.
@@ -304,9 +351,20 @@ pub async fn on_phase_completed(
     }
 
     // Run gates configured for this phase. If any fail (or error), stop the pipeline.
+    // Gates still run on paused plans — pausing controls auto-progression, not gating;
+    // the user might have already passed the gate-check window before they paused.
     let all_passed = run_gates_for_phase(&app, &workspace_id, &task_id, &phase_run_id, phase).await?;
     if !all_passed {
         return Ok(());
+    }
+
+    // If the task's plan is paused, the user has explicitly asked us not to auto-start
+    // the next phase. The completed phase is preserved; the user resumes the plan or
+    // manually triggers the next phase from the toolbar to continue.
+    if let Some(status) = task_plan_status(&app, &task_id)? {
+        if plan_status_blocks_auto_progression(&status) {
+            return Ok(());
+        }
     }
 
     // Identify the next phase from the task's phase_config and dispatch it.
@@ -520,6 +578,20 @@ mod tests {
     fn no_next_phase_after_last() {
         let c = cfg(&[PhaseType::Implementer, PhaseType::Auditor]);
         assert_eq!(decide_next_phase(&c, PhaseType::Auditor), None);
+    }
+
+    #[test]
+    fn paused_plan_blocks_auto_progression() {
+        // The single source of truth for "should pause stop the next phase from
+        // auto-starting?" — keep this assertion paired with the call site in
+        // on_phase_completed.
+        assert!(plan_status_blocks_auto_progression("paused"));
+        for s in ["active", "completed", "cancelled", "archived", ""] {
+            assert!(
+                !plan_status_blocks_auto_progression(s),
+                "{s} should not block",
+            );
+        }
     }
 
     #[test]

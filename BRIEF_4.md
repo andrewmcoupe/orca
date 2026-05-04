@@ -1,179 +1,246 @@
-# Brief for Claude Code: Visual Refinement Pass
+# Brief for Claude Code: Per-Task Phase Config Editing
 
 ## Context
 
-The app's structure and density are good after the previous passes. This brief is three small visual refinements that together substantially improve the read of the app:
+A task's phase configuration (provider, model, permission mode per phase) is currently set at task creation time via the preview screen. Changing it after the fact requires editing workspace defaults — which affects all future tasks — or recreating the task. There's no way to say "this specific task should use Opus for the implementer" without either changing the workspace default or starting over.
 
-1. **Content width constraint** — long prose currently stretches across the full page; reading is harder than it should be.
-2. **Typography audit** — apply mono-vs-sans consistently based on whether content is code-related.
-3. **Optional font swap** — try Inter or Geist as the sans if Roboto Condensed feels neutral after the above.
+This brief adds per-phase config editing on the task detail view. The user can change the provider, model, or permission mode for a specific phase of a specific task. The change applies to future phase runs of that phase; historical runs are unaffected.
 
-No structural changes. No new features. No event schema changes. Pure visual refinement.
+The use case is real: "the implementer with Sonnet didn't quite work, let me try Opus for the retry" or "the auditor was too lenient, let me bump it to a smarter model and re-audit." This kind of per-task tuning is exactly what makes orca's per-phase model assignment valuable.
 
-Match the existing design language: dark, dense, calm, developer-toolish. Don't add shadows, gradients, animations, or anything that pushes toward "polished web app" register.
+**Prerequisites already in place:**
 
-## Pass 1: Content width
+- Phase config schema with workspace defaults and per-task overrides in `phase_config`
+- Resolution function (task override > workspace default > hardcoded fallback)
+- `list_providers`, `list_models(provider)` Tauri commands
+- Phase cards on the task detail view showing model and permission mode
+- Permission mode handling with auditor restricted to `plan` and `acceptEdits`
+- `TaskCreated` event with `phase_config` snapshot at creation time
+- `PhaseRunStarted` event capturing the resolved config used for that run
 
-### Problem
+Read `docs/events.md` first.
 
-Prose-bearing sections (auditor verdict text, plan descriptions, spec items, task titles when long) currently fill the available main-content width. On wide displays this produces line lengths of 200+ characters, which is genuinely hard to read. Typographic best practice is 50-75 characters per line; we'll target ~80-90 to match the dev-tool aesthetic.
+## Goals
 
-### Rule
+1. The user can edit a phase's config (provider, model, permission mode) directly from the task detail view.
+2. Edits emit a new event that updates the task's effective config; the original `TaskCreated.phase_config` snapshot is preserved for audit.
+3. New phase runs use the latest effective config; historical runs are unaffected.
+4. Editing is disabled while any phase of the task is currently running.
+5. Phase cards visibly indicate when a phase's config differs from the workspace default.
+6. Auditor's permission mode dropdown still excludes `bypassPermissions`.
 
-Inside the main content area of any workspace-scoped view, prose content should max-width to roughly **760px**, left-aligned to the content area's left edge. Non-prose content (cards, structured data rows, status indicators) stays at its natural sizing.
+## Schema additions
 
-The page chrome (sidebar, top breadcrumb area, bottom status bar) is unchanged — it still uses full width. Only the content inside the main area is constrained.
+Update `docs/events.md` and the implementation.
 
-### Apply to
+**`TaskPhaseConfigChanged`** — new event on the Task aggregate. Records a user-initiated change to one phase's config.
+- `phase: "test_author" | "implementer" | "auditor"`
+- `provider: string | null` — null means "revert to workspace default"
+- `model: string | null` — null means "revert to workspace default"
+- `permission_mode: "plan" | "acceptEdits" | "bypassPermissions" | null` — null means revert
 
-These elements get max-width 760px:
+The event represents a delta to the named phase only. Other phases' configs are untouched.
 
-- Task title and subtitle line ("Merged into X as Y · 13h ago")
-- Spec section content
-- Auditor verdict card (the card itself, not just the text inside)
-- Plan description (markdown-rendered)
-- Audit trail rows
-- Briefing setup textarea and review-screen prose elements
+**`task_projection`** changes:
+- Existing `phase_config` column captures the *original* snapshot from `TaskCreated`. Don't change this.
+- Add a new `current_phase_config` column holding the *latest effective* config after applying all `TaskPhaseConfigChanged` events.
+- The applier for `TaskPhaseConfigChanged` updates `current_phase_config` for the named phase. The applier for `TaskCreated` initialises `current_phase_config = phase_config`.
 
-### Don't apply to
+### Resolution
 
-These stay at full available width:
+When a phase run starts, the phase runner resolves config in this order:
 
-- Pipeline phase cards row (the cards themselves are constrained, but the row containing them uses available width with cards left-aligned)
-- "Initialized · pnpm install --frozen-lockfile · 3.6s" line (it's a single dense metadata row)
-- Section labels (`SPEC`, `AUDITOR VERDICT`, etc.) — they sit above their content but don't need width constraint
-- The eventual diff panel (right panel, separate concern)
-- Any tabular data with multiple columns
-- Long single-line items where wrapping would hurt scannability
+1. `current_phase_config[phase]` — the latest user-set value, if present
+2. Workspace `default_phase_settings[phase]` — workspace default
+3. Hardcoded fallback (`acceptEdits` for write phases, `plan` for auditor)
 
-### Implementation
+This is the same resolution function used today, with the source updated from "original snapshot" to "current". Update the function once; everything downstream uses it.
 
-Add a utility class or component (`<ContentColumn>` or similar) for constrained prose content. Apply it consistently. Don't sprinkle `max-w-[760px]` literals throughout the codebase — one place to change the value if it's wrong.
+`PhaseRunStarted` continues to capture the resolved values at the moment of the run, so the event log accurately records "this run used Opus" regardless of whether config changes happen later.
 
-Left-aligned, not centred. Centring matches a marketing-page register, which is wrong for a developer tool. The left edge of constrained prose aligns with the left edge of the section labels above it.
+### Schema versioning
 
-### Pass 1 deliverable
+`TaskCreated` doesn't change. No version bump needed. The new event is additive.
 
-Open the task detail view on a wide display. Prose sections wrap at a comfortable reading width. Phase cards and metadata rows remain at their current sizing. Page feels less "stretched" and more focused without anything visibly missing.
+## Milestones
 
-## Pass 2: Typography audit
+### Milestone 1: Event and projection plumbing
 
-### Rule
+- Update `docs/events.md` with the new event and projection column.
+- Implement Rust event type and serde derivations.
+- Update the task projection schema to add `current_phase_config`.
+- Implement the applier for `TaskPhaseConfigChanged` — finds the phase entry in `current_phase_config`, replaces the named field(s), emits a `projection_updated` after commit.
+- Update the `TaskCreated` applier to initialise `current_phase_config` from the original `phase_config` snapshot.
+- Run a one-time backfill on existing task projections: copy `phase_config` to `current_phase_config` for any task that doesn't have it. This is a `rebuild_projections` concern — running rebuild should populate the new column correctly because the appliers do the right thing.
 
-**Mono is for code-related content.** Sans is for everything else.
+### Milestone 2: Phase runner config resolution
 
-Code-related, use JetBrains Mono:
+The phase runner currently reads from the task's original `phase_config` to resolve what provider/model/mode to use. Update it to read from `current_phase_config` instead.
 
-- File paths (`server/adapters/gemini.ts`, `src/middleware/index.ts`)
-- Code identifiers when appearing inline in prose (`Spawner`, `makeProgram`, `acquireRelease`)
-- Commit SHAs (`63e49ec9`, `902f4477`)
-- Command output and command strings (`pnpm install --frozen-lockfile`)
-- Event names and IDs (`AuditorVerdictRendered`, `pr_01KQQ…`)
-- Code blocks in spec, description, and auditor rationale
-- Phase card metadata (`mode: bypassPermissions`, `1m 22s`, `claude-opus-4-5`)
-- Timestamps (`17:43:03`)
-- Numeric data with fixed format (`95%`, `+12 -4`)
-- Status bar latest-event line
+This is a small change but worth being explicit about: the resolution function's input shifts from "task's original config" to "task's current config." The function signature and behaviour are otherwise identical.
 
-Not code-related, use sans (Roboto Condensed for now, possibly swapped in Pass 3):
+Audit every place in the codebase that reads phase config for execution purposes. They should all go through the resolution function; if any read `phase_config` directly, fix them to use the resolution function (which now reads from `current_phase_config` internally).
 
-- Page titles, task titles, plan titles
-- Body prose: auditor rationale, plan descriptions, briefing setup prose
-- Button labels (`Restart`, `Run task`, `Review diff`)
-- Sidebar nav items (`Plans`, `Providers`, `Settings`, `About`)
-- Sidebar workspace names
-- Section labels (`SPEC`, `AUDITOR VERDICT`, `PIPELINE`, `AUDIT TRAIL`)
-- Status badges (`MERGED`, `APPROVE`, `ADVISORY`)
-- Concern category labels (`style`, `tests`, `correctness`)
+### Milestone 3: Tauri command
 
-### Inline code in prose
+Add `update_task_phase_config`:
 
-Particular attention here. When a code identifier appears inline in sans-set prose, the visual weight of the mono needs to match the surrounding sans. Currently the mono is heavier than the surrounding text, which creates visual "lumps."
+```rust
+#[tauri::command]
+async fn update_task_phase_config(
+    task_id: String,
+    phase: String,                          // "test_author" | "implementer" | "auditor"
+    provider: Option<String>,
+    model: Option<String>,
+    permission_mode: Option<String>,
+) -> Result<Task, AppError>;
+```
 
-Two ways to balance:
+Behaviour:
 
-- Use a slightly lighter weight of JetBrains Mono inline (e.g. weight 400 mono inside weight 400 sans, but bump sans to 450 or use a slightly heavier variant of the sans). Test which combination reads as visually equal-weight.
-- Or: apply a subtle background tint to inline code (`bg-muted/30` or similar — very subtle). This visually groups the code without making it heavier. Works well in dev-tool contexts.
+1. Validate that no phase of this task is currently running. If a `PhaseRunStarted` exists without a corresponding `PhaseRunCompleted` or `PhaseRunFailed`, return `AppError::PhaseRunning`. The UI should never call this in a running state, but defence-in-depth.
+2. Validate the permission mode against the phase. If `phase == "auditor"` and `permission_mode == "bypassPermissions"`, return `AppError::InvalidPermissionMode`. Defence-in-depth — the UI dropdown shouldn't expose this combination, but the command guards it too.
+3. Emit `TaskPhaseConfigChanged` via `append_events` with the provided fields.
+4. Return the updated task projection.
 
-I'd lean toward the second approach (subtle background tint) — it's a known good pattern for inline code in prose, and it solves the weight problem without fiddling with font weights. The tint should be very subtle: just enough to register as "this is code" without becoming visually loud.
+The command takes optional fields so partial updates work — e.g. just changing the model without touching provider or mode. Any field set to `None` in the call is left unchanged in the resulting event payload (the event only carries fields the user actually changed).
 
-### Audit each existing text element
+Wait — that conflicts with the "null means revert to default" semantics in the event. Resolve by using a different sentinel for "no change" vs "revert":
 
-Walk through every page in the app. For each text element, decide: is this code-related or not? If the current treatment doesn't match the rule, change it.
+```rust
+pub enum ConfigUpdate<T> {
+    Unchanged,         // skip this field in the event
+    SetTo(T),          // set to this value
+    RevertToDefault,   // set to None in the event (use default)
+}
+```
 
-Likely places where the current code uses mono but should use sans:
+Or simpler: have two commands, `update_task_phase_config` (sets fields) and `reset_task_phase_config` (reverts a phase to defaults). Pick the simpler split. I'd suggest the two-command approach — clearer, easier to reason about.
 
-- Section labels (`SPEC`, `AUDITOR VERDICT`, etc.) — they're labels, not code. Currently mono with letter-spacing and uppercase; the same treatment in sans reads as a label without the code association.
-- Status badges (`MERGED`, `APPROVE`) — these are categorical labels.
+```rust
+#[tauri::command]
+async fn update_task_phase_config(
+    task_id: String,
+    phase: String,
+    provider: String,
+    model: String,
+    permission_mode: String,
+) -> Result<Task, AppError>;
+// All three fields required; no field-level "unchanged" support. UI sends the full
+// resolved config from the popover; user explicitly clicked Save.
 
-Likely places where the current code uses sans but should use mono:
+#[tauri::command]
+async fn reset_task_phase_config(
+    task_id: String,
+    phase: String,
+) -> Result<Task, AppError>;
+// Emits TaskPhaseConfigChanged with provider/model/permission_mode all null.
+// Phase reverts to workspace default.
+```
 
-- Any inline code identifiers in prose that aren't currently treated as code.
-- Filenames or paths in titles or subtitles.
+This is cleaner. Use this split.
 
-### Pass 2 deliverable
+### Milestone 4: Edit affordance on phase cards
 
-Every text element in the app uses mono or sans deliberately. Inline code in prose has appropriate visual weight balance. Section labels read as labels rather than as code. The typographic system is internally consistent and rule-driven.
+Add a small edit affordance to each phase card on the task detail view.
 
-## Pass 3: Optional font swap
+**Visual treatment:**
 
-After Pass 1 and Pass 2 are done, evaluate whether the sans font (Roboto Condensed) feels right. It's currently a competent neutral, but slightly characterless next to the more opinionated JetBrains Mono.
+- A small icon (`⋯` or a pencil/gear icon) in the top-right corner of each phase card. shadcn doesn't have one out of the box; use Lucide's `Settings2` or `Pencil` icon at 14px, muted-foreground colour.
+- Click → opens a popover anchored to the card.
+- The icon button has a tooltip: "Edit phase config" when enabled, "Cannot edit while a phase is running" when disabled.
 
-### Try, in order
+**Disabled state:**
 
-If anything in this section requires more than ~30 minutes of fiddling, abandon it and stick with Roboto Condensed. The point of Pass 3 is a quick low-cost experiment, not a redesign.
+- The edit button is disabled when any phase of the task is currently running (any `PhaseRunStarted` without matching completion/failure).
+- Disabled state is muted further (lower opacity) and not clickable. Tooltip explains why.
 
-**Option A: Inter.** The default modern UI sans. Pairs cleanly with JetBrains Mono. Less condensed than Roboto Condensed, so you may need to slightly tighten line-height and letter-spacing on titles to compensate. Self-host via `@fontsource/inter` to avoid Google Fonts.
+### Milestone 5: Edit popover
 
-**Option B: Geist.** Vercel's font. Modern, distinct, designed alongside Geist Mono. If you go this way, also try swapping JetBrains Mono for Geist Mono — the pair is designed to work together. Self-host via `@fontsource/geist-sans` and `@fontsource/geist-mono`.
+The popover, anchored to the phase card, contains the editor.
 
-**Option C: Stay with Roboto Condensed.** Perfectly fine. Don't swap for the sake of swapping.
+**Header:** "Edit {phase name} config" (e.g. "Edit implementer config").
 
-### Decision criteria
+**Body:** three dropdowns plus a footer.
 
-Apply the candidate font, look at:
+- **Provider** dropdown. Options come from `list_providers()`, filtered to providers that are installed and authenticated. Shows the current value.
+- **Model** dropdown. Options come from `list_models(provider)`. Refreshes when provider changes (clear the model selection on provider change; user must re-pick).
+- **Permission mode** dropdown. Options depend on phase:
+  - `test_author` and `implementer`: `acceptEdits`, `bypassPermissions`
+  - `auditor`: `plan`, `acceptEdits`
+- Display labels are user-friendly: "Plan (read-only)", "Accept edits", "Bypass permissions".
+- A small help icon next to the permission mode dropdown opens a brief explanation on click — same content as the workspace settings help text.
 
-- Sidebar workspace names — do they read as cleanly as before?
-- Page titles like "Document Effect patterns and add JSDoc" — do they have appropriate presence?
-- Auditor verdict prose — easier or harder to read?
-- The visual relationship between the sans and mono — more harmonious, or no different?
+**Footer:**
 
-If after 15 minutes of looking at it the new font feels neutral or worse, revert. If it feels better, keep it.
+- "Reset to default" button (left-aligned). Calls `reset_task_phase_config`. Closes popover on success.
+- "Cancel" and "Save" buttons (right-aligned). Save calls `update_task_phase_config` with the popover's current values. Closes on success.
 
-### Pass 3 deliverable
+**Initial state:**
 
-Either: the sans font has been swapped to Inter or Geist, and the app reads more cohesively as a result. Or: confirmation that Roboto Condensed is the right choice, and we move on. Either outcome is fine.
+The popover pre-populates with the *currently effective* config for this phase — the resolved value (current task config > workspace default > hardcoded). Show that as the starting state. The user is editing "what would the next run use?" — so we show what it would use today.
+
+### Milestone 6: Customisation indicator
+
+When a phase's `current_phase_config` value differs from the workspace default for that phase, the phase card shows a small indicator.
+
+**Visual:**
+
+- A small dot (3-4px) next to the phase name on the card, or after the model name. Use accent colour (the same green used elsewhere for "configured" states) or a neutral muted-secondary colour — pick whichever reads as informational rather than warning.
+- Tooltip on hover: "Phase config has been customised for this task."
+- The indicator is per-phase: the implementer card might show the dot while the auditor card doesn't.
+
+**Computation:**
+
+For each phase on the card, compute `is_customised = current_phase_config[phase] != workspace_default_phase_settings[phase]`. This needs both values; the task projection should expose `current_phase_config`, and the workspace projection exposes defaults. The frontend can compare them to determine the indicator.
+
+Edge case: if a phase has been customised and then reset, the `TaskPhaseConfigChanged` with all-null fields means "use defaults" — the projection should reflect this with `current_phase_config[phase]` matching workspace default, so the indicator correctly disappears.
+
+### Milestone 7: Wiring with task toolbar
+
+The task detail view's action toolbar (from the previous brief) interacts with this feature in one specific way: the **Re-run auditor only** action in the overflow menu, and the **Run / Restart** action, will pick up the latest `current_phase_config` automatically — they go through the resolution function, which now reads from the current config.
+
+This is automatic; no extra work needed beyond confirming the resolution function behaves correctly. But worth verifying: change the auditor's model via the popover, click "Re-run auditor only," confirm the new auditor run uses the new model.
 
 ## Conventions
 
-- Self-host all fonts via `@fontsource/*` packages. No Google Fonts links — they slow down Tauri's webview load and the offline character of the app.
-- Use Tailwind's font config in `tailwind.config.ts` (or the v4 CSS-vars equivalent in `globals.css`) so font usage is `font-sans` / `font-mono` throughout the codebase, not direct font-family strings.
-- Don't change colour palette, spacing, or any non-typographic visual property in this brief.
-- No animations on typography changes. Static is correct.
+- Read and update `docs/events.md` before implementing.
+- Tauri events emitted **after** transaction commit. One `projection_updated` per affected aggregate.
+- TanStack Query for all reads. Phase config changes invalidate the task projection query, which re-renders the phase cards with new model/mode/indicator state.
+- Typed errors with `thiserror`. New variants: `AppError::PhaseRunning`, `AppError::InvalidPermissionMode`.
+- shadcn primitives for the popover (Popover), dropdowns (Select), and tooltips (Tooltip).
+- Don't duplicate the dropdown components. Reuse the same model/permission-mode dropdowns from workspace settings if they exist as separate components; if they're inlined, factor them out as part of this work.
 
 ## Out of scope
 
-- Any structural layout changes beyond width constraint
-- Spacing/padding adjustments (already done in earlier passes)
-- Colour changes
-- Light theme support
-- Custom OpenType features (ligatures, alternate glyphs) beyond defaults
-- Variable font weight axes — use weight stops (400, 500, 600) explicitly
-- Print stylesheet
-- Right-side panel layout (separate brief)
-- Any non-typography polish
+- Per-task prompt overrides (large UX question; defer)
+- Editing config on completed historical phase runs (immutable; the right pattern is "re-run with new config")
+- Multi-phase batch editing (edit each phase individually)
+- Saving customised task config back as workspace default (cute but premature)
+- Diff display between current task config and workspace default in the popover (the dot indicator is enough)
+- Per-phase prompt template hash override (use whatever the workspace-level prompt is; per-phase prompt editing is a separate concern)
+- Auto-detecting which models a provider has access to (still hardcoded list per provider)
+- Showing config history (when was this changed? by whom?) — the event log has it; no UI needed for v1
+- Per-task gate config overrides (still workspace-level only)
 
 ## Deliverable
 
 A working app where:
 
-1. Prose content in workspace-scoped views wraps at ~760px max-width, left-aligned.
-2. Phase cards, metadata rows, and full-width chrome remain at their current sizing.
-3. Typography is consistent: mono for code-related content, sans for everything else.
-4. Inline code in prose has balanced visual weight against surrounding sans.
-5. Section labels read as sans labels rather than mono code.
-6. Either Inter, Geist, or Roboto Condensed is the chosen sans, with explicit justification (or "kept current" is the answer).
+1. Each phase card on the task detail view has an edit affordance (icon button) opening a config popover.
+2. The popover lets the user change provider, model, and permission mode for that phase.
+3. Auditor's permission mode dropdown excludes `bypassPermissions`.
+4. Saving emits `TaskPhaseConfigChanged`; the projection updates; the phase card re-renders with new values.
+5. A reset button on the popover reverts the phase to workspace default.
+6. The edit affordance is disabled (with explanatory tooltip) while any phase of the task is running.
+7. Phase cards show a small dot indicator when the phase's config differs from workspace default.
+8. New phase runs (Run, Restart, Re-run auditor only) use the updated config.
+9. Historical phase runs are unaffected; their `PhaseRunStarted` events remain accurate.
+10. `docs/events.md` reflects the new event and projection column.
 
-No tests required for this brief — visual changes only. Verify by looking at each main view (plans list, plan detail, task detail with auditor verdict, briefing setup, briefing review).
+Plus tests on:
+- The resolution function correctly preferring current task config over workspace default and over hardcoded fallback.
+- The applier for `TaskPhaseConfigChanged` updating only the named phase, not others.
+- The `update_task_phase_config` command rejecting bypassPermissions for the auditor.
 
-Three commits is right: one for Pass 1 (width), one for Pass 2 (typography audit), one for Pass 3 (font swap or confirmed-current).
+Three commits: schema and projection (Milestones 1-2), command and core UI (Milestones 3-5), customisation indicator and polish (Milestones 6-7).

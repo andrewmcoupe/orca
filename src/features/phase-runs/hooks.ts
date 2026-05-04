@@ -50,6 +50,13 @@ export function useStartTask() {
   });
 }
 
+export function useStartTaskPhase() {
+  return useMutation({
+    mutationFn: ({ taskId, phase }: { taskId: string; phase: string }) =>
+      phaseRunsApi.startTaskPhase(taskId, phase),
+  });
+}
+
 export function useCancelPhaseRun() {
   return useMutation({
     mutationFn: (phaseRunId: string) => phaseRunsApi.cancel(phaseRunId),

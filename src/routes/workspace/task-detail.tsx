@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
 import { createRoute, useParams } from "@tanstack/react-router";
-import { GitDiff, GitMerge, Play } from "@phosphor-icons/react";
-import { Button } from "@/components/ui/button";
 import { ContentColumn } from "@/components/layout/content-column";
 import { Markdown } from "@/components/markdown";
 import { workspaceLayoutRoute } from "./layout";
@@ -10,13 +8,9 @@ import { TaskStatusBadge } from "@/features/tasks/presentation";
 import { WorktreeSection } from "@/features/tasks/components/worktree-section";
 import { WorktreeInitSection } from "@/features/tasks/components/worktree-init-section";
 import { AuditorVerdictSection } from "@/features/tasks/components/auditor-verdict-section";
-import { MergeDialog } from "@/features/tasks/components/merge-dialog";
+import { TaskActionToolbar } from "@/features/tasks/components/task-action-toolbar";
 import { useLatestMergeAttempt } from "@/features/tasks/merge-hooks";
-import {
-  usePhaseRuns,
-  useStartFakePhase,
-  useStartTask,
-} from "@/features/phase-runs/hooks";
+import { usePhaseRuns } from "@/features/phase-runs/hooks";
 import { PipelineCards } from "@/features/phase-runs/components/pipeline-cards";
 import { PhaseRunsTrail } from "@/features/phase-runs/components/phase-runs-trail";
 import { TaskEventList } from "@/features/events/components/task-event-list";
@@ -53,16 +47,17 @@ function TaskDetailView({
   workspaceId: string;
 }) {
   const phaseRuns = usePhaseRuns(workspaceId, task.id);
-  const startFake = useStartFakePhase();
-  const startTask = useStartTask();
-
   const runs = phaseRuns.data ?? [];
-  const anyRunning = runs.some((r) => r.status === "running");
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalConcernIdx, setModalConcernIdx] = useState<number | undefined>(
     undefined,
   );
+
+  const openDiffModal = (concernIdx?: number) => {
+    setModalConcernIdx(concernIdx);
+    setModalOpen(true);
+  };
 
   // Bridge: anything calling `diffModalController.open` (e.g. verdict concern
   // rows) opens the modal here, scoped to the right task.
@@ -77,34 +72,23 @@ function TaskDetailView({
   return (
     <div className="flex min-h-full">
       <div className="min-w-0 flex-1 space-y-7 px-5 py-4">
-        <header className="space-y-2">
-          <div className="flex items-start gap-3">
-            <ContentColumn className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="truncate text-[20px] font-medium font-body">
-                  {task.title}
-                </h1>
-                <TaskStatusBadge status={task.status} />
-              </div>
-              <TaskHeaderMeta task={task} />
-            </ContentColumn>
-            <div className="flex items-center gap-1.5">
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1"
-                onClick={() => {
-                  setModalConcernIdx(undefined);
-                  setModalOpen(true);
-                }}
-                title="Open the diff modal — full-window side-by-side review"
-              >
-                <GitDiff className="size-3" />
-                Review diff
-              </Button>
-              <TaskActionArea task={task} />
+        <header className="space-y-3">
+          <ContentColumn>
+            <TaskActionToolbar
+              task={task}
+              workspaceId={workspaceId}
+              onOpenDiff={() => openDiffModal()}
+            />
+          </ContentColumn>
+          <ContentColumn className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="truncate text-[20px] font-medium font-body">
+                {task.title}
+              </h1>
+              <TaskStatusBadge status={task.status} />
             </div>
-          </div>
+            <TaskHeaderMeta task={task} />
+          </ContentColumn>
           {task.cancel_reason && (
             <ContentColumn>
               <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-[11px]">
@@ -130,39 +114,7 @@ function TaskDetailView({
         <WorktreeInitSection task={task} />
 
         <section className="space-y-2.5">
-          <div className="flex items-center justify-between">
-            <SectionLabel>Pipeline</SectionLabel>
-            <div className="flex items-center gap-1.5">
-              <Button
-                size="xs"
-                onClick={() => startTask.mutate(task.id)}
-                disabled={startTask.isPending || anyRunning}
-                className="gap-1"
-              >
-                <Play className="size-3" />
-                {anyRunning
-                  ? "Running…"
-                  : runs.length === 0
-                    ? "Start pipeline"
-                    : "Restart"}
-              </Button>
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={() =>
-                  startFake.mutate({ taskId: task.id, phase: "implementer" })
-                }
-                disabled={startFake.isPending}
-              >
-                Run (fake)
-              </Button>
-            </div>
-          </div>
-          {(startFake.error || startTask.error) && (
-            <p className="text-destructive text-[11px]">
-              {String(startFake.error ?? startTask.error)}
-            </p>
-          )}
+          <SectionLabel>Pipeline</SectionLabel>
           <PipelineCards
             workspaceId={workspaceId}
             phaseConfig={task.phase_config}
@@ -255,46 +207,6 @@ function CopyableSha({ sha }: { sha: string }) {
         <span className="text-muted-foreground ml-1 text-[10px]">copied</span>
       )}
     </button>
-  );
-}
-
-function TaskActionArea({ task }: { task: Task }) {
-  const [mergeOpen, setMergeOpen] = useState(false);
-  const canMerge =
-    task.status === "approved" && task.worktree_status === "active";
-  const worktreeGoneButApproved =
-    task.status === "approved" && task.worktree_status === "removed";
-
-  if (task.status === "merged") return null;
-
-  if (worktreeGoneButApproved) {
-    return (
-      <div className="text-muted-foreground text-xs">
-        Merge unavailable — worktree removed
-      </div>
-    );
-  }
-
-  if (!canMerge) return null;
-
-  return (
-    <>
-      <Button
-        size="sm"
-        onClick={() => setMergeOpen(true)}
-        className="gap-1"
-        title="Merge this task into the current branch of the main worktree"
-      >
-        <GitMerge className="size-3" />
-        Merge
-      </Button>
-      <MergeDialog
-        taskId={task.id}
-        taskTitle={task.title}
-        open={mergeOpen}
-        onOpenChange={setMergeOpen}
-      />
-    </>
   );
 }
 

@@ -13,7 +13,7 @@ import { workspaceLayoutRoute } from "./layout";
 import { usePlan } from "@/features/plans/hooks";
 import { useTasksInPlan } from "@/features/tasks/hooks";
 import { PlanSourceIcon, PlanStatusBadge } from "@/features/plans/presentation";
-import { PlanActions } from "@/features/plans/components/plan-actions";
+import { PlanActionToolbar } from "@/features/plans/components/plan-action-toolbar";
 import { TaskRow } from "@/features/tasks/components/task-row";
 import { NewTaskDialog } from "@/features/tasks/components/new-task-dialog";
 import { formatRelativeTime } from "@/lib/format";
@@ -50,6 +50,9 @@ function PlanDetailView({
   return (
     <div className="space-y-6 px-5 py-4">
       <header className="space-y-3">
+        <ContentColumn>
+          <PlanActionToolbar plan={plan} />
+        </ContentColumn>
         <div className="flex items-start gap-3">
           <PlanSourceIcon source={plan.source} className="mt-1.5 size-5" />
           <ContentColumn className="min-w-0 flex-1">
@@ -65,7 +68,6 @@ function PlanDetailView({
             </p>
             <BriefingProvenance plan={plan} workspaceId={workspaceId} />
           </ContentColumn>
-          <PlanActions plan={plan} />
         </div>
         {plan.pause_reason && (
           <ContentColumn>
