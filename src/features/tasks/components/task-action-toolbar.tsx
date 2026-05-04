@@ -6,9 +6,11 @@ import {
   DotsThree,
   GitDiff,
   GitMerge,
+  Pencil,
   Play,
   Stop,
   Trash,
+  Warning,
   XCircle,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
@@ -31,6 +33,8 @@ import {
   useDeleteWorktree,
   useLatestAuditorVerdict,
   useRejectTask,
+  useTasksInPlan,
+  useUnqueueTask,
 } from "@/features/tasks/hooks";
 import {
   useCancelPhaseRun,
@@ -39,9 +43,19 @@ import {
   useStartTask,
   useStartTaskPhase,
 } from "@/features/phase-runs/hooks";
+import { tasksApi } from "../api";
 import { MergeDialog } from "./merge-dialog";
 import { PassBackDialog } from "./pass-back-dialog";
-import type { AuditorVerdict, AuditorVerdictKind, Task } from "../types";
+import {
+  FileOverlapDialog,
+  overlapPairKey,
+} from "./file-overlap-dialog";
+import {
+  dismissOverlapPairs,
+  isOverlapDismissed,
+} from "../file-overlap-suppression";
+import { DependencyEditDialog } from "./dependencies-section";
+import type { AuditorVerdict, AuditorVerdictKind, FileOverlap, Task } from "../types";
 import type { PhaseRun } from "@/features/phase-runs/types";
 
 type PrimaryActionId =
@@ -141,26 +155,131 @@ export function TaskActionToolbar({
   const approve = useApproveTaskAnyway();
   const reject = useRejectTask();
   const deleteWorktree = useDeleteWorktree();
+  const unqueueTask = useUnqueueTask();
+  const tasksInPlanQ = useTasksInPlan(task.plan_id);
 
   const [mergeOpen, setMergeOpen] = useState(false);
   const [passBackOpen, setPassBackOpen] = useState(false);
+  // M8 file overlap warning: cached overlaps + the original `forceRun`
+  // intent for the *current* run-click attempt. Cleared on cancel or
+  // proceed. Held in component state rather than TanStack Query because
+  // the dialog flow is one-shot.
+  const [overlapState, setOverlapState] = useState<{
+    overlaps: FileOverlap[];
+    forceRun: boolean;
+  } | null>(null);
 
   // === Run / Restart =====================================================
   const isMerged = task.status === "merged";
   const isCancelled = task.status === "cancelled";
   const isApproved = task.status === "approved";
 
-  const runLabel = hasAnyRun ? "Restart" : "Run";
-  const runDisabled = !!phaseRunning || isMerged || isCancelled || startTask.isPending;
-  const runTooltip = phaseRunning
-    ? "A phase is already running."
-    : isMerged
-      ? "Task is already merged."
-      : isCancelled
-        ? "Task was cancelled."
-        : hasAnyRun
-          ? "Restart from the beginning."
-          : "Start the pipeline.";
+  // Brief 4 / M6: dependency-aware run button. Three render states:
+  //   1. Not blocked → "Run" / "Restart" (existing behaviour).
+  //   2. Blocked, not queued → "Run" but tooltip warns "Will queue —
+  //      blocked by N tasks". Click emits TaskQueued (server-side).
+  //   3. Queued → button label flips to "Cancel queue".
+  const blockingDeps = task.depends_on.filter((depId) => {
+    const dep = tasksInPlanQ.data?.find((t) => t.id === depId);
+    return dep && dep.status !== "merged";
+  });
+  const blockedCount = blockingDeps.length || task.depends_on.length;
+
+  let runLabel: string;
+  let runIcon: React.ReactNode;
+  let runTooltip: string;
+  if (task.is_queued) {
+    runLabel = "Cancel queue";
+    runIcon = <XCircle />;
+    runTooltip = `Cancel — task is waiting for ${blockedCount} dependenc${blockedCount === 1 ? "y" : "ies"} to merge.`;
+  } else if (task.is_blocked) {
+    runLabel = hasAnyRun ? "Restart" : "Run";
+    runIcon = <Play weight={primary === "run" ? "fill" : "regular"} />;
+    runTooltip = `Will queue — task is blocked by ${blockedCount} task${blockedCount === 1 ? "" : "s"}.`;
+  } else {
+    runLabel = hasAnyRun ? "Restart" : "Run";
+    runIcon = <Play weight={primary === "run" ? "fill" : "regular"} />;
+    runTooltip = phaseRunning
+      ? "A phase is already running."
+      : isMerged
+        ? "Task is already merged."
+        : isCancelled
+          ? "Task was cancelled."
+          : hasAnyRun
+            ? "Restart from the beginning."
+            : "Start the pipeline.";
+  }
+  const runDisabled =
+    !task.is_queued &&
+    (!!phaseRunning ||
+      isMerged ||
+      isCancelled ||
+      startTask.isPending ||
+      unqueueTask.isPending);
+
+  /** Centralised "user clicked Run" handler. Walks the staged sequence:
+   *  1. If currently queued → unqueue and bail.
+   *  2. Otherwise check for file overlaps (M8); if any survive the
+   *     suppression set, open the warning dialog and pause. The dialog's
+   *     "Proceed anyway" continues the flow with `forceRun = false` (the
+   *     queue check still applies — overlap doesn't override deps).
+   *  3. If no overlaps (or all suppressed), dispatch start_task. */
+  const tryStartTask = async (forceRun: boolean) => {
+    if (task.is_queued && !forceRun) {
+      // The Run button label flips to "Cancel queue" in this state; click
+      // means "stop waiting." `forceRun = true` is the overflow's "Run
+      // anyway" path which dispatches immediately and skips the queue
+      // entirely (so we keep the queued state on the audit trail).
+      unqueueTask.mutate(task.id);
+      return;
+    }
+    // Brief 4 / M8: "the warning doesn't fire until the queue manager
+    // actually starts it." A blocked task that's about to be queued
+    // doesn't need the overlap dialog — by the time it auto-starts, the
+    // in-flight set will look different. Same for force_run, where the
+    // user is explicitly bypassing the queue check; we still gate them
+    // on the overlap warning (force_run ignores deps, not file conflicts).
+    if (task.is_blocked && !forceRun) {
+      startTask.mutate({ taskId: task.id, forceRun: false });
+      return;
+    }
+    // The overlap check needs the in-flight tasks, which only exist when
+    // the worktree story is well underway. For brand-new tasks with no
+    // sibling phase runs, the call still happens but reliably returns [].
+    let candidates: FileOverlap[] = [];
+    try {
+      candidates = await tasksApi.detectFileOverlap(task.id);
+    } catch (e) {
+      // Best-effort: a backend error (likely "no active workspace" race)
+      // shouldn't strand the user. Log and proceed; if real overlap exists
+      // and matters, the merge will surface it later.
+      console.error("file overlap detection failed:", e);
+    }
+    const fresh = candidates.filter(
+      (o) => !isOverlapDismissed(overlapPairKey(task.id, o.other_task_id)),
+    );
+    if (fresh.length > 0) {
+      setOverlapState({ overlaps: fresh, forceRun });
+      return;
+    }
+    startTask.mutate({ taskId: task.id, forceRun });
+  };
+
+  const onOverlapProceed = () => {
+    if (overlapState) {
+      // Mark the (starting, other) pairs dismissed so re-clicks within
+      // this session bypass the dialog entirely.
+      dismissOverlapPairs(
+        overlapState.overlaps.map((o) =>
+          overlapPairKey(task.id, o.other_task_id),
+        ),
+      );
+      const forceRun = overlapState.forceRun;
+      setOverlapState(null);
+      startTask.mutate({ taskId: task.id, forceRun });
+    }
+  };
+  const onOverlapCancel = () => setOverlapState(null);
 
   // === Approve ===========================================================
   const approveDisabled =
@@ -224,12 +343,14 @@ export function TaskActionToolbar({
     <TooltipProvider delay={200}>
       <div className="flex flex-wrap items-center gap-1">
         <ToolbarButton
-          icon={<Play weight={primary === "run" ? "fill" : "regular"} />}
+          icon={runIcon}
           label={runLabel}
-          isPrimary={primary === "run"}
+          // Don't lift the queued state into the primary slot — it's a
+          // recovery action, not the obvious next step in the flow.
+          isPrimary={primary === "run" && !task.is_queued && !task.is_blocked}
           disabled={runDisabled}
           tooltip={runTooltip}
-          onClick={() => startTask.mutate(task.id)}
+          onClick={() => void tryStartTask(false)}
         />
         <ToolbarButton
           icon={<CheckCircle weight={primary === "approve" ? "fill" : "regular"} />}
@@ -275,6 +396,7 @@ export function TaskActionToolbar({
 
         <OverflowMenu
           task={task}
+          tasksInPlan={tasksInPlanQ.data ?? []}
           phaseRunning={phaseRunning}
           implementerCompleted={implementerCompleted}
           worktreeActive={worktreeActive}
@@ -282,6 +404,7 @@ export function TaskActionToolbar({
           onRerunAuditor={() =>
             startTaskPhase.mutate({ taskId: task.id, phase: "auditor" })
           }
+          onRunAnyway={() => void tryStartTask(true)}
           onCopyId={() => {
             void navigator.clipboard.writeText(task.id);
           }}
@@ -293,6 +416,16 @@ export function TaskActionToolbar({
           }
         />
       </div>
+
+      <FileOverlapDialog
+        open={overlapState !== null}
+        onOpenChange={(o) => {
+          if (!o) setOverlapState(null);
+        }}
+        overlaps={overlapState?.overlaps ?? []}
+        onProceed={onOverlapProceed}
+        onCancel={onOverlapCancel}
+      />
 
       <MergeDialog
         taskId={task.id}
@@ -363,26 +496,37 @@ function ToolbarButton({
 
 function OverflowMenu({
   task,
+  tasksInPlan,
   phaseRunning,
   implementerCompleted,
   worktreeActive,
   onCancelPhase,
   onRerunAuditor,
+  onRunAnyway,
   onCopyId,
   onDeleteWorktree,
   onRunFake,
 }: {
   task: Task;
+  tasksInPlan: Task[];
   phaseRunning: PhaseRun | undefined;
   implementerCompleted: boolean;
   worktreeActive: boolean;
   onCancelPhase: (phaseRunId: string) => void;
   onRerunAuditor: () => void;
+  onRunAnyway: () => void;
   onCopyId: () => void;
   onDeleteWorktree: () => void;
   onRunFake: () => void;
 }) {
+  // Brief 4 / M7: "Edit dependencies" lives in the overflow when the
+  // dependencies section isn't rendered (no deps + not blocked); we still
+  // want it available there even when the section *is* rendered, so users
+  // have a single discoverable place that always works. Local open-state
+  // for the popover so dropdown autoclose doesn't kill it.
+  const [editDepsOpen, setEditDepsOpen] = useState(false);
   return (
+    <>
     <DropdownMenu>
       <Tooltip>
         <TooltipTrigger
@@ -404,7 +548,7 @@ function OverflowMenu({
         />
         <TooltipContent>More actions</TooltipContent>
       </Tooltip>
-      <DropdownMenuContent align="start" className="min-w-[220px]">
+      <DropdownMenuContent align="start" className="min-w-[240px]">
         {/* Phase actions */}
         <DropdownMenuItem
           disabled={!phaseRunning}
@@ -419,6 +563,39 @@ function OverflowMenu({
         >
           <Play />
           <span className="flex-1">Re-run auditor only</span>
+        </DropdownMenuItem>
+        {/* Brief 4 / M6: "Run anyway (ignore dependencies)" — escape hatch
+            only relevant when the task is currently blocked. We surface it
+            for queued tasks too, since a queued user might decide they
+            want to break out of the queue. */}
+        {(task.is_blocked || task.is_queued) && (
+          <DropdownMenuItem
+            disabled={
+              !!phaseRunning ||
+              task.status === "merged" ||
+              task.status === "cancelled"
+            }
+            onClick={onRunAnyway}
+            variant="destructive"
+          >
+            <Warning />
+            <span className="flex-1">Run anyway (ignore dependencies)</span>
+          </DropdownMenuItem>
+        )}
+
+        <DropdownMenuSeparator />
+
+        {/* Dependencies — always available so the user can add deps to a
+            task that doesn't have any yet (the inline section is hidden in
+            that case per the brief). */}
+        <DropdownMenuItem
+          disabled={
+            task.status === "merged" || task.status === "archived"
+          }
+          onClick={() => setEditDepsOpen(true)}
+        >
+          <Pencil />
+          <span className="flex-1">Edit dependencies</span>
         </DropdownMenuItem>
 
         <DropdownMenuSeparator />
@@ -449,5 +626,12 @@ function OverflowMenu({
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+    <DependencyEditDialog
+      task={task}
+      candidates={tasksInPlan}
+      open={editDepsOpen}
+      onOpenChange={setEditDepsOpen}
+    />
+    </>
   );
 }

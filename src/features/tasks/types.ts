@@ -76,8 +76,63 @@ export type Task = {
   /** Mirrors the `detection_kind` field on the init events. */
   worktree_init_detection_kind: string | null;
   worktree_init_output: string | null;
+  /** Original snapshot from `TaskCreated`. Immutable after the fact. */
   phase_config: PhaseConfig;
+  /** Latest effective config — original snapshot plus any per-task edits. The
+   * pipeline resolves against this; the UI compares it to the workspace default
+   * to surface the customisation indicator on phase cards. */
+  current_phase_config: PhaseConfig;
   task_base_commit: string | null;
+  /** Brief 4: task dependency declarations (other task IDs in the same plan). */
+  depends_on: string[];
+  /** Computed by the backend: any dep not in `merged` state. */
+  is_blocked: boolean;
+  /** User clicked Run while blocked; queue manager auto-starts when unblocked. */
+  is_queued: boolean;
+  /** Unix millis at which the queue manager unblocked this task. Display-only. */
+  unblocked_at: number | null;
+  last_unblocking_task_id: string | null;
   created_at: number;
   updated_at: number;
 };
+
+/** Pre-start file-overlap detection — see `detectTaskFileOverlap`. */
+export type FileOverlap = {
+  other_task_id: string;
+  other_task_title: string;
+  overlapping_files: string[];
+};
+
+/** Discriminated result from `start_task` — either we started the first phase
+ * or the task is blocked and got queued for auto-start. */
+export type StartTaskResult =
+  | { kind: "started"; phase_run_id: string }
+  | { kind: "queued"; task_id: string };
+
+/** Typed errors returned by `update_task_dependencies` / `create_task` when
+ * dep validation fails. The backend serialises `DependencyError` as JSON
+ * inside the error string; we parse it on the frontend so the UI can render
+ * inline messages keyed off `kind`. Falls back to a free-form message when
+ * the string isn't JSON. */
+export type DependencyValidationError =
+  | { kind: "NotFound"; details: string[] }
+  | { kind: "CrossPlan"; details: { offending_task_ids: string[]; own_plan_id: string } }
+  | { kind: "Cycle"; details: { path: string[] } }
+  | { kind: "SelfDependency"; details?: undefined }
+  | { kind: "Duplicate"; details: string[] }
+  | { kind: "Db"; details: string };
+
+export function parseDependencyError(
+  err: unknown,
+): DependencyValidationError | null {
+  if (typeof err !== "string") return null;
+  try {
+    const parsed = JSON.parse(err);
+    if (parsed && typeof parsed === "object" && "kind" in parsed) {
+      return parsed as DependencyValidationError;
+    }
+  } catch {
+    // not JSON — fall through
+  }
+  return null;
+}

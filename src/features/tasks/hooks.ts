@@ -1,6 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { tasksApi, type CreateTaskInput } from "./api";
-import type { AuditorVerdict, Task } from "./types";
+import {
+  tasksApi,
+  type CreateTaskInput,
+  type UpdateTaskPhaseConfigInput,
+} from "./api";
+import type { AuditorVerdict, PhaseType, Task } from "./types";
 
 export const taskKeys = {
   list: (planId: string) => ["task", "list", planId] as const,
@@ -86,5 +90,64 @@ export function useRetryWorktreeInit() {
 export function useSkipWorktreeInit() {
   return useMutation({
     mutationFn: (taskId: string) => tasksApi.skipWorktreeInit(taskId),
+  });
+}
+
+/**
+ * Mutation: change provider/model/permission mode for one phase of one task.
+ * Invalidates the task detail query on success so phase cards re-render with the
+ * new resolved config.
+ */
+export function useUpdateTaskPhaseConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateTaskPhaseConfigInput) =>
+      tasksApi.updatePhaseConfig(input),
+    onSuccess: (task) => {
+      qc.invalidateQueries({ queryKey: taskKeys.detail(task.id) });
+    },
+  });
+}
+
+/** Revert one phase of one task to the workspace default. */
+export function useResetTaskPhaseConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ taskId, phase }: { taskId: string; phase: PhaseType }) =>
+      tasksApi.resetPhaseConfig(taskId, phase),
+    onSuccess: (task) => {
+      qc.invalidateQueries({ queryKey: taskKeys.detail(task.id) });
+    },
+  });
+}
+
+/** Replace a task's `depends_on` list. Validation errors (cycle, cross-plan,
+ * missing) come back JSON-encoded as the error string — see
+ * `parseDependencyError` in types.ts to decode for inline UI. */
+export function useUpdateTaskDependencies() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      taskId,
+      dependsOn,
+    }: {
+      taskId: string;
+      dependsOn: string[];
+    }) => tasksApi.updateDependencies(taskId, dependsOn),
+    onSuccess: (task) => {
+      qc.invalidateQueries({ queryKey: taskKeys.detail(task.id) });
+      qc.invalidateQueries({ queryKey: taskKeys.list(task.plan_id) });
+    },
+  });
+}
+
+/** Cancel a queued task's queued state. */
+export function useUnqueueTask() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.unqueue(taskId),
+    onSuccess: (task) => {
+      qc.invalidateQueries({ queryKey: taskKeys.detail(task.id) });
+    },
   });
 }

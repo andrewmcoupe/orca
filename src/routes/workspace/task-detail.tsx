@@ -9,6 +9,10 @@ import { WorktreeSection } from "@/features/tasks/components/worktree-section";
 import { WorktreeInitSection } from "@/features/tasks/components/worktree-init-section";
 import { AuditorVerdictSection } from "@/features/tasks/components/auditor-verdict-section";
 import { TaskActionToolbar } from "@/features/tasks/components/task-action-toolbar";
+import {
+  BlockedByBadge,
+  DependenciesSection,
+} from "@/features/tasks/components/dependencies-section";
 import { useLatestMergeAttempt } from "@/features/tasks/merge-hooks";
 import { usePhaseRuns } from "@/features/phase-runs/hooks";
 import { PipelineCards } from "@/features/phase-runs/components/pipeline-cards";
@@ -86,6 +90,14 @@ function TaskDetailView({
                 {task.title}
               </h1>
               <TaskStatusBadge status={task.status} />
+              {task.is_blocked && (
+                <BlockedByBadge count={task.depends_on.length} />
+              )}
+              {task.is_queued && (
+                <span className="inline-flex items-center gap-1 rounded-sm border border-blue-500/30 bg-blue-500/10 px-1.5 py-px text-[10px] font-medium text-blue-900 dark:text-blue-200">
+                  Queued
+                </span>
+              )}
             </div>
             <TaskHeaderMeta task={task} />
           </ContentColumn>
@@ -109,6 +121,10 @@ function TaskDetailView({
           </section>
         ) : null}
 
+        <ContentColumn>
+          <DependenciesSection workspaceId={workspaceId} task={task} />
+        </ContentColumn>
+
         <AuditorVerdictSection taskId={task.id} />
 
         <WorktreeInitSection task={task} />
@@ -117,7 +133,8 @@ function TaskDetailView({
           <SectionLabel>Pipeline</SectionLabel>
           <PipelineCards
             workspaceId={workspaceId}
-            phaseConfig={task.phase_config}
+            taskId={task.id}
+            phaseConfig={task.current_phase_config}
             phaseRuns={runs}
           />
         </section>

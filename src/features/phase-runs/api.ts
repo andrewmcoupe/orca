@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { StartTaskResult } from "@/features/tasks/types";
 import type { PhaseRun, PhaseRunChunk } from "./types";
 
 export const phaseRunsApi = {
@@ -17,8 +18,11 @@ export const phaseRunsApi = {
     retryContext?: string | null;
     isRetryOf?: string | null;
   }) => invoke<string>("start_real_phase", params),
-  /** Pipeline entry point — starts the first phase from the task's phase_config. */
-  startTask: (taskId: string) => invoke<string>("start_task", { taskId }),
+  /** Pipeline entry point — starts the first phase from the task's phase_config,
+   * or queues the task if blocked. Pass `forceRun: true` to bypass the queue
+   * check (Brief 4: "Run anyway (ignore dependencies)" overflow option). */
+  startTask: (taskId: string, forceRun?: boolean) =>
+    invoke<StartTaskResult>("start_task", { taskId, forceRun: forceRun ?? false }),
   /** Dispatch a single phase using the task's resolved settings. Used for the
    *  toolbar's "Re-run auditor only" action so the user doesn't have to walk back
    *  through the prior phases. */

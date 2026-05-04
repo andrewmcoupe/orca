@@ -46,7 +46,8 @@ export function useStartRealPhase() {
 
 export function useStartTask() {
   return useMutation({
-    mutationFn: (taskId: string) => phaseRunsApi.startTask(taskId),
+    mutationFn: ({ taskId, forceRun }: { taskId: string; forceRun?: boolean }) =>
+      phaseRunsApi.startTask(taskId, forceRun ?? false),
   });
 }
 

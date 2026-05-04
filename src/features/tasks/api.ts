@@ -1,5 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AuditorVerdict, PhaseConfig, Task } from "./types";
+import type {
+  AuditorVerdict,
+  FileOverlap,
+  PermissionMode,
+  PhaseConfig,
+  PhaseType,
+  Task,
+} from "./types";
+
+export type UpdateTaskPhaseConfigInput = {
+  taskId: string;
+  phase: PhaseType;
+  provider: string;
+  model: string;
+  permissionMode: PermissionMode;
+};
 
 export type CreateTaskInput = {
   planId: string;
@@ -7,6 +22,8 @@ export type CreateTaskInput = {
   specMarkdown: string;
   /** Optional override; if absent, the task inherits the workspace default. */
   phaseConfig?: PhaseConfig;
+  /** Optional: declared dependencies on other tasks in the same plan. */
+  dependsOn?: string[];
 };
 
 export const tasksApi = {
@@ -19,7 +36,13 @@ export const tasksApi = {
       title: input.title,
       specMarkdown: input.specMarkdown,
       phaseConfig: input.phaseConfig ?? null,
+      dependsOn: input.dependsOn ?? null,
     }),
+  updateDependencies: (taskId: string, dependsOn: string[]) =>
+    invoke<Task>("update_task_dependencies", { taskId, dependsOn }),
+  unqueue: (taskId: string) => invoke<Task>("unqueue_task", { taskId }),
+  detectFileOverlap: (taskId: string) =>
+    invoke<FileOverlap[]>("detect_task_file_overlap", { taskId }),
   markMerged: (taskId: string, commitSha: string, mergeStrategy: string) =>
     invoke<void>("mark_task_merged", {
       taskId,
@@ -48,4 +71,14 @@ export const tasksApi = {
     invoke<void>("retry_worktree_init", { taskId }),
   skipWorktreeInit: (taskId: string) =>
     invoke<void>("skip_worktree_init", { taskId }),
+  updatePhaseConfig: (input: UpdateTaskPhaseConfigInput) =>
+    invoke<Task>("update_task_phase_config", {
+      taskId: input.taskId,
+      phase: input.phase,
+      provider: input.provider,
+      model: input.model,
+      permissionMode: input.permissionMode,
+    }),
+  resetPhaseConfig: (taskId: string, phase: PhaseType) =>
+    invoke<Task>("reset_task_phase_config", { taskId, phase }),
 };
