@@ -391,12 +391,15 @@ fn build_provider_options(provider: &dyn Provider, model: &str) -> serde_json::V
         if !model.is_empty() {
             map.insert("model".into(), serde_json::Value::String(model.into()));
         }
-        // Briefings explore the codebase but should not edit anything. plan-mode is the
-        // safest default; providers without a "plan" mode treat it as their nearest
-        // read-only equivalent.
+        // Briefings explore the codebase and produce structured JSON. We use
+        // `acceptEdits` — same as the auditor — because `plan` mode reroutes the
+        // model's answer through the ExitPlanMode tool call, which our text-stream
+        // collector doesn't see, so the JSON never arrives. The prompt itself
+        // never asks the model to edit anything; acceptEdits keeps the door open
+        // for read tools (which the model needs) without the plan-mode side effect.
         map.insert(
             "permission_mode".into(),
-            serde_json::Value::String("plan".into()),
+            serde_json::Value::String("acceptEdits".into()),
         );
         // The Claude provider clamps `bypassPermissions` for the auditor by inspecting
         // `phase`; we reuse the same hint so the briefing inherits the read-only clamp.

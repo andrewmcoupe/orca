@@ -3,6 +3,7 @@ import { ArrowLeft } from "@phosphor-icons/react";
 import { workspaceLayoutRoute } from "./layout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { ContentColumn } from "@/components/layout/content-column";
 import {
   useBriefing,
   useBriefingHistory,
@@ -34,7 +35,7 @@ function BriefingDetailPage() {
   };
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5 px-5 py-5">
+    <ContentColumn className="space-y-5 px-5 py-5">
       <header className="flex items-start justify-between gap-3">
         <div className="space-y-2">
           <Button
@@ -74,7 +75,7 @@ function BriefingDetailPage() {
       ) : (
         <BriefingTranscriptView entries={historyQ.data ?? []} />
       )}
-    </div>
+    </ContentColumn>
   );
 }
 

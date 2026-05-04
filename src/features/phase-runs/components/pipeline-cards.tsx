@@ -186,7 +186,7 @@ function PhaseCardRow({
           {!isPending && (
             <span
               className={cn(
-                "shrink-0 font-mono text-[9px] uppercase tracking-[0.08em]",
+                "shrink-0 text-[9px] uppercase tracking-[0.08em]",
                 STATUS_BADGE_STYLES[status as Exclude<PhaseStatus, "pending">],
               )}
             >

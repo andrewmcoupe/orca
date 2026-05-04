@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { ContentColumn } from "@/components/layout/content-column";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -293,7 +294,7 @@ export function BriefingReviewScreen({
   // ------------------------------------------------------------------ render
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 px-5 py-6 pb-32">
+    <ContentColumn className="space-y-6 px-5 py-6 pb-32">
       <Header
         title={merged.title}
         onTitleChange={setTitle}
@@ -307,7 +308,7 @@ export function BriefingReviewScreen({
           value={merged.description}
           onChange={(e) => setDescription(e.target.value)}
           rows={Math.max(4, merged.description.split("\n").length)}
-          className="font-mono text-sm leading-relaxed"
+          className="text-sm leading-relaxed"
         />
       </Section>
 
@@ -392,7 +393,7 @@ export function BriefingReviewScreen({
         onAccept={handleAccept}
         onCancel={handleCancel}
       />
-    </div>
+    </ContentColumn>
   );
 }
 
@@ -724,7 +725,7 @@ function ActionBar({
 }) {
   return (
     <div className="border-border bg-background/95 fixed inset-x-0 bottom-0 z-10 border-t backdrop-blur supports-[backdrop-filter]:bg-background/80">
-      <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 px-5 py-3">
+      <ContentColumn className="flex items-center justify-between gap-3 px-5 py-3">
         <Button
           type="button"
           variant="ghost"
@@ -761,7 +762,7 @@ function ActionBar({
             {working === "accepting" ? "Creating plan…" : "Accept and create plan"}
           </Button>
         </div>
-      </div>
+      </ContentColumn>
     </div>
   );
 }

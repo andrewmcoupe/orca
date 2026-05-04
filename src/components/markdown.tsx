@@ -9,32 +9,44 @@ import { cn } from "@/lib/utils";
  */
 const components: Components = {
   h1: ({ children }) => (
-    <h1 className="mt-4 mb-2 text-lg font-semibold first:mt-0">{children}</h1>
+    <h1 className="mt-4 mb-2 text-lg font-semibold font-body first:mt-0">
+      {children}
+    </h1>
   ),
   h2: ({ children }) => (
-    <h2 className="mt-4 mb-2 text-base font-semibold first:mt-0">{children}</h2>
+    <h2 className="mt-4 mb-2 text-base font-semibold font-body first:mt-0">
+      {children}
+    </h2>
   ),
   h3: ({ children }) => (
-    <h3 className="mt-3 mb-1.5 text-sm font-semibold first:mt-0">{children}</h3>
+    <h3 className="mt-3 mb-1.5 text-sm font-semibold font-body first:mt-0">
+      {children}
+    </h3>
   ),
   p: ({ children }) => (
-    <p className="my-2 text-sm leading-relaxed first:mt-0 last:mb-0">
+    <p className="my-2 text-xs leading-relaxed first:mt-0 font-body last:mb-0">
       {children}
     </p>
   ),
   ul: ({ children }) => (
-    <ul className="my-2 list-disc space-y-1 pl-5 text-sm">{children}</ul>
+    <ul className="my-2 list-disc space-y-1 pl-5 text-sm font-body">
+      {children}
+    </ul>
   ),
   ol: ({ children }) => (
-    <ol className="my-2 list-decimal space-y-1 pl-5 text-sm">{children}</ol>
+    <ol className="my-2 list-decimal space-y-1 pl-5 list-inside font-body">
+      {children}
+    </ol>
   ),
-  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  li: ({ children }) => (
+    <li className="leading-relaxed font-body">{children}</li>
+  ),
   a: ({ href, children }) => (
     <a
       href={href}
       target="_blank"
       rel="noreferrer"
-      className="text-primary underline-offset-2 hover:underline"
+      className="text-primary underline-offset-2 hover:underline font-body"
     >
       {children}
     </a>
@@ -44,8 +56,11 @@ const components: Components = {
     if (isBlock) {
       return <code className={className}>{children}</code>;
     }
+    // Subtle background tint visually groups inline code without making it
+    // heavier than the surrounding sans — solves the "lump" problem when a
+    // mono identifier sits inside a sans paragraph.
     return (
-      <code className="bg-muted text-foreground rounded-sm px-1 py-0.5 font-mono text-[0.85em]">
+      <code className="bg-muted/40 text-foreground rounded-sm px-1 py-0.5 font-mono text-[0.9em]">
         {children}
       </code>
     );
@@ -56,7 +71,7 @@ const components: Components = {
     </pre>
   ),
   blockquote: ({ children }) => (
-    <blockquote className="border-muted-foreground/30 text-muted-foreground my-2 border-l-2 pl-3">
+    <blockquote className="border-muted-foreground/30 text-muted-foreground my-2 border-l-2 pl-3 font-body">
       {children}
     </blockquote>
   ),

@@ -1,12 +1,6 @@
 import { Link, useMatches } from "@tanstack/react-router";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  ClipboardText,
-  Gear,
-  Info,
-  Plug,
-  Plus,
-} from "@phosphor-icons/react";
+import { ClipboardText, Gear, Info, Plug, Plus } from "@phosphor-icons/react";
 import {
   type ComponentProps,
   type ReactNode,
@@ -83,10 +77,8 @@ export function WorkspacesSidebar() {
 
   return (
     <aside className="bg-sidebar text-sidebar-foreground flex w-[220px] flex-shrink-0 flex-col border-r">
-      <div className="flex h-7 items-center justify-between pr-1 pl-2">
-        <span className="text-muted-foreground text-[10px] font-semibold uppercase tracking-[0.08em]">
-          Workspaces
-        </span>
+      <div className="flex h-7 items-center justify-between pr-1 pl-2 font-body text-sm">
+        <span className="text-muted-foreground ">Workspaces</span>
         <button
           type="button"
           onClick={onAdd}
@@ -121,12 +113,8 @@ export function WorkspacesSidebar() {
         )}
       </div>
       <nav className="flex flex-col py-1">
-        <SidebarGlobalLink to="/settings" icon={<Gear />}>
-          Settings
-        </SidebarGlobalLink>
-        <SidebarGlobalLink to="/" icon={<Info />}>
-          About
-        </SidebarGlobalLink>
+        <SidebarGlobalLink to="/settings">Settings</SidebarGlobalLink>
+        <SidebarGlobalLink to="/">About</SidebarGlobalLink>
       </nav>
     </aside>
   );
@@ -134,22 +122,17 @@ export function WorkspacesSidebar() {
 
 function SidebarGlobalLink({
   to,
-  icon,
   children,
 }: {
   to: ComponentProps<typeof Link>["to"];
-  icon: ReactNode;
   children: ReactNode;
 }) {
   return (
     <Link
       to={to}
-      className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-[20px] items-center gap-2 px-2 text-[11px] no-underline transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
+      className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-[20px] items-center gap-2 px-2 text-sm font-body no-underline transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
       activeOptions={{ exact: true }}
     >
-      <span className="text-muted-foreground/80 inline-flex size-3 items-center justify-center">
-        {icon}
-      </span>
       {children}
     </Link>
   );
@@ -179,22 +162,23 @@ function WorkspaceItem({
       ),
     [plansQ.data],
   );
-  const installedProviders = (providers.data ?? []).filter((p) => p.installed)
-    .length;
+  const installedProviders = (providers.data ?? []).filter(
+    (p) => p.installed,
+  ).length;
   const totalProviders = providers.data?.length ?? null;
 
   return (
     <AccordionItem
       value={workspace.id}
       className={cn(
-        "border-b-0",
+        "border-b-0 font-body",
         isActive && "border-l-primary border-l-2",
       )}
     >
       <AccordionTrigger
         className={cn(
           // Override the UI primitive defaults so the row sits at ~22px.
-          "h-[22px] items-center px-2 py-0 text-[12px] font-normal hover:no-underline",
+          "h-[22px] items-center px-2 py-4 text-sm font-normal hover:no-underline",
           "**:data-[slot=accordion-trigger-icon]:size-[10px] **:data-[slot=accordion-trigger-icon]:opacity-70",
           isActive && "font-medium",
         )}
@@ -219,7 +203,6 @@ function WorkspaceItem({
             className={navLinkClass}
           >
             <NavRowContent
-              icon={<ClipboardText />}
               label="Plans"
               count={planCount !== null ? String(planCount) : null}
             />
@@ -231,7 +214,6 @@ function WorkspaceItem({
             className={navLinkClass}
           >
             <NavRowContent
-              icon={<Plug />}
               label="Providers"
               count={
                 totalProviders !== null
@@ -246,7 +228,7 @@ function WorkspaceItem({
             onClick={onNavigate}
             className={navLinkClass}
           >
-            <NavRowContent icon={<Gear />} label="Settings" />
+            <NavRowContent label="Settings" />
           </Link>
         </div>
       </AccordionContent>
@@ -255,22 +237,17 @@ function WorkspaceItem({
 }
 
 const navLinkClass =
-  "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-[20px] items-center gap-2 pl-[14px] pr-2 text-[11px] no-underline transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground [&.active]:font-medium";
+  "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-[20px] items-center gap-2 pl-[14px] pr-2 text-sm transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground [&.active]:font-medium";
 
 function NavRowContent({
-  icon,
   label,
   count,
 }: {
-  icon: ReactNode;
   label: string;
   count?: string | null;
 }) {
   return (
     <>
-      <span className="text-muted-foreground/70 inline-flex size-3 items-center justify-center">
-        {icon}
-      </span>
       <span className="flex-1 truncate">{label}</span>
       {count !== undefined && count !== null && (
         <span className="text-muted-foreground/70 text-[10px] tabular-nums">

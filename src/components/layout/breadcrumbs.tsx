@@ -73,7 +73,7 @@ export function WorkspaceBreadcrumbs({
   return (
     <nav
       aria-label="Breadcrumb"
-      className="text-muted-foreground flex items-center gap-1.5 font-mono text-[11px]"
+      className="text-muted-foreground flex items-center gap-1.5 font-body text-[11px]"
     >
       {crumbs.map((c, i) => (
         <Fragment key={c.key}>

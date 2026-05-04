@@ -40,7 +40,7 @@ export function UnchangedConcernsSection({ taskId, concerns }: Props) {
 
   return (
     <section className="border-t">
-      <div className="bg-muted/20 text-muted-foreground/80 sticky top-0 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.06em]">
+      <div className="bg-muted/20 text-muted-foreground/80 sticky top-0 px-2.5 py-1.5 text-[10px] uppercase tracking-[0.06em]">
         Unchanged with concerns ({byPath.size})
       </div>
       <TooltipProvider delay={150}>
@@ -159,7 +159,7 @@ function FileSnippets({
                       />
                       <TooltipContent side="left" className="max-w-sm">
                         <div className="space-y-1 text-left">
-                          <div className="font-mono text-[10px] uppercase tracking-[0.06em] text-zinc-300">
+                          <div className="text-[10px] uppercase tracking-[0.06em] text-zinc-300">
                             {c.concern.severity} · {c.concern.category}
                           </div>
                           <p className="text-[11px] text-zinc-100">

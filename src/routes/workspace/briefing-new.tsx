@@ -2,6 +2,7 @@ import { createRoute, useNavigate, useParams, useSearch } from "@tanstack/react-
 import { useEffect, useState } from "react";
 import { z } from "zod";
 import { workspaceLayoutRoute } from "./layout";
+import { ContentColumn } from "@/components/layout/content-column";
 import { BriefingSetupScreen } from "@/features/briefings/components/setup-screen";
 import { BriefingReviewScreen } from "@/features/briefings/components/review-screen";
 import {
@@ -50,18 +51,18 @@ function BriefingNewPage() {
   // the start_briefing call and the projection updating). Show a placeholder.
   if (!briefing || !briefing.current_draft) {
     return (
-      <div className="mx-auto max-w-3xl px-5 py-12">
+      <ContentColumn className="px-5 py-12">
         <div className="border-border bg-muted/30 flex items-center gap-3 rounded-md border p-4">
           <span className="border-foreground/20 border-t-foreground inline-block h-3 w-3 animate-spin rounded-full border-2" />
           <p className="text-sm">Preparing your briefing…</p>
         </div>
-      </div>
+      </ContentColumn>
     );
   }
 
   if (briefing.status !== "active") {
     return (
-      <div className="mx-auto max-w-3xl px-5 py-12">
+      <ContentColumn className="px-5 py-12">
         <p className="text-sm">
           This briefing is {briefing.status}.{" "}
           <button
@@ -72,7 +73,7 @@ function BriefingNewPage() {
             Back to plans
           </button>
         </p>
-      </div>
+      </ContentColumn>
     );
   }
 

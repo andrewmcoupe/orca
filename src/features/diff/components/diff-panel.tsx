@@ -68,33 +68,36 @@ export function DiffPanel({ workspaceId, taskId, onOpenModal }: Props) {
     }
   }, [workspaceId, collapsed]);
 
-  const onResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = width;
-    const onMove = (ev: MouseEvent) => {
-      // The handle is on the left edge: dragging left widens the panel.
-      const delta = startX - ev.clientX;
-      const next = clamp(startW + delta, MIN_WIDTH, MAX_WIDTH);
-      setWidth(next);
-    };
-    const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  }, [width]);
+  const onResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = width;
+      const onMove = (ev: MouseEvent) => {
+        // The handle is on the left edge: dragging left widens the panel.
+        const delta = startX - ev.clientX;
+        const next = clamp(startW + delta, MIN_WIDTH, MAX_WIDTH);
+        setWidth(next);
+      };
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    },
+    [width],
+  );
 
   const effectiveWidth = collapsed ? COLLAPSED_WIDTH : width;
 
   return (
     <aside
-      className="bg-background sticky top-0 self-start flex shrink-0 border-l"
+      className="bg-card sticky top-0 self-start flex shrink-0 border-l"
       style={{
         width: effectiveWidth,
         // The workspace layout's header is h-7 (1.75rem). Subtract it so the
@@ -117,7 +120,7 @@ export function DiffPanel({ workspaceId, taskId, onOpenModal }: Props) {
           onOpenModal={onOpenModal}
         />
       ) : (
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 flex-1 flex-col bg-card">
           <PanelHeader
             data={diffQ.data}
             isFetching={diffQ.isFetching || refresh.isPending}
@@ -154,7 +157,7 @@ function CollapsedRail({
       >
         <ArrowsOutSimple className="size-3.5" />
         <span
-          className="font-mono text-[10px] uppercase tracking-[0.16em]"
+          className="text-[10px] uppercase tracking-[0.16em]"
           style={{ writingMode: "vertical-rl" }}
         >
           Diff
@@ -169,7 +172,7 @@ function CollapsedRail({
         >
           <CaretRight className="size-3.5" />
           <span
-            className="font-mono text-[10px] uppercase tracking-[0.16em]"
+            className="text-[10px] uppercase tracking-[0.16em]"
             style={{ writingMode: "vertical-rl" }}
           >
             Review
@@ -201,7 +204,7 @@ function PanelHeader({
   return (
     <div className="bg-background sticky top-0 z-[1] border-b">
       <div className="flex items-center gap-1.5 px-2.5 py-1.5">
-        <span className="text-muted-foreground/70 font-mono text-[10px] font-medium uppercase tracking-[0.08em]">
+        <span className="text-muted-foreground/70 text-[10px] font-medium uppercase tracking-[0.08em]">
           Diff
         </span>
         <span className="text-muted-foreground font-mono text-[10px] tabular-nums">
@@ -226,7 +229,7 @@ function PanelHeader({
               variant="ghost"
               title="Review in modal"
               onClick={onOpenModal}
-              className="h-6 gap-1 px-1.5 font-mono text-[10px] uppercase tracking-[0.08em]"
+              className="h-6 gap-1 px-1.5 text-[10px] uppercase tracking-[0.08em]"
             >
               Review
               <CaretRight className="size-3" />
@@ -312,9 +315,7 @@ function PanelBody({
   }
 
   if (data.diff.files.length === 0 && unchangedConcernsOf(data).length === 0) {
-    return (
-      <div className="text-muted-foreground p-4 text-xs">No changes.</div>
-    );
+    return <div className="text-muted-foreground p-4 text-xs">No changes.</div>;
   }
 
   // Index concerns by file so each section can render its own anchors.
@@ -331,10 +332,7 @@ function PanelBody({
         />
       ))}
       {unchanged.length > 0 && (
-        <UnchangedConcernsSection
-          taskId={taskId}
-          concerns={unchanged}
-        />
+        <UnchangedConcernsSection taskId={taskId} concerns={unchanged} />
       )}
     </div>
   );
@@ -368,7 +366,12 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
-function readNumber(key: string, fallback: number, lo: number, hi: number): number {
+function readNumber(
+  key: string,
+  fallback: number,
+  lo: number,
+  hi: number,
+): number {
   try {
     const raw = window.localStorage.getItem(key);
     const n = raw == null ? NaN : Number(raw);
@@ -440,4 +443,3 @@ function unchangedConcernsOf(data: TaskDiffWithMappings): MappedConcern[] {
     (m) => m.mapping.kind === "file_not_in_diff",
   );
 }
-

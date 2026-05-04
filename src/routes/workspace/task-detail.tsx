@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createRoute, useParams } from "@tanstack/react-router";
 import { GitDiff, GitMerge, Play } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { ContentColumn } from "@/components/layout/content-column";
 import { Markdown } from "@/components/markdown";
 import { workspaceLayoutRoute } from "./layout";
 import { useTask } from "@/features/tasks/hooks";
@@ -76,110 +77,115 @@ function TaskDetailView({
   return (
     <div className="flex min-h-full">
       <div className="min-w-0 flex-1 space-y-7 px-5 py-4">
-      <header className="space-y-2">
-        <div className="flex items-start gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate text-[20px] font-medium tracking-tight">
-                {task.title}
-              </h1>
-              <TaskStatusBadge status={task.status} />
+        <header className="space-y-2">
+          <div className="flex items-start gap-3">
+            <ContentColumn className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="truncate text-[20px] font-medium font-body">
+                  {task.title}
+                </h1>
+                <TaskStatusBadge status={task.status} />
+              </div>
+              <TaskHeaderMeta task={task} />
+            </ContentColumn>
+            <div className="flex items-center gap-1.5">
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1"
+                onClick={() => {
+                  setModalConcernIdx(undefined);
+                  setModalOpen(true);
+                }}
+                title="Open the diff modal — full-window side-by-side review"
+              >
+                <GitDiff className="size-3" />
+                Review diff
+              </Button>
+              <TaskActionArea task={task} />
             </div>
-            <TaskHeaderMeta task={task} />
           </div>
-          <div className="flex items-center gap-1.5">
-            <Button
-              size="sm"
-              variant="outline"
-              className="gap-1"
-              onClick={() => {
-                setModalConcernIdx(undefined);
-                setModalOpen(true);
-              }}
-              title="Open the diff modal — full-window side-by-side review"
-            >
-              <GitDiff className="size-3" />
-              Review diff
-            </Button>
-            <TaskActionArea task={task} />
-          </div>
-        </div>
-        {task.cancel_reason && (
-          <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 font-mono text-[11px]">
-            <span className="font-medium">Cancelled:</span> {task.cancel_reason}
-          </p>
-        )}
-        <MergeAttemptInline taskId={task.id} task={task} />
-      </header>
+          {task.cancel_reason && (
+            <ContentColumn>
+              <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-[11px]">
+                <span className="font-medium">Cancelled:</span>{" "}
+                {task.cancel_reason}
+              </p>
+            </ContentColumn>
+          )}
+          <MergeAttemptInline taskId={task.id} task={task} />
+        </header>
 
-      {task.spec_markdown.trim() ? (
-        <section className="space-y-2">
-          <SectionLabel>Spec</SectionLabel>
-          <div className="bg-muted/20 border p-3">
-            <Markdown>{task.spec_markdown}</Markdown>
+        {task.spec_markdown.trim() ? (
+          <section className="space-y-2">
+            <SectionLabel>Spec</SectionLabel>
+            <ContentColumn className="bg-muted/20 border p-1">
+              <Markdown className="text-xs">{task.spec_markdown}</Markdown>
+            </ContentColumn>
+          </section>
+        ) : null}
+
+        <AuditorVerdictSection taskId={task.id} />
+
+        <WorktreeInitSection task={task} />
+
+        <section className="space-y-2.5">
+          <div className="flex items-center justify-between">
+            <SectionLabel>Pipeline</SectionLabel>
+            <div className="flex items-center gap-1.5">
+              <Button
+                size="xs"
+                onClick={() => startTask.mutate(task.id)}
+                disabled={startTask.isPending || anyRunning}
+                className="gap-1"
+              >
+                <Play className="size-3" />
+                {anyRunning
+                  ? "Running…"
+                  : runs.length === 0
+                    ? "Start pipeline"
+                    : "Restart"}
+              </Button>
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={() =>
+                  startFake.mutate({ taskId: task.id, phase: "implementer" })
+                }
+                disabled={startFake.isPending}
+              >
+                Run (fake)
+              </Button>
+            </div>
           </div>
+          {(startFake.error || startTask.error) && (
+            <p className="text-destructive text-[11px]">
+              {String(startFake.error ?? startTask.error)}
+            </p>
+          )}
+          <PipelineCards
+            workspaceId={workspaceId}
+            phaseConfig={task.phase_config}
+            phaseRuns={runs}
+          />
         </section>
-      ) : null}
 
-      <AuditorVerdictSection taskId={task.id} />
+        <section className="space-y-2.5">
+          <SectionLabel>Audit trail</SectionLabel>
+          <ContentColumn className="space-y-2.5">
+            <TaskEventList workspaceId={workspaceId} taskId={task.id} />
+            {phaseRuns.isLoading ? (
+              <p className="text-muted-foreground text-[11px]">Loading…</p>
+            ) : (
+              <PhaseRunsTrail phaseRuns={runs} />
+            )}
+          </ContentColumn>
+        </section>
 
-      <WorktreeInitSection task={task} />
-
-      <section className="space-y-2.5">
-        <div className="flex items-center justify-between">
-          <SectionLabel>Pipeline</SectionLabel>
-          <div className="flex items-center gap-1.5">
-            <Button
-              size="xs"
-              onClick={() => startTask.mutate(task.id)}
-              disabled={startTask.isPending || anyRunning}
-              className="gap-1"
-            >
-              <Play className="size-3" />
-              {anyRunning
-                ? "Running…"
-                : runs.length === 0
-                  ? "Start pipeline"
-                  : "Restart"}
-            </Button>
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() =>
-                startFake.mutate({ taskId: task.id, phase: "implementer" })
-              }
-              disabled={startFake.isPending}
-            >
-              Run (fake)
-            </Button>
-          </div>
-        </div>
-        {(startFake.error || startTask.error) && (
-          <p className="text-destructive text-[11px]">
-            {String(startFake.error ?? startTask.error)}
-          </p>
-        )}
-        <PipelineCards
-          workspaceId={workspaceId}
-          phaseConfig={task.phase_config}
-          phaseRuns={runs}
-        />
-      </section>
-
-      <section className="space-y-2.5">
-        <SectionLabel>Audit trail</SectionLabel>
-        <TaskEventList workspaceId={workspaceId} taskId={task.id} />
-        {phaseRuns.isLoading ? (
-          <p className="text-muted-foreground text-[11px]">Loading…</p>
-        ) : (
-          <PhaseRunsTrail phaseRuns={runs} />
-        )}
-      </section>
-
-      <section className="space-y-2.5">
-        <SectionLabel>Worktree</SectionLabel>
-        <WorktreeSection task={task} />
-      </section>
+        <section className="space-y-2.5">
+          <SectionLabel>Worktree</SectionLabel>
+          <WorktreeSection task={task} />
+        </section>
       </div>
       <DiffPanel
         workspaceId={workspaceId}
@@ -202,7 +208,7 @@ function TaskDetailView({
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <h2 className="text-muted-foreground/70 font-mono text-[10px] font-medium uppercase tracking-[0.08em]">
+    <h2 className="text-muted-foreground/70 text-[10px] font-medium uppercase tracking-[0.08em]">
       {children}
     </h2>
   );
@@ -210,19 +216,21 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 function TaskHeaderMeta({ task }: { task: Task }) {
   if (task.status === "merged" && task.merged_commit_sha) {
+    // Mixed register: prose ("Merged into … as … · 13h ago") in sans, the
+    // branch name and SHA in mono since they're code.
     return (
-      <p className="text-muted-foreground mt-1 font-mono text-[11px] tabular-nums">
+      <p className="text-muted-foreground mt-1 text-[11px] tabular-nums">
         Merged into{" "}
-        <code>{task.merge_target_branch ?? "main"}</code>{" "}
+        <code className="font-mono">
+          {task.merge_target_branch ?? "main"}
+        </code>{" "}
         as <CopyableSha sha={task.merged_commit_sha} />
-        {task.merged_at != null && (
-          <> · {formatRelativeTime(task.merged_at)}</>
-        )}
+        {task.merged_at != null && <> · {formatRelativeTime(task.merged_at)}</>}
       </p>
     );
   }
   return (
-    <p className="text-muted-foreground mt-1 font-mono text-[11px] tabular-nums">
+    <p className="text-muted-foreground text-[11px] tabular-nums">
       Updated {formatRelativeTime(task.updated_at)}
     </p>
   );
@@ -295,13 +303,7 @@ function TaskActionArea({ task }: { task: Task }) {
  * user remembers there's a conflict blocking the merge. We hide it once the task is
  * actually merged — the merge succeeded, the past attempt is no longer actionable.
  */
-function MergeAttemptInline({
-  taskId,
-  task,
-}: {
-  taskId: string;
-  task: Task;
-}) {
+function MergeAttemptInline({ taskId, task }: { taskId: string; task: Task }) {
   const attempt = useLatestMergeAttempt(taskId);
   if (task.status === "merged") return null;
   if (!attempt.data) return null;
@@ -311,13 +313,20 @@ function MergeAttemptInline({
 
   const a = attempt.data;
   const truncated = a.conflicts.slice(0, 3).join(", ");
-  const more = a.conflicts.length > 3 ? `, +${a.conflicts.length - 3} more` : "";
+  const more =
+    a.conflicts.length > 3 ? `, +${a.conflicts.length - 3} more` : "";
   return (
-    <p className="border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200 border px-3 py-2 text-xs">
-      Last merge attempt blocked by conflicts{" "}
-      {formatRelativeTime(a.attempted_at)}. {a.conflicts.length} file
-      {a.conflicts.length === 1 ? "" : "s"}: <code className="font-mono">{truncated}{more}</code>
-    </p>
+    <ContentColumn>
+      <p className="border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200 border px-3 py-2 text-xs">
+        Last merge attempt blocked by conflicts{" "}
+        {formatRelativeTime(a.attempted_at)}. {a.conflicts.length} file
+        {a.conflicts.length === 1 ? "" : "s"}:{" "}
+        <code className="bg-amber-500/15 rounded-sm px-1 py-0.5 font-mono text-[0.9em]">
+          {truncated}
+          {more}
+        </code>
+      </p>
+    </ContentColumn>
   );
 }
 

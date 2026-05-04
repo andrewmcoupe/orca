@@ -1,7 +1,13 @@
-import { createRoute, Link, useNavigate, useParams } from "@tanstack/react-router";
+import {
+  createRoute,
+  Link,
+  useNavigate,
+  useParams,
+} from "@tanstack/react-router";
 import { Sparkle } from "@phosphor-icons/react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { ContentColumn } from "@/components/layout/content-column";
 import { Markdown } from "@/components/markdown";
 import { workspaceLayoutRoute } from "./layout";
 import { usePlan } from "@/features/plans/hooks";
@@ -46,44 +52,51 @@ function PlanDetailView({
       <header className="space-y-3">
         <div className="flex items-start gap-3">
           <PlanSourceIcon source={plan.source} className="mt-1.5 size-5" />
-          <div className="min-w-0 flex-1">
+          <ContentColumn className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h1 className="truncate text-[20px] font-medium tracking-tight">
+              <h1 className="truncate text-[20px] font-medium tracking-tight font-body">
                 {plan.title}
               </h1>
               <PlanStatusBadge status={plan.status} />
             </div>
-            <p className="text-muted-foreground mt-1 text-xs tabular-nums">
+            <p className="text-muted-foreground text-xs tabular-nums font-body">
               Updated {formatRelativeTime(plan.updated_at)} · Created{" "}
               {formatRelativeTime(plan.created_at)}
             </p>
             <BriefingProvenance plan={plan} workspaceId={workspaceId} />
-          </div>
+          </ContentColumn>
           <PlanActions plan={plan} />
         </div>
         {plan.pause_reason && (
-          <p className="bg-amber-500/10 text-amber-800 dark:text-amber-200 border border-amber-500/30 px-3 py-2 text-xs">
-            <span className="font-medium">Paused:</span> {plan.pause_reason}
-          </p>
+          <ContentColumn>
+            <p className="bg-amber-500/10 text-amber-800 dark:text-amber-200 border border-amber-500/30 px-3 py-2 text-xs">
+              <span className="font-medium">Paused:</span> {plan.pause_reason}
+            </p>
+          </ContentColumn>
         )}
         {plan.cancel_reason && (
-          <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-xs">
-            <span className="font-medium">Cancelled:</span> {plan.cancel_reason}
-          </p>
+          <ContentColumn>
+            <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-xs">
+              <span className="font-medium">Cancelled:</span>{" "}
+              {plan.cancel_reason}
+            </p>
+          </ContentColumn>
         )}
       </header>
 
       {plan.description.trim() ? (
         <section>
-          <Markdown>{plan.description}</Markdown>
+          <ContentColumn>
+            <Markdown>{plan.description}</Markdown>
+          </ContentColumn>
         </section>
       ) : null}
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          <h2 className="text-muted-foreground text-[10px] font-medium uppercase tracking-[0.08em]">
             Tasks{" "}
-            <span className="text-muted-foreground/70 font-normal tabular-nums">
+            <span className="text-muted-foreground/70 font-mono tabular-nums">
               {plan.task_count}
             </span>
           </h2>
@@ -159,7 +172,7 @@ function BriefingProvenance({
       <Link
         to="/workspace/$workspaceId/briefings/$briefingId"
         params={{ workspaceId, briefingId }}
-        className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-[11px] hover:underline"
+        className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-[11px] hover:underline font-body"
       >
         <Sparkle className="size-3" weight="fill" />
         Created from briefing

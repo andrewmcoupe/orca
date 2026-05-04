@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { ContentColumn } from "@/components/layout/content-column";
 import { cn } from "@/lib/utils";
 import { diffModalController } from "@/features/diff/modal-controller";
 import {
@@ -73,22 +74,25 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
 
   return (
     <section className="space-y-2">
-      <h2 className="text-muted-foreground/70 font-mono text-[10px] font-medium uppercase tracking-[0.08em]">
+      <h2 className="text-muted-foreground/70 text-[10px] font-medium uppercase tracking-[0.08em]">
         Auditor verdict
       </h2>
-      <div className="bg-muted/20 space-y-2.5 border p-[14px]">
+      <ContentColumn className="bg-muted/20 space-y-2.5 border p-[14px]">
         <div className="flex flex-wrap items-center gap-2">
           <Badge
             variant="outline"
             className={cn(
-              "h-[18px] rounded-sm border px-2 font-mono text-[10px] font-medium uppercase tracking-[0.08em]",
+              "h-[18px] rounded-sm border px-2 text-[10px] font-medium uppercase tracking-[0.08em]",
               VERDICT_STYLES[kind] ?? VERDICT_STYLES.revise,
             )}
           >
             {String(v.verdict)}
           </Badge>
-          <span className="text-muted-foreground font-mono text-[11px] tabular-nums">
-            confidence {Math.round(v.confidence * 100)}%
+          <span className="text-muted-foreground text-[11px] tabular-nums">
+            confidence{" "}
+            <span className="font-mono">
+              {Math.round(v.confidence * 100)}%
+            </span>
           </span>
         </div>
         {v.summary.trim() && (
@@ -170,7 +174,7 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
             </div>
           </div>
         )}
-      </div>
+      </ContentColumn>
     </section>
   );
 }
@@ -195,7 +199,7 @@ function ConcernRow({
       <Badge
         variant="outline"
         className={cn(
-          "mt-[3px] h-[16px] shrink-0 rounded-sm border px-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em]",
+          "mt-[3px] h-[16px] shrink-0 rounded-sm border px-1.5 text-[10px] font-medium uppercase tracking-[0.06em]",
           SEVERITY_STYLES[concern.severity] ?? SEVERITY_STYLES.advisory,
         )}
       >

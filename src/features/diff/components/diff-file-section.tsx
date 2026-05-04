@@ -78,7 +78,7 @@ export function DiffFileSection({ file, concerns, defaultOpen = true }: Props) {
         </span>
         <span
           className={cn(
-            "ml-auto rounded-sm border px-1 font-mono text-[9px] font-medium uppercase tracking-[0.06em]",
+            "ml-auto rounded-sm border px-1 text-[9px] font-medium uppercase tracking-[0.06em]",
             STATUS_STYLE[file.status],
           )}
         >
@@ -247,7 +247,7 @@ function ConcernPopover({ concern }: { concern: ConcernOnFile }) {
       <div className="flex items-center gap-1.5">
         <span
           className={cn(
-            "rounded-sm px-1 font-mono text-[9px] font-medium uppercase tracking-[0.06em]",
+            "rounded-sm px-1 text-[9px] font-medium uppercase tracking-[0.06em]",
             c.severity === "blocking"
               ? "bg-red-500 text-white"
               : "bg-amber-500 text-black",
@@ -255,7 +255,7 @@ function ConcernPopover({ concern }: { concern: ConcernOnFile }) {
         >
           {c.severity}
         </span>
-        <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-zinc-300">
+        <span className="text-[10px] uppercase tracking-[0.06em] text-zinc-300">
           {c.category}
         </span>
       </div>
@@ -273,7 +273,7 @@ function UnchangedAnchorsInFile({
 }) {
   return (
     <div className="border-t bg-muted/10 py-1">
-      <div className="text-muted-foreground/80 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.06em]">
+      <div className="text-muted-foreground/80 px-3 py-1 text-[10px] uppercase tracking-[0.06em]">
         Concerns on unchanged lines
       </div>
       {concerns.map((c, i) => {

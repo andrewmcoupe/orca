@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { ContentColumn } from "@/components/layout/content-column";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -102,7 +103,7 @@ export function BriefingSetupScreen({
   };
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 px-5 py-8">
+    <ContentColumn className="space-y-6 px-5 py-8">
       <header className="space-y-1">
         <h1 className="text-xl font-medium tracking-tight">New briefing</h1>
         <p className="text-muted-foreground text-sm">
@@ -123,7 +124,7 @@ export function BriefingSetupScreen({
             placeholder="Describe the feature you want to build. Be as vague or detailed as you like — the model will ask itself the right questions."
             rows={10}
             disabled={phase !== "idle"}
-            className="font-mono text-sm leading-relaxed"
+            className="text-sm leading-relaxed"
           />
           <p className="text-muted-foreground text-xs">
             {description.trim().length} characters
@@ -221,6 +222,6 @@ export function BriefingSetupScreen({
           </Button>
         </div>
       </form>
-    </div>
+    </ContentColumn>
   );
 }

@@ -217,8 +217,23 @@ async fn run_and_record_generation(
     )
     .await
     .map_err(|e| match e {
-        BriefingError::ParseFailed { last_error, .. } => {
-            format!("model output could not be parsed as JSON: {}", last_error)
+        BriefingError::ParseFailed { last_error, last_output } => {
+            // Include a leading snippet of what the model actually said so the UI shows
+            // something more useful than "expected value at line 1 column 1". Trim hard
+            // because the textarea will render the full string verbatim.
+            let snippet = last_output
+                .chars()
+                .take(400)
+                .collect::<String>();
+            let suffix = if last_output.chars().count() > 400 {
+                "…"
+            } else {
+                ""
+            };
+            format!(
+                "model output could not be parsed as JSON: {}\n\nModel said:\n{}{}",
+                last_error, snippet, suffix
+            )
         }
         other => other.to_string(),
     })?;
