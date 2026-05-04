@@ -954,11 +954,32 @@ pub fn create_task(
     title: String,
     spec_markdown: String,
     phase_config: Option<serde_json::Value>,
+    depends_on: Option<Vec<String>>,
     global: State<'_, GlobalDb>,
     active: State<'_, ActiveWorkspaceState>,
 ) -> Result<projections::TaskProjection, String> {
     let task_id = format!("task_{}", Ulid::new());
     let workspace_id;
+    let depends_on = depends_on.unwrap_or_default();
+
+    // Validate proposed dependencies before we touch the event store. Cycle
+    // detection at create time is mostly defensive — a brand-new task can't
+    // be in any cycle by definition since nobody else points at it yet —
+    // but the same validator catches missing-id and cross-plan errors that
+    // are very real.
+    if !depends_on.is_empty() {
+        let guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = guard
+            .as_ref()
+            .ok_or_else(|| "no active workspace".to_string())?;
+        crate::dependencies::validate_dependencies(
+            &aw.conn,
+            &task_id,
+            &plan_id,
+            &depends_on,
+        )
+        .map_err(|e| serde_json::to_string(&e).unwrap_or_else(|_| e.to_string()))?;
+    }
 
     // Resolve phase_config at create time. Per-task override wins; otherwise inherit
     // the workspace default (from the workspace's stored settings, parsed tolerantly).
@@ -997,6 +1018,7 @@ pub fn create_task(
             "title": title,
             "spec_markdown": spec_markdown,
             "phase_config": resolved_phase_config,
+            "depends_on": depends_on,
         })
         .to_string();
 
@@ -1008,7 +1030,7 @@ pub fn create_task(
             0,
             vec![NewEvent {
                 event_type: "TaskCreated".into(),
-                version: 3,
+                version: 4,
                 payload,
             }],
             &make_metadata("user:local"),
@@ -1114,6 +1136,19 @@ pub fn list_models(provider_id: String) -> Result<Vec<KnownModel>, String> {
     Ok(p.known_models())
 }
 
+/// Permission modes the named provider supports for `phase`. Returned as snake-case
+/// strings matching `PermissionMode::as_str` so the frontend can use them directly
+/// as option values. Unknown providers fall back to the universal availability matrix.
+#[tauri::command]
+pub fn list_permission_modes(provider_id: String, phase: String) -> Result<Vec<String>, String> {
+    let phase_typed = PhaseType::parse(&phase)
+        .ok_or_else(|| format!("invalid phase: {}", phase))?;
+    Ok(providers::available_permission_modes(&provider_id, phase_typed)
+        .into_iter()
+        .map(|m| m.as_str().to_string())
+        .collect())
+}
+
 // ======================================================================
 // Phase commands
 // ======================================================================
@@ -1189,7 +1224,10 @@ pub async fn start_real_phase(
         let task = projections::get_task(&aw.conn, &task_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("task not found: {}", task_id))?;
-        let cfg: PhaseConfig = serde_json::from_value(task.phase_config.clone())
+        // Resolve from `current_phase_config` so user edits via
+        // `TaskPhaseConfigChanged` take effect on the next run; the original
+        // `phase_config` snapshot is preserved on the task for audit only.
+        let cfg: PhaseConfig = serde_json::from_value(task.current_phase_config.clone())
             .unwrap_or_else(|_| PhaseConfig::bundled_default());
         (task.spec_markdown, task.title, cfg)
     };
@@ -1197,8 +1235,12 @@ pub async fn start_real_phase(
     // Resolve provider/model/permission_mode from settings; caller-supplied options
     // win where present (e.g. the legacy run-real form lets the user pick ad-hoc).
     let workspace_settings = crate::pipeline::load_workspace_settings(&app, &workspace_id);
-    let resolved =
-        settings::resolve_phase_settings(&workspace_settings, &task_phase_config, phase_typed);
+    let resolved = settings::resolve_phase_settings_with(
+        &workspace_settings,
+        &task_phase_config,
+        phase_typed,
+        |pid| providers::available_permission_modes(pid, phase_typed),
+    );
 
     let caller_options = options.unwrap_or_else(|| json!({}));
     let provider_id = provider_id
@@ -1207,13 +1249,15 @@ pub async fn start_real_phase(
     let provider = providers::get(&provider_id)
         .ok_or_else(|| format!("unknown provider: {}", provider_id))?;
 
-    // Final permission_mode = caller override (if valid for the phase) > resolved.
-    // Auditor clamp applies last so `bypassPermissions` can never reach the runner.
+    // Final permission_mode = caller override (if the chosen provider accepts it for
+    // this phase) > resolved. Auditor clamp applies last so `bypassPermissions` can
+    // never reach the runner.
+    let provider_modes = providers::available_permission_modes(&provider_id, phase_typed);
     let permission_mode = caller_options
         .get("permission_mode")
         .and_then(|v| v.as_str())
         .and_then(PermissionMode::parse)
-        .filter(|m| m.is_available_for(phase_typed))
+        .filter(|m| provider_modes.contains(m))
         .unwrap_or(resolved.permission_mode)
         .clamp_for(phase_typed);
 
@@ -1378,10 +1422,17 @@ fn merge_options(
     defaults
 }
 
-/// Pipeline entry point: start the first phase configured on this task.
+/// Pipeline entry point: start the first phase configured on this task,
+/// or queue the task if it has unmet dependencies. Set `force_run` true
+/// to bypass the dependency check (the toolbar's "Run anyway (ignore
+/// dependencies)" overflow option).
 #[tauri::command]
-pub async fn start_task(app: AppHandle, task_id: String) -> Result<String, String> {
-    crate::pipeline::start_task(app, task_id)
+pub async fn start_task(
+    app: AppHandle,
+    task_id: String,
+    force_run: Option<bool>,
+) -> Result<crate::pipeline::StartTaskResult, String> {
+    crate::pipeline::start_task(app, task_id, force_run.unwrap_or(false))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1408,11 +1459,84 @@ pub async fn start_task_phase(
 }
 
 #[tauri::command]
-pub fn cancel_phase_run(
+pub async fn cancel_phase_run(
+    app: AppHandle,
     phase_run_id: String,
-    inflight: State<'_, InflightRuns>,
 ) -> Result<bool, String> {
-    Ok(inflight.cancel(&phase_run_id))
+    // `async` so `tokio::spawn` below has a runtime context — sync Tauri commands run
+    // on the main thread without a reactor and panic on spawn.
+    let inflight = app.state::<InflightRuns>();
+    let fired = inflight.cancel(&phase_run_id);
+
+    // Watchdog: if the runner doesn't emit a terminal event within the grace period,
+    // force-fail the phase run so the projection (and the in-flight counter) recovers.
+    // Covers the orphan cases the cancel token can't reach: subprocess that already
+    // exited (so the token has nothing to kill), runner stuck in JSON parse / DB write
+    // / retry path that doesn't poll the token, or `inflight.cancel` returning false
+    // because the run was never registered. The append is seq-checked, so if the
+    // runner *does* emit a terminal event first we lose the race and bail — that's
+    // the desired behaviour.
+    let app_clone = app.clone();
+    let phase_run_id_clone = phase_run_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        if let Err(e) = force_fail_if_still_running(&app_clone, &phase_run_id_clone) {
+            eprintln!(
+                "cancel_phase_run watchdog: force-fail of {} failed: {}",
+                phase_run_id_clone, e
+            );
+        }
+    });
+
+    Ok(fired)
+}
+
+/// If `phase_run_id` is still `running` in the projection, append a `PhaseRunFailed`
+/// event with `error_kind = "user_cancelled"` so the in-flight counter releases. No-op
+/// if the run already reached a terminal state — the runner beat us to it.
+fn force_fail_if_still_running(app: &AppHandle, phase_run_id: &str) -> Result<(), String> {
+    let (workspace_id, workspace_path) = {
+        let active_state = app.state::<ActiveWorkspaceState>();
+        let guard = active_state.0.lock().map_err(|e| e.to_string())?;
+        let aw = guard
+            .as_ref()
+            .ok_or_else(|| "no active workspace".to_string())?;
+        (aw.id.clone(), aw.path.clone())
+    };
+
+    let mut conn = open_workspace_db(&workspace_path).map_err(|e| e.to_string())?;
+    let status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM phase_run_projection WHERE id = ?1",
+            params![phase_run_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if status.as_deref() != Some("running") {
+        return Ok(());
+    }
+
+    let seq = phases::runtime::current_seq(&conn, "phase_run", phase_run_id)?;
+    let payload = json!({
+        "error_kind": "user_cancelled",
+        "error_message": "Cancelled by user (force-failed by watchdog after the cancel signal didn't produce a terminal event)",
+    })
+    .to_string();
+    phases::runtime::append_phase_run_step(
+        &mut conn,
+        app,
+        &workspace_id,
+        phase_run_id,
+        seq,
+        NewEvent {
+            event_type: "PhaseRunFailed".into(),
+            version: 1,
+            payload,
+        },
+        &make_metadata("user:cancel_watchdog"),
+    )?;
+    Ok(())
 }
 
 /// Retry worktree initialization for a task that previously failed init. Re-runs
@@ -1732,6 +1856,18 @@ fn append_task_event_simple(
     }
     emit_projection_updated(app, Some(workspace_id), "task", task_id);
     emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
+    // Queue manager hook (Brief 4): a merge may unblock dependents.
+    // Spawn outside the transaction lock — best-effort, failures logged.
+    if event_type == "TaskMerged" {
+        let app_clone = app.clone();
+        let ws = workspace_id.to_string();
+        let tid = task_id.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = crate::pipeline::on_task_merged(app_clone, ws, tid).await {
+                eprintln!("pipeline::on_task_merged failed: {}", e);
+            }
+        });
+    }
     Ok(())
 }
 
@@ -1796,6 +1932,17 @@ pub fn mark_task_merged(
 
     cleanup_task_worktree(&app, &workspace_id, &workspace_path, &task_id, "task_merged")?;
     maybe_complete_plan(&app, &workspace_id, &task_id);
+    // Queue manager hook (Brief 4) — dependents may now be unblocked.
+    {
+        let app_clone = app.clone();
+        let ws = workspace_id.clone();
+        let tid = task_id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::pipeline::on_task_merged(app_clone, ws, tid).await {
+                eprintln!("pipeline::on_task_merged failed: {}", e);
+            }
+        });
+    }
     Ok(())
 }
 
@@ -1942,6 +2089,305 @@ pub fn approve_task_anyway(
     emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
     emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
     Ok(())
+}
+
+// ======================================================================
+// Task dependencies (Brief 4)
+// ======================================================================
+
+/// Replace a task's `depends_on` list. The new list is validated for cycles
+/// and same-plan membership before any event lands; on failure we surface
+/// the typed `DependencyError` JSON-encoded as the error string so the UI
+/// can pattern-match on `kind` for inline messaging (e.g. "this would
+/// create a cycle" vs "task X is in a different plan").
+#[tauri::command]
+pub fn update_task_dependencies(
+    app: AppHandle,
+    task_id: String,
+    depends_on: Vec<String>,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<projections::TaskProjection, String> {
+    let workspace_id;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+
+        let task = projections::get_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("task not found: {}", task_id))?;
+        if matches!(task.status.as_str(), "merged" | "archived") {
+            // Editing deps on a terminal task is meaningless and would put
+            // the projection in an inconsistent state.
+            return Err(format!(
+                "cannot edit dependencies on a {} task",
+                task.status
+            ));
+        }
+        crate::dependencies::validate_dependencies(
+            &aw.conn,
+            &task_id,
+            &task.plan_id,
+            &depends_on,
+        )
+        .map_err(|e| serde_json::to_string(&e).unwrap_or_else(|_| e.to_string()))?;
+
+        let payload = json!({ "depends_on": depends_on }).to_string();
+        let seq = current_task_seq(&aw.conn, &task_id)?;
+        let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
+        let outcome = append_events_in_tx(
+            &tx,
+            "task",
+            &task_id,
+            seq,
+            vec![NewEvent {
+                event_type: "TaskDependenciesChanged".into(),
+                version: 1,
+                payload,
+            }],
+            &make_metadata("user:local"),
+        )
+        .map_err(map_append_err)?;
+        for ev in &outcome.events {
+            apply_task_event(&tx, ev).map_err(|e| e.to_string())?;
+            recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
+
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    projections::get_task(&aw.conn, &task_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("task not found after update: {}", task_id))
+}
+
+/// Cancel a queued task's queued state. The task remains blocked (until
+/// its dependencies resolve), but the queue manager will not auto-start
+/// it — the user explicitly opted out. To re-queue, click Run again.
+#[tauri::command]
+pub fn unqueue_task(
+    app: AppHandle,
+    task_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<projections::TaskProjection, String> {
+    let workspace_id;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+        let task = projections::get_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("task not found: {}", task_id))?;
+        if !task.is_queued {
+            // Idempotent: nothing to do. Don't error — the UI may have
+            // raced with the queue manager auto-starting the task, in
+            // which case the click is harmless.
+            return Ok(task);
+        }
+        let seq = current_task_seq(&aw.conn, &task_id)?;
+        let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
+        let outcome = append_events_in_tx(
+            &tx,
+            "task",
+            &task_id,
+            seq,
+            vec![NewEvent {
+                event_type: "TaskUnqueued".into(),
+                version: 1,
+                payload: json!({}).to_string(),
+            }],
+            &make_metadata("user:local"),
+        )
+        .map_err(map_append_err)?;
+        for ev in &outcome.events {
+            apply_task_event(&tx, ev).map_err(|e| e.to_string())?;
+            recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
+
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    projections::get_task(&aw.conn, &task_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("task not found: {}", task_id))
+}
+
+/// File-overlap detection for the pre-start warning dialog (Brief 4 M8).
+/// Returns the in-flight tasks whose `relevant_files` intersect with the
+/// given task's. Empty vec means no overlap. The frontend caches a
+/// suppression set per `(starting, other)` ordered pair within the
+/// session — see the dialog component.
+#[tauri::command]
+pub fn detect_task_file_overlap(
+    task_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<Vec<crate::dependencies::FileOverlap>, String> {
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    let workspace_id = aw.id.clone();
+    crate::dependencies::detect_file_overlap(&aw.conn, &task_id, &workspace_id)
+        .map_err(|e| e.to_string())
+}
+
+// ======================================================================
+// Per-task phase config editing
+// ======================================================================
+
+/// Set provider/model/permission_mode for one phase of one task. The change is
+/// recorded as a `TaskPhaseConfigChanged` event; the projection's
+/// `current_phase_config` reflects the new value, and the next phase run resolves
+/// against it. The original `TaskCreated.phase_config` snapshot is preserved.
+///
+/// Editing is rejected while any phase of the task is currently running — the UI
+/// disables the affordance, but we guard server-side too.
+#[tauri::command]
+pub fn update_task_phase_config(
+    app: AppHandle,
+    task_id: String,
+    phase: String,
+    provider: String,
+    model: String,
+    permission_mode: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<projections::TaskProjection, String> {
+    // Phase + permission mode validation up front — defence-in-depth against the UI
+    // calling with a forbidden combination.
+    let phase_typed = PhaseType::parse(&phase)
+        .ok_or_else(|| format!("invalid phase: {}", phase))?;
+    let mode_typed = PermissionMode::parse(&permission_mode)
+        .ok_or_else(|| format!("invalid permission_mode: {}", permission_mode))?;
+    if provider.trim().is_empty() {
+        return Err("provider must not be empty".into());
+    }
+    // Ask the chosen provider whether it accepts this mode for this phase. Falls back
+    // to the universal `is_available_for` matrix when the provider isn't registered
+    // (defence-in-depth — the UI shouldn't pick an unknown provider).
+    let allowed = providers::available_permission_modes(&provider, phase_typed);
+    if !allowed.contains(&mode_typed) {
+        return Err(format!(
+            "permission mode '{}' is not allowed for phase '{}' on provider '{}'",
+            permission_mode, phase, provider
+        ));
+    }
+    if model.trim().is_empty() {
+        return Err("model must not be empty".into());
+    }
+
+    let payload = json!({
+        "phase": phase,
+        "provider": provider,
+        "model": model,
+        "permission_mode": permission_mode,
+    });
+    apply_task_phase_config_change(&app, &active, &task_id, payload)
+}
+
+/// Revert one phase of one task back to the workspace default — emits a
+/// `TaskPhaseConfigChanged` with `provider`, `model`, and `permission_mode` all
+/// `null`, which the applier interprets as "remove this phase's per-phase entries
+/// from `current_phase_config`."
+#[tauri::command]
+pub fn reset_task_phase_config(
+    app: AppHandle,
+    task_id: String,
+    phase: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<projections::TaskProjection, String> {
+    if PhaseType::parse(&phase).is_none() {
+        return Err(format!("invalid phase: {}", phase));
+    }
+    let payload = json!({
+        "phase": phase,
+        "provider": serde_json::Value::Null,
+        "model": serde_json::Value::Null,
+        "permission_mode": serde_json::Value::Null,
+    });
+    apply_task_phase_config_change(&app, &active, &task_id, payload)
+}
+
+/// Shared body for `update_task_phase_config` and `reset_task_phase_config`. Both
+/// emit the same event type with different payload shapes; gating, append, and
+/// projection refresh logic is identical.
+fn apply_task_phase_config_change(
+    app: &AppHandle,
+    active: &State<'_, ActiveWorkspaceState>,
+    task_id: &str,
+    payload: serde_json::Value,
+) -> Result<projections::TaskProjection, String> {
+    let workspace_id;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+
+        // Task existence check — surfaces a clearer error than letting the seq lookup
+        // succeed with 0 (which would happily append an event for a missing task).
+        let task_exists: bool = aw
+            .conn
+            .query_row(
+                "SELECT 1 FROM task_projection WHERE id = ?1",
+                params![task_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or(false);
+        if !task_exists {
+            return Err(format!("task not found: {}", task_id));
+        }
+
+        // Defence-in-depth: refuse to mutate config while a phase is mid-flight. The
+        // UI disables the edit button in this state, but a stale tab or a direct
+        // command call could still slip through.
+        let running: i64 = aw
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM phase_run_projection
+                 WHERE task_id = ?1 AND status = 'running'",
+                params![task_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if running > 0 {
+            return Err("phase_running: cannot edit phase config while a phase of this task is running".into());
+        }
+
+        let seq = current_task_seq(&aw.conn, task_id)?;
+        let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
+        let outcome = append_events_in_tx(
+            &tx,
+            "task",
+            task_id,
+            seq,
+            vec![NewEvent {
+                event_type: "TaskPhaseConfigChanged".into(),
+                version: 1,
+                payload: payload.to_string(),
+            }],
+            &make_metadata("user:local"),
+        )
+        .map_err(map_append_err)?;
+        for ev in &outcome.events {
+            apply_task_event(&tx, ev).map_err(|e| e.to_string())?;
+            recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    emit_projection_updated(app, Some(&workspace_id), "task", task_id);
+    emit_projection_updated(app, Some(&workspace_id), "recent_events", &workspace_id);
+
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    projections::get_task(&aw.conn, task_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("task not found after update: {}", task_id))
 }
 
 #[tauri::command]
@@ -2345,7 +2791,10 @@ pub fn rebuild_projections(
                  DROP TABLE IF EXISTS recent_events;",
             )
             .map_err(|e| e.to_string())?;
-            tx.execute_batch(crate::events::projections::TASK_PROJECTION_DDL)
+            // Use the full setup (DDL + additive ALTER migrations + backfills) — the
+            // raw DDL alone misses columns added in later migrations like
+            // `worktree_init_status`, which the applier then crashes against.
+            crate::events::projections::apply_workspace_db_projection_ddl(&tx)
                 .map_err(|e| e.to_string())?;
             tx.execute_batch(crate::recent_events::RECENT_EVENTS_DDL)
                 .map_err(|e| e.to_string())?;

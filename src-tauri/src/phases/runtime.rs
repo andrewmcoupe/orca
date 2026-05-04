@@ -107,6 +107,10 @@ pub fn append_phase_run_step(
     let mut affected_task: Option<String> = None;
     let mut fire_on_completed = false;
     let mut fire_on_auditor_verdict = false;
+    // PhaseRunStarted/Completed/Failed mutate `plan_projection.running_task_count`
+    // cross-aggregate; without a `plan` projection_updated emit, the frontend's plans
+    // query goes stale and the status-bar in-flight counter sticks at the old value.
+    let mut affects_plan_counter = false;
     for ev in &outcome.events {
         apply_phase_run_event(&tx, ev).map_err(|e| e.to_string())?;
         // Mirror into the recent_events strip projection.
@@ -118,9 +122,14 @@ pub fn append_phase_run_step(
                     affected_task = Some(tid.to_string());
                 }
             }
+            affects_plan_counter = true;
         }
         if ev.event_type == "PhaseRunCompleted" {
             fire_on_completed = true;
+            affects_plan_counter = true;
+        }
+        if ev.event_type == "PhaseRunFailed" {
+            affects_plan_counter = true;
         }
         if ev.event_type == "AuditorVerdictRendered" {
             fire_on_auditor_verdict = true;
@@ -139,6 +148,22 @@ pub fn append_phase_run_step(
     emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
     if let Some(tid) = affected_task {
         emit_projection_updated(app, Some(workspace_id), "task", &tid);
+    }
+    // Cross-aggregate plan counter changed — invalidate the plan list/detail so the
+    // status-bar in-flight count and per-plan running badge reflect reality.
+    if affects_plan_counter {
+        let plan_id: Option<String> = conn
+            .query_row(
+                "SELECT t.plan_id FROM task_projection t
+                 JOIN phase_run_projection pr ON pr.task_id = t.id
+                 WHERE pr.id = ?1",
+                rusqlite::params![phase_run_id],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(pid) = plan_id {
+            emit_projection_updated(app, Some(workspace_id), "plan", &pid);
+        }
     }
 
     // Pipeline orchestrator hooks. Best-effort: spawned on the tokio runtime so the
@@ -215,15 +240,34 @@ pub fn append_task_step(
     .map_err(map_append_err)?;
 
     let mut top_seq = expected_seq;
+    let mut fire_on_task_merged = false;
     for ev in &outcome.events {
         apply_task_event(&tx, ev).map_err(|e| e.to_string())?;
         crate::recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
         top_seq = ev.seq;
+        if ev.event_type == "TaskMerged" {
+            fire_on_task_merged = true;
+        }
     }
     tx.commit().map_err(|e| e.to_string())?;
 
     emit_projection_updated(app, Some(workspace_id), "task", task_id);
     emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
+
+    // Queue manager hook: fires after the merge transaction commits so
+    // any TaskUnblocked events (and downstream auto-start dispatches) land
+    // as their own events. Best-effort — failures are logged but never
+    // propagate, so a queue-manager bug can't strand the merge.
+    if fire_on_task_merged {
+        let app_clone = app.clone();
+        let ws = workspace_id.to_string();
+        let tid = task_id.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = crate::pipeline::on_task_merged(app_clone, ws, tid).await {
+                eprintln!("pipeline::on_task_merged failed: {}", e);
+            }
+        });
+    }
     Ok(top_seq)
 }
 

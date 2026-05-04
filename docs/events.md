@@ -99,12 +99,13 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 
 ### Task events
 
-**TaskCreated** — new task entered the system. **Version 3.** Version 1 never existed in the wild; v2 has no upcaster (the v3 applier tolerantly defaults the new field, so any v2 events that do exist replay against v3 without loss). The v3 applier also tolerantly defaults `relevant_files` (added with the briefing flow) to an empty array when the field is missing — additive-evolution rules apply, so no version bump is required.
+**TaskCreated** — new task entered the system. **Version 4.** Version 1 never existed in the wild; v2 has no upcaster (the v3 applier tolerantly defaults the new field, so any v2 events that do exist replay against v3 without loss). The v3 applier also tolerantly defaults `relevant_files` (added with the briefing flow) to an empty array when the field is missing — additive-evolution rules apply. v4 adds `depends_on`, also defaulted tolerantly to `[]` on read.
 - `plan_id: string` — the parent plan; the workspace is derived from the plan
 - `title: string`
 - `spec_markdown: string`
 - `phase_config: PhaseConfig` — the phase config for this task. Resolved at task-creation time (events are immutable: the config at creation is the config that stuck). Inherits the workspace's `default_phase_config` if no per-task override was supplied.
 - `relevant_files: RelevantFile[]` — files the plan author identified as likely targets for this task. Populated by the briefing flow; empty for tasks created via the quick-task shortcut or other paths without file awareness. Surfaced to the implementer prompt as a "Likely files to touch" section. `RelevantFile = { path: string, certainty: "Confirmed" | "Candidate", reason: string }`.
+- `depends_on: string[]` — task IDs this task depends on. The runner won't start a phase for a task whose dependencies haven't all reached `merged`; the queue manager auto-starts queued tasks once their last dependency merges. Validated at command time to be (a) cycle-free across the whole workspace dependency graph and (b) confined to tasks in the same plan. Empty array means "no dependencies" — the common case.
 
 **TaskBaseCommitRecorded** — the commit the task's worktree was created from. This is the diff anchor for "the diff for this task" (used by the auditor and by UI-level diff views). Emitted when the worktree is provisioned for the task; conceptually a Task-level fact, kept on the Task aggregate so it survives worktree recreation.
 - `commit_sha: string`
@@ -112,6 +113,24 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 **TaskSpecRevised** — spec edited after creation.
 - `spec_markdown: string` — full new spec
 - `reason: string | null`
+
+**TaskPhaseConfigChanged** — user changed the provider, model, or permission mode for one phase of this task. Records a delta to the named phase only; other phases are untouched. The `TaskCreated.phase_config` snapshot is preserved unchanged — this event drives a separate `current_phase_config` projection field that the phase runner reads when resolving the next run. Historical `PhaseRunStarted` events are unaffected; their captured config is what the run actually used.
+- `phase: "test_author" | "implementer" | "auditor"`
+- `provider: string | null` — null means "revert this field to the workspace default"
+- `model: string | null` — null means "revert to default"
+- `permission_mode: "plan" | "acceptEdits" | "bypassPermissions" | null` — null means revert. The auditor never accepts `bypassPermissions`; the command rejects this combination, and the resolver clamps it as defence-in-depth if it ever reaches the projection.
+
+**TaskDependenciesChanged** — user edited the task's dependencies after creation. Replaces the dependency list wholesale rather than carrying a delta — the audit trail is "at this moment, the deps were these," which is simpler to reason about than "+A -B" and makes replay against an empty-graph projection trivial.
+- `depends_on: string[]` — full new dependency list. Validated at command time for cycle-freedom and same-plan membership.
+
+**TaskQueued** — user clicked Run on a blocked task and chose to queue it. The queue manager will auto-start the task when its last unmet dependency merges.
+- `queued_at: int64` — unix millis. Redundant with `created_at` on the event row, but lets projection queries avoid a join back to the events table.
+
+**TaskUnqueued** — user explicitly cancelled a queued task's queued state (decided not to auto-start it). Carries no payload.
+
+**TaskUnblocked** — the queue manager observed that all dependencies of a queued task have merged and is about to dispatch the task's first phase. Emitted *before* `PhaseRunStarted` so the audit trail captures "this run was triggered by automatic unblocking, not a user click."
+- `unblocked_at: int64`
+- `unblocking_task_id: string` — the task whose merge produced this unblocking. Useful for "why did this start?" queries; the projection records only the latest, since further merges of already-merged deps are no-ops.
 
 **TaskCancelled** — task abandoned before merge.
 - `reason: string`
@@ -360,7 +379,7 @@ Stored projections. The frontend reads projections via simple SQL; the event app
 
 - **`workspace_projection`** — current state per workspace. One row per workspace. Lives in the global db.
 - **`plan_projection`** — one row per plan. Columns: `id`, `workspace_id`, `title`, `description`, `source`, `source_metadata`, `status` (`active | paused | completed | cancelled | archived`), `task_count`, `running_task_count`, `done_task_count`, `failed_task_count`, `created_at`, `updated_at`. The four count columns are maintained by the **Task** applier (cross-aggregate projection update; same-transaction with the triggering task event).
-- **`task_projection`** — one row per task. Includes `plan_id`, current status, latest phase run id, gate pass counts, last updated timestamp, the resolved `phase_config` JSON, and `task_base_commit` (the diff anchor from `TaskBaseCommitRecorded`).
+- **`task_projection`** — one row per task. Includes `plan_id`, current status, latest phase run id, gate pass counts, last updated timestamp, the resolved `phase_config` JSON (the *original* snapshot from `TaskCreated`, never mutated after the fact), `current_phase_config` (the *latest effective* config after applying all `TaskPhaseConfigChanged` events — phase runners read from this), `task_base_commit` (the diff anchor from `TaskBaseCommitRecorded`), and dependency state: `depends_on` (JSON array of task IDs), `is_blocked` (any dep not in `merged` state), `is_queued` (user clicked Run while blocked, awaiting auto-start), `unblocked_at`, and `last_unblocking_task_id`. `is_blocked` is recomputed by the appliers for `TaskCreated`, `TaskDependenciesChanged`, and — cross-aggregate — `TaskMerged` (which scans for tasks whose `depends_on` includes the merging task and re-evaluates them in the same transaction).
 - **`phase_run_projection`** — one row per phase run. Status, provider, model, summary, token usage, timing.
 - **`phase_run_output`** — denormalized streaming text. Treated as a projection of `PhaseRunOutputAppended` events. The events remain source of truth; this table is for fast reads.
 - **`auditor_verdict_projection`** — one row per `AuditorVerdictRendered` event, keyed by the auditor `phase_run_id`. Stores verdict, confidence, summary, and concerns JSON for fast UI reads.

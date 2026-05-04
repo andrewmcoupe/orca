@@ -1,5 +1,6 @@
 mod briefing;
 mod db;
+mod dependencies;
 mod diff;
 mod diff_service;
 mod events;
@@ -95,6 +96,7 @@ pub fn run() {
             commands::refresh_providers,
             commands::get_provider_options,
             commands::list_models,
+            commands::list_permission_modes,
             commands::list_recent_events,
             commands::get_event_by_id,
             commands::mark_task_merged,
@@ -106,6 +108,11 @@ pub fn run() {
             commands::reject_task,
             commands::approve_task_anyway,
             commands::get_latest_auditor_verdict_for_task,
+            commands::update_task_phase_config,
+            commands::reset_task_phase_config,
+            commands::update_task_dependencies,
+            commands::unqueue_task,
+            commands::detect_task_file_overlap,
             commands::open_in_editor,
             commands::delete_worktree,
             commands::list_orphan_worktrees,

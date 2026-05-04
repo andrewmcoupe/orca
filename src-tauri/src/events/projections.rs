@@ -186,7 +186,8 @@ CREATE TABLE IF NOT EXISTS task_projection (
     worktree_base_commit TEXT,
     worktree_status     TEXT,                 -- 'active' | 'removed' | NULL if never created
     worktree_removal_reason TEXT,
-    phase_config        TEXT NOT NULL DEFAULT '{}', -- resolved phase config JSON for this task
+    phase_config        TEXT NOT NULL DEFAULT '{}', -- original phase config JSON snapshot from TaskCreated; never mutated after the fact
+    current_phase_config TEXT NOT NULL DEFAULT '{}', -- latest effective phase config after applying TaskPhaseConfigChanged events; phase runners read from this
     relevant_files      TEXT NOT NULL DEFAULT '[]', -- RelevantFile[] JSON populated by briefing flow; empty for other paths
     task_base_commit    TEXT,                 -- diff anchor for the task (TaskBaseCommitRecorded)
     created_at          INTEGER NOT NULL,
@@ -314,6 +315,23 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
         // Briefing flow: relevant files identified by the plan author per task.
         // Empty array for tasks created via paths without file awareness.
         "ALTER TABLE task_projection ADD COLUMN relevant_files TEXT NOT NULL DEFAULT '[]'",
+        // Per-task phase config editing: the original `phase_config` snapshot stays
+        // immutable (audit trail); `current_phase_config` reflects the latest state
+        // after `TaskPhaseConfigChanged` events. Phase runners resolve from this.
+        // The default '{}' is intentionally wrong for existing rows — backfill below
+        // copies `phase_config` over the empty default so existing tasks keep working.
+        "ALTER TABLE task_projection ADD COLUMN current_phase_config TEXT NOT NULL DEFAULT '{}'",
+        // Brief 4: task dependencies. `depends_on` is the JSON array of task IDs;
+        // `is_blocked` is recomputed by appliers whenever a relevant change lands;
+        // `is_queued` toggles via TaskQueued / TaskUnqueued and is cleared when the
+        // task's first phase run starts; `unblocked_at` records the moment the
+        // queue manager resolved the last dependency, with `last_unblocking_task_id`
+        // naming which dep's merge produced the unblock (display + audit).
+        "ALTER TABLE task_projection ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE task_projection ADD COLUMN is_blocked INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE task_projection ADD COLUMN is_queued INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE task_projection ADD COLUMN unblocked_at INTEGER",
+        "ALTER TABLE task_projection ADD COLUMN last_unblocking_task_id TEXT",
     ];
     for sql in migrations {
         match conn.execute(sql, []) {
@@ -327,6 +345,17 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
             }
         }
     }
+    // One-time backfill: rows that pre-date the `current_phase_config` column landed
+    // with the default '{}'. Copy the original `phase_config` over so the resolver
+    // sees something useful. New rows go through the `TaskCreated` applier which
+    // sets both columns explicitly. The WHERE clause makes this idempotent — once a
+    // row has been backfilled (or genuinely customised), we leave it alone.
+    conn.execute(
+        "UPDATE task_projection
+         SET current_phase_config = phase_config
+         WHERE current_phase_config = '{}' AND phase_config <> '{}'",
+        [],
+    )?;
     Ok(())
 }
 
@@ -517,8 +546,14 @@ pub struct TaskProjection {
     pub worktree_base_commit: Option<String>,
     pub worktree_status: Option<String>,
     pub worktree_removal_reason: Option<String>,
-    /// Resolved phase config JSON for this task (the value at create time — events are immutable).
+    /// Resolved phase config JSON at task-creation time. Immutable — kept as the audit
+    /// snapshot of "what the task was set up with."
     pub phase_config: serde_json::Value,
+    /// Latest effective phase config — `phase_config` plus any `TaskPhaseConfigChanged`
+    /// edits the user has made. Phase runners resolve from this; the UI compares it
+    /// against the workspace default to surface the customisation indicator.
+    #[serde(default)]
+    pub current_phase_config: serde_json::Value,
     /// `RelevantFile[]` populated by the briefing flow. Empty array for tasks created
     /// via paths without file awareness (quick-task shortcut, manual creation).
     #[serde(default)]
@@ -539,6 +574,23 @@ pub struct TaskProjection {
     pub worktree_init_detection_kind: Option<String>,
     #[serde(default)]
     pub worktree_init_output: Option<String>,
+    /// Brief 4: dependency declarations.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// Computed: any dep not in `merged` state. Recomputed by appliers for
+    /// `TaskCreated` / `TaskDependenciesChanged` / `TaskMerged` / `TaskUnblocked`.
+    #[serde(default)]
+    pub is_blocked: bool,
+    /// User clicked Run while blocked and chose to queue. Cleared on the
+    /// task's first phase actually starting (or via TaskUnqueued).
+    #[serde(default)]
+    pub is_queued: bool,
+    /// When the queue manager last unblocked this task. Display-only.
+    #[serde(default)]
+    pub unblocked_at: Option<i64>,
+    /// The dependency whose merge produced the latest unblock.
+    #[serde(default)]
+    pub last_unblocking_task_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -591,6 +643,27 @@ struct TaskCreatedPayload {
     /// the briefing flow landed replay cleanly with an empty array.
     #[serde(default)]
     relevant_files: Option<serde_json::Value>,
+    /// v4: dependency declarations. Optional so v3 events on disk replay
+    /// cleanly with an empty list (no dependencies).
+    #[serde(default)]
+    depends_on: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskDependenciesChangedPayload {
+    depends_on: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskQueuedPayload {
+    #[allow(dead_code)]
+    queued_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskUnblockedPayload {
+    unblocked_at: i64,
+    unblocking_task_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -612,6 +685,21 @@ struct TaskSpecRevisedPayload {
     spec_markdown: String,
     #[allow(dead_code)]
     reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskPhaseConfigChangedPayload {
+    phase: String,
+    /// `null` means "revert this field to the workspace default" — the applier removes
+    /// the per-phase entry from the maps in `current_phase_config` rather than writing
+    /// a literal null, so the resolver sees no override and falls through to the
+    /// workspace setting.
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    permission_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -682,6 +770,27 @@ struct WorktreeRemovalFailedPayload {
     reason: String,
 }
 
+/// Get a mutable reference to `value[key]`, replacing it with an empty object if it's
+/// missing or non-object. Used by the `TaskPhaseConfigChanged` applier to safely mutate
+/// `current_phase_config.models` and `.permission_modes` without losing other top-level
+/// fields like `phases` and `gate_overrides`.
+fn ensure_object<'a>(
+    value: &'a mut serde_json::Value,
+    key: &str,
+) -> &'a mut serde_json::Map<String, serde_json::Value> {
+    if !value.is_object() {
+        *value = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let obj = value.as_object_mut().expect("ensure_object: value is now object");
+    let entry = obj
+        .entry(key.to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !entry.is_object() {
+        *entry = serde_json::Value::Object(serde_json::Map::new());
+    }
+    entry.as_object_mut().expect("ensure_object: entry is now object")
+}
+
 pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), ProjectionError> {
     match event.event_type.as_str() {
         "TaskCreated" => {
@@ -713,10 +822,23 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                 .as_ref()
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "[]".to_string());
+            // v4: depends_on. Tolerantly defaults to [] for v3 events on disk.
+            let depends_on = p.depends_on.unwrap_or_default();
+            let depends_on_json = serde_json::to_string(&depends_on)?;
+            // Initial is_blocked: any dep not in 'merged' state. The dependency
+            // resolver lives in `crate::dependencies` so it's exercised by the
+            // command-time validator and the same query here.
+            let is_blocked =
+                crate::dependencies::compute_is_blocked(tx, &depends_on)
+                    .map(|b| b as i64)
+                    .map_err(ProjectionError::Database)?;
+            // `current_phase_config` starts equal to `phase_config` — the task hasn't
+            // been edited yet. Subsequent `TaskPhaseConfigChanged` events mutate only
+            // the current column, leaving the original snapshot intact for audit.
             tx.execute(
                 "INSERT INTO task_projection
-                    (id, workspace_id, plan_id, title, spec_markdown, status, phase_config, relevant_files, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'created', ?6, ?7, ?8, ?8)",
+                    (id, workspace_id, plan_id, title, spec_markdown, status, phase_config, current_phase_config, relevant_files, depends_on, is_blocked, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'created', ?6, ?6, ?7, ?8, ?9, ?10, ?10)",
                 params![
                     event.aggregate_id,
                     workspace_id,
@@ -725,6 +847,8 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                     p.spec_markdown,
                     phase_config_json,
                     relevant_files_json,
+                    depends_on_json,
+                    is_blocked,
                     event.created_at,
                 ],
             )?;
@@ -734,11 +858,110 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                 params![event.created_at, p.plan_id],
             )?;
         }
+        "TaskDependenciesChanged" => {
+            let p: TaskDependenciesChangedPayload = serde_json::from_str(&event.payload)?;
+            let depends_on_json = serde_json::to_string(&p.depends_on)?;
+            let is_blocked =
+                crate::dependencies::compute_is_blocked(tx, &p.depends_on)
+                    .map(|b| b as i64)
+                    .map_err(ProjectionError::Database)?;
+            tx.execute(
+                "UPDATE task_projection
+                 SET depends_on = ?1, is_blocked = ?2, updated_at = ?3
+                 WHERE id = ?4",
+                params![
+                    depends_on_json,
+                    is_blocked,
+                    event.created_at,
+                    event.aggregate_id,
+                ],
+            )?;
+        }
+        "TaskQueued" => {
+            let _: TaskQueuedPayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE task_projection SET is_queued = 1, updated_at = ?1 WHERE id = ?2",
+                params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        "TaskUnqueued" => {
+            tx.execute(
+                "UPDATE task_projection SET is_queued = 0, updated_at = ?1 WHERE id = ?2",
+                params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        "TaskUnblocked" => {
+            let p: TaskUnblockedPayload = serde_json::from_str(&event.payload)?;
+            // The queue manager only emits this event when find_newly_unblocked
+            // confirms every dep has merged. Set the flag straight to false; if
+            // we recomputed from scratch we'd hit the same answer at the cost of
+            // an extra query.
+            tx.execute(
+                "UPDATE task_projection
+                 SET is_blocked = 0,
+                     unblocked_at = ?1,
+                     last_unblocking_task_id = ?2,
+                     updated_at = ?1
+                 WHERE id = ?3",
+                params![p.unblocked_at, p.unblocking_task_id, event.aggregate_id],
+            )?;
+        }
         "TaskSpecRevised" => {
             let p: TaskSpecRevisedPayload = serde_json::from_str(&event.payload)?;
             tx.execute(
                 "UPDATE task_projection SET spec_markdown = ?1, updated_at = ?2 WHERE id = ?3",
                 params![p.spec_markdown, event.created_at, event.aggregate_id],
+            )?;
+        }
+        "TaskPhaseConfigChanged" => {
+            let p: TaskPhaseConfigChangedPayload = serde_json::from_str(&event.payload)?;
+            // Read the current effective config, mutate the named phase's entries,
+            // write it back. We never touch `phase_config` (the original snapshot).
+            // Either of `provider`/`model` being None means "revert that side" — but
+            // a `ModelChoice` is provider+model together, so partial updates are
+            // collapsed: if either is None, we drop the model entry entirely. The
+            // command layer enforces "all three or all-null", so this is defence-
+            // in-depth against handcrafted payloads.
+            let current_str: String = tx.query_row(
+                "SELECT current_phase_config FROM task_projection WHERE id = ?1",
+                params![event.aggregate_id],
+                |r| r.get(0),
+            )?;
+            let mut current: serde_json::Value = serde_json::from_str(&current_str)
+                .unwrap_or_else(|_| serde_json::json!({}));
+            let phase_name = p.phase.clone();
+
+            // Models map: `{ phase -> { provider, model } }`.
+            let models_obj = ensure_object(&mut current, "models");
+            match (p.provider.as_ref(), p.model.as_ref()) {
+                (Some(prov), Some(mdl)) => {
+                    models_obj.insert(
+                        phase_name.clone(),
+                        serde_json::json!({ "provider": prov, "model": mdl }),
+                    );
+                }
+                _ => {
+                    models_obj.remove(&phase_name);
+                }
+            }
+
+            // Permission modes map: `{ phase -> "plan" | "acceptEdits" | "bypassPermissions" }`.
+            let modes_obj = ensure_object(&mut current, "permission_modes");
+            match p.permission_mode.as_ref() {
+                Some(m) => {
+                    modes_obj.insert(
+                        phase_name.clone(),
+                        serde_json::Value::String(m.clone()),
+                    );
+                }
+                None => {
+                    modes_obj.remove(&phase_name);
+                }
+            }
+
+            tx.execute(
+                "UPDATE task_projection SET current_phase_config = ?1, updated_at = ?2 WHERE id = ?3",
+                params![current.to_string(), event.created_at, event.aggregate_id],
             )?;
         }
         "TaskCancelled" => {
@@ -781,6 +1004,60 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                  WHERE id = (SELECT plan_id FROM task_projection WHERE id = ?2)",
                 params![event.created_at, event.aggregate_id],
             )?;
+            // Cross-aggregate (Brief 4): every dependent task may now be unblocked.
+            // We can't push this into a single SQL statement without JSON1 (and we
+            // chose to stay JSON1-free for portability), so we read the candidates,
+            // recompute each one's is_blocked, and write back any that changed. The
+            // queue manager hook in pipeline::on_task_merged is what dispatches
+            // queued tasks — this projection update only refreshes the flag so the
+            // UI shows the right state immediately.
+            let workspace_id: Option<String> = tx
+                .query_row(
+                    "SELECT workspace_id FROM task_projection WHERE id = ?1",
+                    params![event.aggregate_id],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(workspace_id) = workspace_id {
+                let mut dependents: Vec<(String, Vec<String>)> = Vec::new();
+                {
+                    let mut stmt = tx.prepare(
+                        "SELECT id, depends_on FROM task_projection
+                         WHERE workspace_id = ?1
+                           AND is_blocked = 1
+                           AND status NOT IN ('merged', 'cancelled', 'archived')",
+                    )?;
+                    let rows = stmt.query_map(params![workspace_id], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    })?;
+                    for r in rows {
+                        let (id, deps_str) = r?;
+                        let deps: Vec<String> =
+                            serde_json::from_str(&deps_str).unwrap_or_default();
+                        if deps.iter().any(|d| d == &event.aggregate_id) {
+                            dependents.push((id, deps));
+                        }
+                    }
+                }
+                for (dep_task_id, deps) in dependents {
+                    let still_blocked =
+                        crate::dependencies::compute_is_blocked(tx, &deps)
+                            .map_err(ProjectionError::Database)?;
+                    if !still_blocked {
+                        // Note: we update the flag here so reads see consistent
+                        // state, but do NOT auto-emit TaskUnblocked from inside
+                        // the projection applier — that's the queue manager's
+                        // job, executed *after* this transaction commits (see
+                        // `pipeline::on_task_merged`). Auto-emitting events
+                        // from inside an applier would violate the brief's
+                        // "auto-derived events emitted after commit" rule.
+                        tx.execute(
+                            "UPDATE task_projection SET is_blocked = 0, updated_at = ?1 WHERE id = ?2",
+                            params![event.created_at, dep_task_id],
+                        )?;
+                    }
+                }
+            }
         }
         "TaskMergeAttempted" => {
             let p: TaskMergeAttemptedPayload = serde_json::from_str(&event.payload)?;
@@ -1004,7 +1281,11 @@ pub fn apply_phase_run_event(
                 ],
             )?;
             tx.execute(
-                "UPDATE task_projection SET latest_phase_run_id = ?1, updated_at = ?2 WHERE id = ?3",
+                "UPDATE task_projection
+                 SET latest_phase_run_id = ?1,
+                     is_queued = 0,
+                     updated_at = ?2
+                 WHERE id = ?3",
                 params![event.aggregate_id, event.created_at, p.task_id],
             )?;
             // Cross-aggregate: bump the plan's running counter.
@@ -1148,9 +1429,15 @@ fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
     let phase_config_str: String = r.get(18)?;
     let phase_config = serde_json::from_str(&phase_config_str)
         .unwrap_or_else(|_| serde_json::json!({}));
-    let relevant_files_str: String = r.get(19)?;
+    let current_phase_config_str: String = r.get(19)?;
+    let current_phase_config = serde_json::from_str(&current_phase_config_str)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    let relevant_files_str: String = r.get(20)?;
     let relevant_files = serde_json::from_str(&relevant_files_str)
         .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
+    let depends_on_str: String = r.get(28)?;
+    let depends_on: Vec<String> =
+        serde_json::from_str(&depends_on_str).unwrap_or_default();
     Ok(TaskProjection {
         id: r.get(0)?,
         workspace_id: r.get(1)?,
@@ -1171,20 +1458,26 @@ fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
         worktree_status: r.get(16)?,
         worktree_removal_reason: r.get(17)?,
         phase_config,
+        current_phase_config,
         relevant_files,
-        task_base_commit: r.get(20)?,
-        worktree_init_status: r.get(21)?,
-        worktree_init_command: r.get(22)?,
-        worktree_init_exit_code: r.get(23)?,
-        worktree_init_duration_ms: r.get(24)?,
-        worktree_init_detection_kind: r.get(25)?,
-        worktree_init_output: r.get(26)?,
-        created_at: r.get(27)?,
-        updated_at: r.get(28)?,
+        task_base_commit: r.get(21)?,
+        worktree_init_status: r.get(22)?,
+        worktree_init_command: r.get(23)?,
+        worktree_init_exit_code: r.get(24)?,
+        worktree_init_duration_ms: r.get(25)?,
+        worktree_init_detection_kind: r.get(26)?,
+        worktree_init_output: r.get(27)?,
+        depends_on,
+        is_blocked: r.get::<_, i64>(29)? != 0,
+        is_queued: r.get::<_, i64>(30)? != 0,
+        unblocked_at: r.get(31)?,
+        last_unblocking_task_id: r.get(32)?,
+        created_at: r.get(33)?,
+        updated_at: r.get(34)?,
     })
 }
 
-const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, merge_target_branch, merged_at, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, phase_config, relevant_files, task_base_commit, worktree_init_status, worktree_init_command, worktree_init_exit_code, worktree_init_duration_ms, worktree_init_detection_kind, worktree_init_output, created_at, updated_at";
+const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, merge_target_branch, merged_at, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, phase_config, current_phase_config, relevant_files, task_base_commit, worktree_init_status, worktree_init_command, worktree_init_exit_code, worktree_init_duration_ms, worktree_init_detection_kind, worktree_init_output, depends_on, is_blocked, is_queued, unblocked_at, last_unblocking_task_id, created_at, updated_at";
 
 pub fn list_tasks_in_plan(
     conn: &Connection,
@@ -1729,6 +2022,174 @@ mod tests {
         // Plan's done_task_count incremented.
         let plan = get_plan(&conn, "p1").unwrap().unwrap();
         assert_eq!(plan.done_task_count, 1);
+    }
+
+    #[test]
+    fn task_phase_config_changed_updates_only_named_phase() {
+        let mut conn = db();
+        // Seed the task with a non-empty phase_config containing entries for both
+        // implementer and auditor — so we can verify the applier doesn't overwrite
+        // the auditor entry when the user edits the implementer.
+        conn.execute(
+            "UPDATE task_projection
+             SET phase_config = ?1, current_phase_config = ?1
+             WHERE id = 'task1'",
+            [r#"{
+                "phases": ["implementer", "auditor"],
+                "gate_overrides": null,
+                "models": {
+                    "implementer": {"provider": "claude", "model": "old-impl-model"},
+                    "auditor": {"provider": "claude", "model": "auditor-model"}
+                },
+                "permission_modes": {
+                    "implementer": "acceptEdits",
+                    "auditor": "plan"
+                }
+            }"#],
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let ev = task_event(
+            1,
+            "TaskPhaseConfigChanged",
+            serde_json::json!({
+                "phase": "implementer",
+                "provider": "claude",
+                "model": "new-impl-model",
+                "permission_mode": "bypassPermissions",
+            }),
+        );
+        apply_task_event(&tx, &ev).unwrap();
+        tx.commit().unwrap();
+
+        let task = get_task(&conn, "task1").unwrap().unwrap();
+        let current = &task.current_phase_config;
+        // Implementer entry was replaced.
+        assert_eq!(
+            current["models"]["implementer"]["model"].as_str(),
+            Some("new-impl-model"),
+        );
+        assert_eq!(
+            current["permission_modes"]["implementer"].as_str(),
+            Some("bypassPermissions"),
+        );
+        // Auditor entry untouched.
+        assert_eq!(
+            current["models"]["auditor"]["model"].as_str(),
+            Some("auditor-model"),
+        );
+        assert_eq!(
+            current["permission_modes"]["auditor"].as_str(),
+            Some("plan"),
+        );
+        // The original snapshot is preserved verbatim.
+        assert_eq!(
+            task.phase_config["models"]["implementer"]["model"].as_str(),
+            Some("old-impl-model"),
+        );
+    }
+
+    #[test]
+    fn task_phase_config_changed_with_nulls_reverts_named_phase() {
+        let mut conn = db();
+        conn.execute(
+            "UPDATE task_projection
+             SET phase_config = ?1, current_phase_config = ?1
+             WHERE id = 'task1'",
+            [r#"{
+                "phases": ["implementer", "auditor"],
+                "gate_overrides": null,
+                "models": {
+                    "implementer": {"provider": "claude", "model": "custom"},
+                    "auditor": {"provider": "claude", "model": "auditor-model"}
+                },
+                "permission_modes": {
+                    "implementer": "bypassPermissions",
+                    "auditor": "plan"
+                }
+            }"#],
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let ev = task_event(
+            1,
+            "TaskPhaseConfigChanged",
+            serde_json::json!({
+                "phase": "implementer",
+                "provider": serde_json::Value::Null,
+                "model": serde_json::Value::Null,
+                "permission_mode": serde_json::Value::Null,
+            }),
+        );
+        apply_task_event(&tx, &ev).unwrap();
+        tx.commit().unwrap();
+
+        let task = get_task(&conn, "task1").unwrap().unwrap();
+        let current = &task.current_phase_config;
+        // Implementer per-phase entries removed entirely; resolver will fall through
+        // to the workspace default.
+        assert!(current["models"].get("implementer").is_none());
+        assert!(current["permission_modes"].get("implementer").is_none());
+        // Auditor untouched.
+        assert_eq!(
+            current["models"]["auditor"]["model"].as_str(),
+            Some("auditor-model"),
+        );
+    }
+
+    #[test]
+    fn task_created_initializes_current_phase_config_equal_to_phase_config() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::events::schema::apply_events_ddl(&conn).unwrap();
+        apply_workspace_db_projection_ddl(&conn).unwrap();
+        // Seed a fresh plan (without a pre-existing task — we want to exercise the
+        // TaskCreated applier directly).
+        conn.execute(
+            "INSERT INTO plan_projection
+                (id, workspace_id, title, description, source, source_metadata, status,
+                 task_count, running_task_count, done_task_count, failed_task_count,
+                 created_at, updated_at)
+             VALUES ('p1', 'ws', 't', '', 'manual', NULL, 'active', 0, 0, 0, 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let ev = AppendedEvent {
+            id: "ev1".into(),
+            aggregate_type: "task".into(),
+            aggregate_id: "task_new".into(),
+            seq: 1,
+            event_type: "TaskCreated".into(),
+            version: 3,
+            payload: serde_json::json!({
+                "plan_id": "p1",
+                "title": "demo",
+                "spec_markdown": "",
+                "phase_config": {
+                    "phases": ["implementer", "auditor"],
+                    "gate_overrides": null,
+                    "models": {
+                        "implementer": {"provider": "claude", "model": "sonnet"}
+                    },
+                    "permission_modes": null
+                }
+            })
+            .to_string(),
+            metadata: "{}".into(),
+            created_at: 0,
+        };
+        apply_task_event(&tx, &ev).unwrap();
+        tx.commit().unwrap();
+
+        let task = get_task(&conn, "task_new").unwrap().unwrap();
+        assert_eq!(task.phase_config, task.current_phase_config);
+        assert_eq!(
+            task.current_phase_config["models"]["implementer"]["model"].as_str(),
+            Some("sonnet"),
+        );
     }
 
     #[test]

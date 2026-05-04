@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rusqlite::params;
+use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Manager};
 use thiserror::Error;
@@ -39,6 +40,13 @@ pub enum PipelineError {
     Dispatch(String),
     #[error("internal: {0}")]
     Internal(String),
+}
+
+fn unix_now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn make_metadata(actor: &str) -> EventMetadata {
@@ -123,11 +131,41 @@ fn parse_phase_config(value: &serde_json::Value) -> PhaseConfig {
     serde_json::from_value(value.clone()).unwrap_or_else(|_| PhaseConfig::bundled_default())
 }
 
+/// Outcome of a user-initiated `start_task`. Either we kicked off the first
+/// phase (and return its `phase_run_id`) or we observed unmet dependencies
+/// and queued the task for auto-start. The toolbar uses the discriminant to
+/// pick the right inline feedback ("Started auditor" vs "Queued — waiting
+/// for 2 dependencies").
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StartTaskResult {
+    Started { phase_run_id: String },
+    Queued { task_id: String },
+}
+
 /// Public command: kicks off the first phase in a task's `phase_config`. If the task
 /// already has phase runs, this still starts the first configured phase — useful for
 /// retry-from-scratch flows. (For "continue from where we left off" behaviour, use the
 /// per-phase `start_real_phase` directly.)
-pub async fn start_task(app: AppHandle, task_id: String) -> Result<String, PipelineError> {
+///
+/// The `force_run` parameter bypasses the dependency-block check; the UI's
+/// overflow menu wires it true for "Run anyway (ignore dependencies)" — the
+/// escape hatch the brief specifies. The default user-clicked-Run path
+/// passes `false` and respects the queue.
+pub async fn start_task(
+    app: AppHandle,
+    task_id: String,
+    force_run: bool,
+) -> Result<StartTaskResult, PipelineError> {
+    // Queue check — the only place that fires `TaskQueued`. The auditor
+    // verdict revise / pipeline auto-progression / per-phase re-run paths
+    // skip this entirely because they're working on tasks that are already
+    // in flight (so by definition unblocked at start time).
+    if !force_run {
+        if let Some(result) = maybe_queue_task(&app, &task_id)? {
+            return Ok(result);
+        }
+    }
     let (phase_config_value, _workspace_id) = read_task_pipeline_state(&app, &task_id)?;
     let config = parse_phase_config(&phase_config_value);
     let first = config
@@ -135,7 +173,154 @@ pub async fn start_task(app: AppHandle, task_id: String) -> Result<String, Pipel
         .first()
         .copied()
         .ok_or(PipelineError::EmptyPhaseConfig)?;
-    dispatch_phase(app, task_id, first, false, None).await
+    let phase_run_id = dispatch_phase(app, task_id, first, false, None).await?;
+    Ok(StartTaskResult::Started { phase_run_id })
+}
+
+/// Inspect the task's `is_blocked` state. If blocked, append `TaskQueued`
+/// (idempotent: re-queueing a queued task is a no-op since the projection
+/// flag is already set, but the event log records the user's repeated
+/// click as a fresh entry — which is fine, audit trail). Returns
+/// `Some(StartTaskResult::Queued)` to short-circuit the caller.
+///
+/// Returns `None` when the task is unblocked and the caller should proceed
+/// to dispatch the first phase as normal.
+fn maybe_queue_task(
+    app: &AppHandle,
+    task_id: &str,
+) -> Result<Option<StartTaskResult>, PipelineError> {
+    let active = app
+        .try_state::<ActiveWorkspaceState>()
+        .ok_or(PipelineError::NoActiveWorkspace)?;
+    let mut guard = active
+        .0
+        .lock()
+        .map_err(|e| PipelineError::Internal(e.to_string()))?;
+    let aw = guard.as_mut().ok_or(PipelineError::NoActiveWorkspace)?;
+    let task = projections::get_task(&aw.conn, task_id)
+        .map_err(|e| PipelineError::Internal(e.to_string()))?
+        .ok_or_else(|| PipelineError::TaskNotFound(task_id.to_string()))?;
+    if !task.is_blocked {
+        return Ok(None);
+    }
+    // Already queued: nothing new to record. Return Queued so the caller
+    // tells the UI "yep, still waiting." A second click on a queued task
+    // shouldn't fire phantom TaskQueued events.
+    if task.is_queued {
+        return Ok(Some(StartTaskResult::Queued {
+            task_id: task_id.to_string(),
+        }));
+    }
+    let workspace_id = aw.id.clone();
+    let now = unix_now_millis();
+    let payload = json!({ "queued_at": now }).to_string();
+    let seq = crate::phases::runtime::current_seq(&aw.conn, "task", task_id)
+        .map_err(PipelineError::Internal)?;
+    crate::phases::runtime::append_task_step(
+        &mut aw.conn,
+        app,
+        &workspace_id,
+        task_id,
+        seq,
+        NewEvent {
+            event_type: "TaskQueued".into(),
+            version: 1,
+            payload,
+        },
+        &make_metadata("user:local"),
+    )
+    .map_err(PipelineError::Internal)?;
+    Ok(Some(StartTaskResult::Queued {
+        task_id: task_id.to_string(),
+    }))
+}
+
+/// Hook fired after a `TaskMerged` event commits. Recomputes `is_blocked`
+/// for dependents (already done in the projection applier — this hook just
+/// emits `TaskUnblocked` events and dispatches queued tasks). Per the
+/// brief: auto-derived events are emitted *after* the triggering event's
+/// transaction commits, not inside the applier.
+pub async fn on_task_merged(
+    app: AppHandle,
+    workspace_id: String,
+    merged_task_id: String,
+) -> Result<(), PipelineError> {
+    let unblocked = {
+        let active = app
+            .try_state::<ActiveWorkspaceState>()
+            .ok_or(PipelineError::NoActiveWorkspace)?;
+        let mut guard = active
+            .0
+            .lock()
+            .map_err(|e| PipelineError::Internal(e.to_string()))?;
+        let aw = guard.as_mut().ok_or(PipelineError::NoActiveWorkspace)?;
+        crate::dependencies::find_newly_unblocked(&aw.conn, &workspace_id, &merged_task_id)
+            .map_err(|e| PipelineError::Internal(e.to_string()))?
+    };
+    if unblocked.is_empty() {
+        return Ok(());
+    }
+    let now = unix_now_millis();
+    for u in unblocked {
+        // Append TaskUnblocked so the audit trail records "this was
+        // automatically unblocked at time T by the merge of X." The
+        // projection applier already set is_blocked=0 in the merge tx
+        // (cross-aggregate update), so this event also records
+        // unblocked_at + last_unblocking_task_id.
+        {
+            let active = app
+                .try_state::<ActiveWorkspaceState>()
+                .ok_or(PipelineError::NoActiveWorkspace)?;
+            let mut guard = active
+                .0
+                .lock()
+                .map_err(|e| PipelineError::Internal(e.to_string()))?;
+            let aw = guard.as_mut().ok_or(PipelineError::NoActiveWorkspace)?;
+            let payload = json!({
+                "unblocked_at": now,
+                "unblocking_task_id": merged_task_id,
+            })
+            .to_string();
+            let seq = crate::phases::runtime::current_seq(&aw.conn, "task", &u.task_id)
+                .map_err(PipelineError::Internal)?;
+            if let Err(e) = crate::phases::runtime::append_task_step(
+                &mut aw.conn,
+                &app,
+                &workspace_id,
+                &u.task_id,
+                seq,
+                NewEvent {
+                    event_type: "TaskUnblocked".into(),
+                    version: 1,
+                    payload,
+                },
+                &make_metadata("system:queue_manager"),
+            ) {
+                eprintln!(
+                    "queue manager: TaskUnblocked append failed for {}: {}",
+                    u.task_id, e
+                );
+                continue;
+            }
+        }
+        // Auto-start only if the user had explicitly queued the task. An
+        // unqueued-but-unblocked task just gets its flag updated (above);
+        // the user can decide whether to run it.
+        if u.is_queued {
+            let app_clone = app.clone();
+            let task_id = u.task_id.clone();
+            tokio::spawn(async move {
+                // Pass force_run=true so we skip the queue check on this
+                // re-entry path — the queue check is what brought us here
+                // in the first place. By definition the task is unblocked
+                // now, but force_run keeps the code path explicit.
+                if let Err(e) = start_task(app_clone, task_id, true).await {
+                    eprintln!("queue manager: auto-start failed: {}", e);
+                }
+            });
+        }
+    }
+    Ok(())
 }
 
 fn read_task_pipeline_state(
@@ -155,7 +340,11 @@ fn read_task_pipeline_state(
     let task = projections::get_task(&aw.conn, task_id)
         .map_err(|e| PipelineError::Internal(e.to_string()))?
         .ok_or_else(|| PipelineError::TaskNotFound(task_id.to_string()))?;
-    Ok((task.phase_config, aw.id.clone()))
+    // Pipeline reads the *current* config, not the original `TaskCreated` snapshot —
+    // user edits via `TaskPhaseConfigChanged` take effect on the next run. The
+    // `TaskCreated.phase_config` snapshot is preserved for audit but isn't load-bearing
+    // at execution time. (`PhaseRunStarted` still captures what the run actually used.)
+    Ok((task.current_phase_config, aw.id.clone()))
 }
 
 /// True when the task is in a status that should suppress further auto-progression.
@@ -270,10 +459,11 @@ pub fn resolve_for_phase(
     let (phase_config_value, workspace_id) = read_task_pipeline_state(app, task_id)?;
     let task_config = parse_phase_config(&phase_config_value);
     let workspace_settings = load_workspace_settings(app, &workspace_id);
-    Ok(settings::resolve_phase_settings(
+    Ok(settings::resolve_phase_settings_with(
         &workspace_settings,
         &task_config,
         phase,
+        |pid| crate::providers::available_permission_modes(pid, phase),
     ))
 }
 
@@ -293,7 +483,12 @@ pub fn preview_resolved_settings(
         .map(|p| {
             (
                 *p,
-                settings::resolve_phase_settings(&workspace_settings, task_config, *p),
+                settings::resolve_phase_settings_with(
+                    &workspace_settings,
+                    task_config,
+                    *p,
+                    |pid| crate::providers::available_permission_modes(pid, *p),
+                ),
             )
         })
         .collect()
@@ -441,7 +636,9 @@ async fn run_gates_for_phase(
         let task = projections::get_task(&aw.conn, task_id)
             .map_err(|e| PipelineError::Internal(e.to_string()))?
             .ok_or_else(|| PipelineError::TaskNotFound(task_id.to_string()))?;
-        (task.worktree_path, task.phase_config)
+        // Same rationale as `read_task_pipeline_state`: gates run against the latest
+        // effective config so toggling a per-phase setting takes effect immediately.
+        (task.worktree_path, task.current_phase_config)
     };
 
     let task_phase_config = parse_phase_config(&task_phase_config_value);
