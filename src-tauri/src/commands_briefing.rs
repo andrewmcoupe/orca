@@ -9,6 +9,7 @@ use std::sync::Arc;
 use rusqlite::{params, Connection};
 use serde_json::json;
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_notification::NotificationExt;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
@@ -379,7 +380,7 @@ fn start_generation_internal(
     let app_for_task = app.clone();
     let briefing_id_owned = briefing_id.to_string();
     let inflight_for_task = Arc::clone(&inflight);
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let guard = InflightGuard::new(Arc::clone(&inflight_for_task), briefing_id_owned.clone());
         execute_generation_task(app_for_task, briefing_id_owned, inputs, kind, cancel, guard).await;
     });
@@ -512,6 +513,17 @@ fn land_terminal_event(
         }
     };
 
+    let notification: (&str, String) = match &outcome {
+        TerminalOutcome::Produced { draft, .. } => {
+            ("Briefing draft ready", draft.title.clone())
+        }
+        TerminalOutcome::Failed { reason } => ("Briefing generation failed", reason.clone()),
+        TerminalOutcome::Cancelled => (
+            "Briefing generation cancelled",
+            "You cancelled the run.".into(),
+        ),
+    };
+
     let result = match outcome {
         TerminalOutcome::Produced {
             draft,
@@ -577,6 +589,11 @@ fn land_terminal_event(
 
     emit_projection_updated(app, Some(workspace_id), BRIEFING_AGGREGATE, briefing_id);
     emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
+
+    let (title, body) = notification;
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("briefing {}: failed to show notification: {}", briefing_id, e);
+    }
 }
 
 fn now_millis() -> i64 {

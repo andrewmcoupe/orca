@@ -335,8 +335,6 @@ CREATE TABLE IF NOT EXISTS briefing_projection (
     updated_at              INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_briefing_projection_workspace ON briefing_projection (workspace_id);
-CREATE INDEX IF NOT EXISTS idx_briefing_projection_generating
-    ON briefing_projection (workspace_id, is_generating);
 "#;
 
 pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<()> {
@@ -400,6 +398,13 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
             }
         }
     }
+    // Index over `is_generating` lives here rather than in the CREATE TABLE block
+    // because pre-existing workspace DBs need the column migration to run first.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_briefing_projection_generating
+         ON briefing_projection (workspace_id, is_generating)",
+        [],
+    )?;
     // One-time backfill: rows that pre-date the `current_phase_config` column landed
     // with the default '{}'. Copy the original `phase_config` over so the resolver
     // sees something useful. New rows go through the `TaskCreated` applier which

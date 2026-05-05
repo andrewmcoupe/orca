@@ -142,6 +142,22 @@ body {
   color: var(--foreground);
 }
 
+/* Tauri custom title bar. The bar itself is draggable; interactive children
+ * opt out so clicks/inputs work. `-webkit-app-region` is the macOS-native
+ * mechanism (inherits through children), and works alongside Tauri's
+ * `data-tauri-drag-region` attribute on Windows/Linux. */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] a,
+[data-tauri-drag-region] input,
+[data-tauri-drag-region] select,
+[data-tauri-drag-region] textarea,
+[data-tauri-drag-region] [role="button"] {
+  -webkit-app-region: no-drag;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

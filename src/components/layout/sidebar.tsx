@@ -117,10 +117,10 @@ export function WorkspacesSidebar() {
           </Accordion>
         )}
       </div>
-      <nav className="flex flex-col p-2 bg-background border-t">
+      {/*<nav className="flex flex-col p-2 bg-background border-t">
         <SidebarGlobalLink to="/settings">Settings</SidebarGlobalLink>
         <SidebarGlobalLink to="/">About</SidebarGlobalLink>
-      </nav>
+      </nav>*/}
     </aside>
   );
 }

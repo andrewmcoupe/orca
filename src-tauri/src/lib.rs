@@ -55,6 +55,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             let conn = db::init().expect("failed to initialize global database");
             app.manage(GlobalDb(Mutex::new(conn)));
