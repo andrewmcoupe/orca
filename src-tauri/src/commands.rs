@@ -1205,43 +1205,6 @@ pub fn list_permission_modes(provider_id: String, phase: String) -> Result<Vec<S
 // ======================================================================
 
 #[tauri::command]
-pub async fn start_fake_phase(
-    app: AppHandle,
-    task_id: String,
-    phase: String,
-) -> Result<String, String> {
-    let (workspace_id, workspace_path) = {
-        let active_state = app.state::<ActiveWorkspaceState>();
-        let guard = active_state.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard
-            .as_ref()
-            .ok_or_else(|| "no active workspace".to_string())?;
-        (aw.id.clone(), aw.path.clone())
-    };
-
-    let phase_run_id = format!("pr_{}", Ulid::new());
-    let app_clone = app.clone();
-    let phase_run_id_clone = phase_run_id.clone();
-
-    tokio::spawn(async move {
-        if let Err(e) = phases::fake::run(
-            app_clone,
-            workspace_id,
-            workspace_path,
-            task_id,
-            phase,
-            phase_run_id_clone,
-        )
-        .await
-        {
-            eprintln!("fake phase failed: {}", e);
-        }
-    });
-
-    Ok(phase_run_id)
-}
-
-#[tauri::command]
 pub async fn start_real_phase(
     app: AppHandle,
     task_id: String,

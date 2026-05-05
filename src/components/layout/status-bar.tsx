@@ -11,6 +11,7 @@ import {
 import type { ProviderStatus } from "@/features/providers/types";
 import type { RecentEvent } from "@/features/events/types";
 import { cn } from "@/lib/utils";
+import { Button } from "../ui/button";
 
 type EventTone = "success" | "running" | "failure" | "neutral";
 
@@ -199,7 +200,9 @@ function WorkspaceState({
       {branchQ.data && (
         <span className="inline-flex items-center gap-1">
           <GitBranch className="size-3" aria-hidden="true" />
-          <span className="max-w-[140px] truncate">{branchQ.data}</span>
+          <span className="max-w-[140px] truncate" title={branchQ.data}>
+            {branchQ.data}
+          </span>
         </span>
       )}
       {activeWorkspaceId && (
@@ -218,20 +221,16 @@ function WorkspaceState({
           {inFlight} in flight
         </span>
       )}
-      <button
+      <Button
+        variant={"ghost"}
+        size={"xs"}
         type="button"
         onClick={onOpenEvents}
-        className="text-muted-foreground/80 hover:text-foreground underline-offset-2 hover:underline"
+        className={"border-none text-[10px] font-mono"}
         title="Open recent events"
       >
         events
-      </button>
-      <span
-        className="text-muted-foreground/50"
-        title="Command palette (coming soon)"
-      >
-        ⌘K
-      </span>
+      </Button>
     </div>
   );
 }

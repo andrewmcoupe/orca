@@ -30,13 +30,6 @@ export function usePhaseRunOutput(
   });
 }
 
-export function useStartFakePhase() {
-  return useMutation({
-    mutationFn: ({ taskId, phase }: { taskId: string; phase: string }) =>
-      phaseRunsApi.startFake(taskId, phase),
-  });
-}
-
 export function useStartRealPhase() {
   return useMutation({
     mutationFn: (vars: {

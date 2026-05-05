@@ -7,8 +7,6 @@ export const phaseRunsApi = {
     invoke<PhaseRun[]>("list_phase_runs", { taskId }),
   listOutput: (phaseRunId: string) =>
     invoke<PhaseRunChunk[]>("list_phase_run_output", { phaseRunId }),
-  startFake: (taskId: string, phase: string) =>
-    invoke<string>("start_fake_phase", { taskId, phase }),
   startReal: (params: {
     taskId: string;
     phase: string;

@@ -92,7 +92,6 @@ pub fn run() {
             commands::get_task,
             commands::list_phase_runs,
             commands::list_phase_run_output,
-            commands::start_fake_phase,
             commands::start_real_phase,
             commands::start_task,
             commands::start_task_phase,

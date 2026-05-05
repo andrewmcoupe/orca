@@ -39,7 +39,6 @@ import {
 import {
   useCancelPhaseRun,
   usePhaseRuns,
-  useStartFakePhase,
   useStartTask,
   useStartTaskPhase,
 } from "@/features/phase-runs/hooks";
@@ -149,7 +148,6 @@ export function TaskActionToolbar({
   ]);
 
   const startTask = useStartTask();
-  const startFake = useStartFakePhase();
   const startTaskPhase = useStartTaskPhase();
   const cancelPhaseRun = useCancelPhaseRun();
   const approve = useApproveTaskAnyway();
@@ -411,9 +409,6 @@ export function TaskActionToolbar({
           onDeleteWorktree={() =>
             deleteWorktree.mutate({ taskId: task.id, force: false })
           }
-          onRunFake={() =>
-            startFake.mutate({ taskId: task.id, phase: "implementer" })
-          }
         />
       </div>
 
@@ -505,7 +500,6 @@ function OverflowMenu({
   onRunAnyway,
   onCopyId,
   onDeleteWorktree,
-  onRunFake,
 }: {
   task: Task;
   tasksInPlan: Task[];
@@ -517,7 +511,6 @@ function OverflowMenu({
   onRunAnyway: () => void;
   onCopyId: () => void;
   onDeleteWorktree: () => void;
-  onRunFake: () => void;
 }) {
   // Brief 4 / M7: "Edit dependencies" lives in the overflow when the
   // dependencies section isn't rendered (no deps + not blocked); we still
@@ -612,17 +605,6 @@ function OverflowMenu({
         >
           <Trash />
           <span className="flex-1">Delete worktree</span>
-        </DropdownMenuItem>
-
-        <DropdownMenuSeparator />
-
-        {/* Development tools */}
-        <DropdownMenuItem
-          disabled={!!phaseRunning || task.status === "merged"}
-          onClick={onRunFake}
-        >
-          <Play />
-          <span className="flex-1">Run (fake)</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

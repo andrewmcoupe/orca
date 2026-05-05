@@ -18,7 +18,6 @@ pub fn merge_extra_env(
 }
 
 use rusqlite::Connection;
-use serde_json::json;
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
@@ -194,27 +193,6 @@ pub fn append_phase_run_step(
 
 fn map_append_err(e: AppendError) -> String {
     e.to_string()
-}
-
-pub fn started_payload(
-    task_id: &str,
-    phase: &str,
-    provider: &str,
-    model: &str,
-    prompt_template_id: &str,
-    worktree_path: &str,
-    base_commit: &str,
-) -> String {
-    json!({
-        "task_id": task_id,
-        "phase": phase,
-        "provider": provider,
-        "model": model,
-        "prompt_template_id": prompt_template_id,
-        "worktree_path": worktree_path,
-        "base_commit": base_commit,
-    })
-    .to_string()
 }
 
 /// Append one task event in its own transaction, run the projection applier, commit, then
