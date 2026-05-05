@@ -2,6 +2,7 @@ import { useState } from "react";
 import { createRoute, useParams } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { ContentColumn } from "@/components/layout/content-column";
 import { Separator } from "@/components/ui/separator";
 import { eventsApi } from "@/features/events/api";
 import { useRemoveWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
@@ -28,7 +29,7 @@ function WorkspaceSettingsPage() {
   }
 
   return (
-    <div className="space-y-6 px-5 py-4">
+    <ContentColumn className="space-y-6 px-5 py-4">
       <header>
         <h1 className="text-[18px] font-medium tracking-tight">
           Workspace settings
@@ -99,7 +100,7 @@ function WorkspaceSettingsPage() {
           </Button>
         </div>
       </section>
-    </div>
+    </ContentColumn>
   );
 }
 

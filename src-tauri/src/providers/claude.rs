@@ -69,7 +69,7 @@ impl Provider for ClaudeProvider {
     fn default_options(&self) -> Value {
         json!({
             "permission_mode": "acceptEdits",
-            "model": "claude-sonnet-4-5",
+            "model": "claude-sonnet-4-6",
         })
     }
 
@@ -99,7 +99,7 @@ impl Provider for ClaudeProvider {
                 id: "model".into(),
                 label: "Model".into(),
                 description: Some("Anthropic model identifier.".into()),
-                default: "claude-sonnet-4-5".into(),
+                default: "claude-sonnet-4-6".into(),
             },
         ]
     }
@@ -164,18 +164,28 @@ impl Provider for ClaudeProvider {
     }
 
     fn known_models(&self) -> Vec<KnownModel> {
+        // Mirrors the model picker in the Claude desktop app. Order matches
+        // the app: latest-and-greatest first, then prior generations.
         vec![
             KnownModel {
-                id: "claude-opus-4-5".into(),
-                label: "Claude Opus 4.5".into(),
+                id: "claude-opus-4-7".into(),
+                label: "Claude Opus 4.7".into(),
             },
             KnownModel {
-                id: "claude-sonnet-4-5".into(),
-                label: "Claude Sonnet 4.5".into(),
+                id: "claude-sonnet-4-6".into(),
+                label: "Claude Sonnet 4.6".into(),
             },
             KnownModel {
                 id: "claude-haiku-4-5".into(),
                 label: "Claude Haiku 4.5".into(),
+            },
+            KnownModel {
+                id: "claude-opus-4-6".into(),
+                label: "Claude Opus 4.6".into(),
+            },
+            KnownModel {
+                id: "claude-sonnet-4-5".into(),
+                label: "Claude Sonnet 4.5".into(),
             },
         ]
     }

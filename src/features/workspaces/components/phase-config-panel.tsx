@@ -3,10 +3,7 @@ import { CaretRight } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import {
-  useUpdateWorkspaceSettings,
-  useWorkspaceSettings,
-} from "../hooks";
+import { useUpdateWorkspaceSettings, useWorkspaceSettings } from "../hooks";
 import type { PhaseConfig, PhaseType, WorkspaceSettings } from "../types";
 
 /**
@@ -14,7 +11,10 @@ import type { PhaseConfig, PhaseType, WorkspaceSettings } from "../types";
  * Order is fixed by the brief (test_author → implementer → auditor) — we never let
  * users reorder, only opt phases in or out.
  */
-function buildPhases(includeTestAuthor: boolean, includeAuditor: boolean): PhaseType[] {
+function buildPhases(
+  includeTestAuthor: boolean,
+  includeAuditor: boolean,
+): PhaseType[] {
   const out: PhaseType[] = [];
   if (includeTestAuthor) out.push("test_author");
   out.push("implementer");
@@ -103,9 +103,7 @@ export function PhaseConfigPanel({ workspaceId }: { workspaceId: string }) {
         className="grid grid-cols-1 items-stretch gap-3 lg:gap-2 lg:[grid-template-columns:var(--phase-cols)]"
         style={
           {
-            "--phase-cols": slots
-              .map(() => "minmax(0,1fr)")
-              .join(" auto "),
+            "--phase-cols": slots.map(() => "minmax(0,1fr)").join(" auto "),
           } as CSSProperties
         }
       >
@@ -186,11 +184,6 @@ function PhaseToggle({
           <Label htmlFor={id} className="font-mono text-sm">
             {label}
           </Label>
-          {required && (
-            <span className="text-muted-foreground/70 rounded-sm border px-1 text-[9px] uppercase tracking-wide">
-              required
-            </span>
-          )}
         </div>
         <span className="text-muted-foreground/60 font-mono text-[10px] tabular-nums">
           {String(stepIndex).padStart(2, "0")}
