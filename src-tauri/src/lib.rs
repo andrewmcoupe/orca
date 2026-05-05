@@ -1,6 +1,7 @@
 #![allow(clippy::too_many_arguments)]
 
 mod briefing;
+mod briefing_inflight;
 mod db;
 mod dependencies;
 mod diff;
@@ -27,6 +28,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 use tauri::{Manager, RunEvent};
 
+use crate::briefing_inflight::InflightBriefings;
 use crate::phases::InflightRuns;
 use crate::providers::ProviderCache;
 use crate::subprocess::ChildTracker;
@@ -47,6 +49,8 @@ pub struct ActiveWorkspace {
 pub fn run() {
     let tracker: Arc<ChildTracker> = Arc::new(ChildTracker::new());
     let tracker_for_shutdown = Arc::clone(&tracker);
+    let briefings: Arc<InflightBriefings> = Arc::new(InflightBriefings::new());
+    let briefings_for_shutdown = Arc::clone(&briefings);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -56,6 +60,7 @@ pub fn run() {
             app.manage(GlobalDb(Mutex::new(conn)));
             app.manage(ActiveWorkspaceState(Mutex::new(None)));
             app.manage(tracker.clone());
+            app.manage(briefings.clone());
             app.manage(InflightRuns::new());
             app.manage(diff_service::DiffCache::new());
             // Detect providers once on startup; the result populates the cache for the
@@ -139,8 +144,11 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(move |_app, event| {
             // Kill any still-running child subprocesses on app exit so we don't leave
-            // orphan `claude` processes behind.
+            // orphan `claude` processes behind. Also signal cancel on every in-flight
+            // briefing generation so spawned tasks have a brief window to land their
+            // BriefingGenerationCancelled event before the process tears down.
             if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+                briefings_for_shutdown.cancel_all();
                 tracker_for_shutdown.kill_all();
             }
         });
