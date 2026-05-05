@@ -55,7 +55,7 @@ export function DiffFileSection({ file, concerns, defaultOpen = true }: Props) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="bg-background hover:bg-muted/40 sticky top-0 z-[1] flex w-full items-center gap-1.5 border-b px-2.5 py-1.5 text-left"
+        className="bg-background hover:bg-muted sticky top-0 z-[1] flex w-full items-center gap-1.5 border-b px-2.5 py-1.5 text-left"
       >
         {open ? (
           <CaretDown className="size-3 shrink-0" />
@@ -98,7 +98,7 @@ export function DiffFileSection({ file, concerns, defaultOpen = true }: Props) {
         )}
       </button>
       {open && (
-        <div className="text-[11px]">
+        <div className="overflow-x-auto text-[11px]">
           {file.is_binary ? (
             <div className="text-muted-foreground flex items-center gap-2 px-3 py-2 font-mono text-[11px]">
               <FileX className="size-3" />
@@ -199,7 +199,7 @@ function DiffLineRow({
         {sigil}
       </span>
       <span
-        className="min-w-0 flex-1 whitespace-pre overflow-x-auto pr-2 text-[11px]"
+        className="flex-1 whitespace-pre pr-2 text-[11px]"
         // syntect output is already escaped; we trust it.
         dangerouslySetInnerHTML={{ __html: html || "&nbsp;" }}
       />
@@ -293,7 +293,7 @@ function UnchangedAnchorsInFile({
               ·
             </span>
             <span
-              className="text-muted-foreground min-w-0 flex-1 whitespace-pre overflow-x-auto pr-2 text-[11px]"
+              className="text-muted-foreground flex-1 whitespace-pre pr-2 text-[11px]"
               dangerouslySetInnerHTML={{
                 __html:
                   highlightLineFromFile(file, lineNo) ??

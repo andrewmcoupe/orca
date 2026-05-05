@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ArrowsOutSimple,
   ArrowsInSimple,
   ArrowClockwise,
+  ArrowSquareOut,
   CaretRight,
+  SidebarSimple,
 } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,7 @@ import type {
 } from "../types";
 import { DiffFileSection } from "./diff-file-section";
 import { UnchangedConcernsSection } from "./unchanged-concerns-section";
+import { GitDiffIcon } from "@phosphor-icons/react/dist/ssr";
 
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 600;
@@ -97,13 +99,8 @@ export function DiffPanel({ workspaceId, taskId, onOpenModal }: Props) {
 
   return (
     <aside
-      className="bg-card sticky top-0 self-start flex shrink-0 border-l"
-      style={{
-        width: effectiveWidth,
-        // The workspace layout's header is h-7 (1.75rem). Subtract it so the
-        // panel fills the visible viewport without overflowing the page.
-        height: "calc(100vh - 1.75rem)",
-      }}
+      className="bg-card flex h-full shrink-0 border-l"
+      style={{ width: effectiveWidth }}
     >
       {!collapsed && (
         <button
@@ -148,36 +145,26 @@ function CollapsedRail({
   onOpenModal?: () => void;
 }) {
   return (
-    <div className="text-muted-foreground flex h-full w-full flex-col items-center gap-2 py-2">
-      <button
+    <div className="text-muted-foreground flex h-full w-full flex-col items-center gap-1 py-1.5">
+      <Button
+        variant={"secondary"}
         type="button"
         onClick={onExpand}
-        className="hover:text-foreground hover:bg-muted/40 flex w-full flex-col items-center gap-2 py-1"
-        title="Expand diff panel"
+        className="hover:text-foreground hover:bg-muted/40 flex size-6 items-center justify-center rounded-sm"
+        title="Open diff sidebar"
       >
-        <ArrowsOutSimple className="size-3.5" />
-        <span
-          className="text-[10px] uppercase tracking-[0.16em]"
-          style={{ writingMode: "vertical-rl" }}
-        >
-          Diff
-        </span>
-      </button>
+        <SidebarSimple className="size-3.5" />
+      </Button>
       {onOpenModal ? (
-        <button
+        <Button
+          variant={"secondary"}
           type="button"
           onClick={onOpenModal}
-          className="hover:text-foreground hover:bg-muted/40 mt-auto flex w-full flex-col items-center gap-2 py-1"
-          title="Review diff in modal"
+          className="hover:text-foreground hover:bg-muted/40 flex size-6 items-center justify-center rounded-sm"
+          title="Open review modal"
         >
-          <CaretRight className="size-3.5" />
-          <span
-            className="text-[10px] uppercase tracking-[0.16em]"
-            style={{ writingMode: "vertical-rl" }}
-          >
-            Review
-          </span>
-        </button>
+          <GitDiffIcon className="size-3.5" />
+        </Button>
       ) : null}
     </div>
   );
