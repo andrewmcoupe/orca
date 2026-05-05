@@ -514,9 +514,7 @@ fn land_terminal_event(
     };
 
     let notification: (&str, String) = match &outcome {
-        TerminalOutcome::Produced { draft, .. } => {
-            ("Briefing draft ready", draft.title.clone())
-        }
+        TerminalOutcome::Produced { draft, .. } => ("Briefing draft ready", draft.title.clone()),
         TerminalOutcome::Failed { reason } => ("Briefing generation failed", reason.clone()),
         TerminalOutcome::Cancelled => (
             "Briefing generation cancelled",
@@ -592,7 +590,10 @@ fn land_terminal_event(
 
     let (title, body) = notification;
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
-        eprintln!("briefing {}: failed to show notification: {}", briefing_id, e);
+        eprintln!(
+            "briefing {}: failed to show notification: {}",
+            briefing_id, e
+        );
     }
 }
 

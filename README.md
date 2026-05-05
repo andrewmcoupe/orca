@@ -57,11 +57,13 @@ The first `tauri dev` compiles the Rust side from scratch (3–10 minutes depend
 
 ## Rust workspace
 
-Backend code lives in `src-tauri/`. Useful commands (run from `src-tauri/`):
+Backend code lives in `src-tauri/`. Run these from the `src-tauri/` directory:
 
 - `cargo test` — run the unit/integration tests.
 - `cargo clippy --all-targets --all-features -- -D warnings` — lint.
-- `cargo fmt --all` — format.
+- `cargo fmt --all` — format the workspace in place.
+- `cargo fmt --all -- --check` — verify formatting without writing (use in CI / pre-commit).
+- `cargo check` — fast type-check without producing binaries.
 
 ## Recommended IDE
 
