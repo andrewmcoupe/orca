@@ -1,6 +1,17 @@
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { usePlans } from "@/features/plans/hooks";
+import { useProviders } from "@/features/providers/hooks";
+import { useAddWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
+import type { Workspace } from "@/features/workspaces/types";
+import { cn } from "@/lib/utils";
+import { Plus } from "@phosphor-icons/react";
 import { Link, useMatches } from "@tanstack/react-router";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ClipboardText, Gear, Info, Plug, Plus } from "@phosphor-icons/react";
 import {
   type ComponentProps,
   type ReactNode,
@@ -9,17 +20,6 @@ import {
   useMemo,
   useState,
 } from "react";
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
-import { useAddWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
-import { usePlans } from "@/features/plans/hooks";
-import { useProviders } from "@/features/providers/hooks";
-import type { Workspace } from "@/features/workspaces/types";
-import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 
 const EXPANSION_KEY = "orca:sidebar:expanded-workspaces";

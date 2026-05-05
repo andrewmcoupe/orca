@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
-  ArrowsInSimple,
   ArrowClockwise,
-  ArrowSquareOut,
+  ArrowsInSimple,
   CaretRight,
   SidebarSimple,
 } from "@phosphor-icons/react";
-import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+import { GitDiffIcon } from "@phosphor-icons/react/dist/ssr";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useRefreshTaskDiff,
   useTaskDiff,
@@ -21,7 +21,6 @@ import type {
 } from "../types";
 import { DiffFileSection } from "./diff-file-section";
 import { UnchangedConcernsSection } from "./unchanged-concerns-section";
-import { GitDiffIcon } from "@phosphor-icons/react/dist/ssr";
 
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 600;
