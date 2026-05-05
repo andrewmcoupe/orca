@@ -281,7 +281,7 @@ function Field({
 
 function RawJson({ value }: { value: unknown }) {
   return (
-    <pre className="bg-muted/40 overflow-x-auto rounded-sm p-2 font-mono text-[11px]">
+    <pre className="scrollbar-styled bg-muted/40 overflow-x-auto rounded-sm p-2 font-mono text-[11px]">
       {JSON.stringify(value, null, 2)}
     </pre>
   );

@@ -258,7 +258,7 @@ function ConflictView({
         <code className="font-mono">{analysis.source_branch}</code> and{" "}
         <code className="font-mono">{analysis.target_branch}</code>:
       </p>
-      <ul className="bg-muted/30 max-h-40 space-y-1 overflow-y-auto rounded-md border p-2 font-mono text-xs">
+      <ul className="scrollbar-styled bg-muted/30 max-h-40 space-y-1 overflow-y-auto rounded-md border p-2 font-mono text-xs">
         {analysis.conflicts.map((path) => (
           <li key={path}>
             <button
@@ -438,7 +438,7 @@ function AnalysisErrorView({
         <div className="text-destructive font-medium">{parsed.title}</div>
         {parsed.body && <div className="text-foreground/80">{parsed.body}</div>}
         {parsed.fileList && parsed.fileList.length > 0 && (
-          <ul className="mt-1 max-h-40 space-y-0.5 overflow-y-auto font-mono text-[11px]">
+          <ul className="scrollbar-styled mt-1 max-h-40 space-y-0.5 overflow-y-auto font-mono text-[11px]">
             {parsed.fileList.map((p) => (
               <li key={p}>{p}</li>
             ))}

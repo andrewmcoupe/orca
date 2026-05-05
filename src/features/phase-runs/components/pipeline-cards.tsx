@@ -167,7 +167,7 @@ export function PipelineCards({
   return (
     // Horizontal scroll instead of wrap — wrapping would break the read of
     // "left to right is the pipeline order" once a config has 3+ phases.
-    <div className="flex items-stretch gap-2 overflow-x-auto pb-1">
+    <div className="scrollbar-styled flex items-stretch gap-2 overflow-x-auto pb-1">
       {phases.map((phase, idx) => {
         const latest = latestRunForPhase(phaseRuns, phase);
         const status = deriveStatus(latest);

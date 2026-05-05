@@ -80,7 +80,7 @@ export function EventsDrawer({
               Last {rows.length} events for this workspace. Newest first.
             </DrawerDescription>
           </DrawerHeader>
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="scrollbar-styled min-h-0 flex-1 overflow-y-auto">
             {!workspaceId ? (
               <p className="text-muted-foreground p-4 text-xs italic">
                 Select a workspace to view its events.
@@ -164,7 +164,7 @@ export function EventsDrawer({
 function EventDetailBody({ selected }: { selected: RecentEvent }) {
   const { data: detail, isLoading } = useEventDetail(selected.id);
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-3 font-mono text-xs">
+    <div className="scrollbar-styled flex-1 overflow-y-auto px-4 py-3 font-mono text-xs">
       <DetailRow label="Event ID" value={selected.id} />
       <DetailRow
         label="Aggregate"
@@ -184,7 +184,7 @@ function EventDetailBody({ selected }: { selected: RecentEvent }) {
         {isLoading ? (
           <div className="text-muted-foreground">Loading…</div>
         ) : detail ? (
-          <pre className="bg-muted/50 max-h-96 overflow-auto rounded border p-2 text-[11px] whitespace-pre-wrap break-words">
+          <pre className="scrollbar-styled bg-muted/50 max-h-96 overflow-auto rounded border p-2 text-[11px] whitespace-pre-wrap break-words">
             {prettyJson(detail.payload)}
           </pre>
         ) : (

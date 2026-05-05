@@ -37,7 +37,7 @@ function WorkspaceLayout() {
             visually unchanged in the common case. */}
         <InflightBriefingsIndicator />
       </header>
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="scrollbar-styled min-h-0 flex-1 overflow-auto">
         <Outlet />
       </div>
     </div>

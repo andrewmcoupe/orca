@@ -92,7 +92,7 @@ export function PhaseRunCard({ phaseRun }: { phaseRun: PhaseRun }) {
           errorMessage={phaseRun.error_message}
         />
       )}
-      <pre className="bg-zinc-950 text-zinc-100 max-h-64 overflow-auto whitespace-pre-wrap p-3 font-mono text-[11px] leading-relaxed">
+      <pre className="scrollbar-styled bg-zinc-950 text-zinc-100 max-h-64 overflow-auto whitespace-pre-wrap p-3 font-mono text-[11px] leading-relaxed">
         {stream || <span className="text-zinc-500">(no output)</span>}
       </pre>
 

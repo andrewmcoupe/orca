@@ -9,12 +9,12 @@ function RootLayout() {
   useProjectionInvalidation();
 
   return (
-    <div className="bg-background text-foreground flex h-screen flex-col">
+    <div className="bg-background text-foreground flex h-screen flex-col overflow-hidden">
       <TitleBar />
       <div className="flex min-h-0 flex-1">
         <WorkspacesSidebar />
         <div className="flex min-w-0 flex-1 flex-col">
-          <main className="min-h-0 flex-1 overflow-auto">
+          <main className="scrollbar-styled min-h-0 flex-1 overflow-auto">
             <Outlet />
           </main>
           <StatusBar />

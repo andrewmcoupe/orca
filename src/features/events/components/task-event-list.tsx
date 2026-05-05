@@ -82,7 +82,7 @@ export function TaskEventList({
 
   return (
     <>
-      <ol className="border-border bg-muted/10 divide-border/60 max-h-[260px] divide-y overflow-y-auto border font-mono text-[11px]">
+      <ol className="scrollbar-styled border-border bg-muted/10 divide-border/60 max-h-[260px] divide-y overflow-y-auto border font-mono text-[11px]">
         {filtered.map((e) => (
           <li key={e.id}>
             <button
@@ -149,7 +149,7 @@ export function TaskEventList({
 function EventDetailBody({ selected }: { selected: RecentEvent }) {
   const { data: detail, isLoading } = useEventDetail(selected.id);
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-3 font-mono text-xs">
+    <div className="scrollbar-styled flex-1 overflow-y-auto px-4 py-3 font-mono text-xs">
       <DetailRow label="Event ID" value={selected.id} />
       <DetailRow label="Aggregate" value={`${selected.aggregate_type} ${selected.aggregate_id}`} />
       <DetailRow label="Event type" value={selected.event_type} />
@@ -166,7 +166,7 @@ function EventDetailBody({ selected }: { selected: RecentEvent }) {
         {isLoading ? (
           <div className="text-muted-foreground">Loading…</div>
         ) : detail ? (
-          <pre className="bg-muted/50 max-h-96 overflow-auto rounded border p-2 text-[11px] whitespace-pre-wrap break-words">
+          <pre className="scrollbar-styled bg-muted/50 max-h-96 overflow-auto rounded border p-2 text-[11px] whitespace-pre-wrap break-words">
             {prettyJson(detail.payload)}
           </pre>
         ) : (

@@ -89,7 +89,7 @@ function InitializedRow({ task }: { task: Task }) {
         )}
       </button>
       {open && task.worktree_init_output && (
-        <pre className="bg-background/50 max-h-64 overflow-auto border-t px-3 py-2 font-mono text-[11px] leading-tight whitespace-pre-wrap">
+        <pre className="scrollbar-styled bg-background/50 max-h-64 overflow-auto border-t px-3 py-2 font-mono text-[11px] leading-tight whitespace-pre-wrap">
           {task.worktree_init_output}
         </pre>
       )}
@@ -114,7 +114,7 @@ function FailedRow({ task }: { task: Task }) {
         </span>
       </div>
       {task.worktree_init_output && (
-        <pre className="bg-background/60 max-h-64 overflow-auto border px-3 py-2 font-mono text-[11px] leading-tight whitespace-pre-wrap">
+        <pre className="scrollbar-styled bg-background/60 max-h-64 overflow-auto border px-3 py-2 font-mono text-[11px] leading-tight whitespace-pre-wrap">
           {task.worktree_init_output}
         </pre>
       )}

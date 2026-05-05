@@ -35,7 +35,7 @@ export function CascadePreview({
           )}
         </p>
       </div>
-      <ul className="bg-muted/30 max-h-44 space-y-1 overflow-auto rounded-md border p-2 text-xs">
+      <ul className="scrollbar-styled bg-muted/30 max-h-44 space-y-1 overflow-auto rounded-md border p-2 text-xs">
         {tasks.map((t) => (
           <li key={t.task_id} className="flex items-center gap-2">
             <span

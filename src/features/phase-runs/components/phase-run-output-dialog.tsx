@@ -182,7 +182,7 @@ export function PhaseRunOutputDialog({
         <pre
           ref={preRef}
           onScroll={onScroll}
-          className="bg-zinc-950 min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-[12px] leading-relaxed text-zinc-100 selection:bg-emerald-500/30"
+          className="scrollbar-styled bg-zinc-950 min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-[12px] leading-relaxed text-zinc-100 selection:bg-emerald-500/30"
         >
           {stream || (
             <span className="text-zinc-500">

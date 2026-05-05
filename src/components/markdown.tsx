@@ -66,7 +66,7 @@ const components: Components = {
     );
   },
   pre: ({ children }) => (
-    <pre className="bg-muted text-foreground my-3 overflow-x-auto rounded-md p-3 text-xs">
+    <pre className="scrollbar-styled bg-muted text-foreground my-3 overflow-x-auto rounded-md p-3 text-xs">
       {children}
     </pre>
   ),

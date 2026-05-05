@@ -39,7 +39,7 @@ export function FileOverlapDialog({
             working on. Conflicts may arise when both tasks merge.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-3 max-h-72 overflow-y-auto">
+        <div className="scrollbar-styled space-y-3 max-h-72 overflow-y-auto">
           {overlaps.map((o) => (
             <div
               key={o.other_task_id}

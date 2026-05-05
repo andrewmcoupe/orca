@@ -98,7 +98,7 @@ export function DiffFileSection({ file, concerns, defaultOpen = true }: Props) {
         )}
       </button>
       {open && (
-        <div className="overflow-x-auto text-[11px]">
+        <div className="scrollbar-styled overflow-x-auto text-[11px]">
           {file.is_binary ? (
             <div className="text-muted-foreground flex items-center gap-2 px-3 py-2 font-mono text-[11px]">
               <FileX className="size-3" />

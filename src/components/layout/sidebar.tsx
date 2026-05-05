@@ -86,7 +86,7 @@ export function WorkspacesSidebar() {
           <Plus className="size-2 text-foreground" />
         </Button>
       </div>
-      <div className="flex-1 overflow-y-auto">
+      <div className="scrollbar-styled flex-1 overflow-y-auto">
         {list.length === 0 ? (
           <p className="text-muted-foreground px-2 py-2 text-[11px]">
             No workspaces yet. Click + to add one.

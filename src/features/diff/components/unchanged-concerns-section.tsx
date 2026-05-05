@@ -176,7 +176,7 @@ function FileSnippets({
                   </span>
                   <span
                     className={cn(
-                      "min-w-0 flex-1 whitespace-pre overflow-x-auto pr-2",
+                      "scrollbar-styled min-w-0 flex-1 whitespace-pre overflow-x-auto pr-2",
                       isAnchor && "bg-amber-500/10",
                     )}
                   >

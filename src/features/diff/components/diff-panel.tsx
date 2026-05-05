@@ -309,7 +309,7 @@ function PanelBody({
   const unchanged = unchangedConcernsOf(data);
 
   return (
-    <div ref={ref} className="min-h-0 flex-1 overflow-auto">
+    <div ref={ref} className="scrollbar-styled min-h-0 flex-1 overflow-auto">
       {data.diff.files.map((file, idx) => (
         <DiffFileSection
           key={`${file.path}-${idx}`}

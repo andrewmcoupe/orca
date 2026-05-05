@@ -404,7 +404,7 @@ function FileTree({
   }
 
   return (
-    <nav className="bg-muted/10 w-[220px] shrink-0 overflow-auto border-r">
+    <nav className="scrollbar-styled bg-muted/10 w-[220px] shrink-0 overflow-auto border-r">
       <div className="text-muted-foreground/80 sticky top-0 z-[1] bg-muted/10 px-2.5 py-1.5 text-[10px] uppercase tracking-[0.06em]">
         Files ({files.length})
       </div>
@@ -487,7 +487,7 @@ function DiffArea({
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto text-[12px]">
+    <div className="scrollbar-styled min-h-0 flex-1 overflow-auto text-[12px]">
       {viewMode === "unified" ? (
         <UnifiedView file={file} concerns={onLineByKey} />
       ) : (
@@ -566,7 +566,7 @@ function ModalDiffLine({
         {sigil}
       </span>
       <span
-        className="min-w-0 flex-1 whitespace-pre overflow-x-auto pr-3 text-[12px]"
+        className="scrollbar-styled min-w-0 flex-1 whitespace-pre overflow-x-auto pr-3 text-[12px]"
         dangerouslySetInnerHTML={{ __html: line.html || "&nbsp;" }}
       />
     </div>
@@ -726,7 +726,7 @@ function SplitCell({
         {lineNo ?? ""}
       </span>
       <span
-        className="min-w-0 flex-1 whitespace-pre overflow-x-auto pr-3 text-[12px]"
+        className="scrollbar-styled min-w-0 flex-1 whitespace-pre overflow-x-auto pr-3 text-[12px]"
         dangerouslySetInnerHTML={{ __html: line.html || "&nbsp;" }}
       />
     </div>
@@ -756,7 +756,7 @@ function ConcernsRail({
   const general = concerns.filter((c) => c.mapping.kind === "unmapped");
 
   return (
-    <aside className="bg-muted/10 w-[300px] shrink-0 overflow-auto border-l">
+    <aside className="scrollbar-styled bg-muted/10 w-[300px] shrink-0 overflow-auto border-l">
       {verdict ? (
         <div className="border-b p-3">
           <div className="text-muted-foreground/80 mb-1 text-[10px] uppercase tracking-[0.06em]">

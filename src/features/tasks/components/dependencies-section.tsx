@@ -267,7 +267,7 @@ function DependencyEditor({
         placeholder="Filter…"
         className="w-full border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-foreground/20"
       />
-      <div className="max-h-72 overflow-y-auto border divide-y">
+      <div className="scrollbar-styled max-h-72 overflow-y-auto border divide-y">
         {eligible.length === 0 ? (
           <p className="px-2 py-3 text-center text-[11px] text-muted-foreground italic">
             {filter
