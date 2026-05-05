@@ -135,6 +135,7 @@ pub fn run() {
             commands_briefing::refine_briefing,
             commands_briefing::accept_briefing,
             commands_briefing::cancel_briefing,
+            commands_briefing::cancel_briefing_generation,
             commands_briefing::get_briefing,
             commands_briefing::list_active_briefings,
             commands_briefing::list_briefing_history,

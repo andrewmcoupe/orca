@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::briefing::{self, BriefingDraft, BriefingEdits, BriefingError, PathValidationResult};
+use crate::briefing_inflight::{GenerationKind, Inflight, InflightBriefings, InflightGuard};
 use crate::commands::{emit_projection_updated, make_metadata_for};
 use crate::events::append::append_events_in_tx;
 use crate::events::projections::{
@@ -23,6 +24,7 @@ use crate::events::types::NewEvent;
 use crate::providers::{self, ProviderCache};
 use crate::recent_events;
 use crate::subprocess::ChildTracker;
+use crate::workspace_db::open_workspace_db;
 use crate::{ActiveWorkspaceState, GlobalDb};
 
 const BRIEFING_AGGREGATE: &str = "briefing";
@@ -153,6 +155,11 @@ pub async fn start_briefing(
 // refine_briefing          (subsequent drafts)
 // ============================================================================
 
+/// Captured snapshot of everything `briefing::run_briefing_generation` needs to
+/// run independent of whichever workspace happens to be `active` while it runs.
+/// Built synchronously by the start command so the spawned task carries its
+/// own context rather than re-reading from `ActiveWorkspaceState` (which would
+/// race with the user switching workspace mid-generation).
 struct GenerationInputs {
     workspace_id: String,
     workspace_path: String,
@@ -163,15 +170,19 @@ struct GenerationInputs {
     user_feedback: Option<BriefingEdits>,
 }
 
-fn load_generation_inputs(app: &AppHandle, briefing_id: &str) -> Result<GenerationInputs, String> {
-    let active = app.state::<ActiveWorkspaceState>();
-    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-    let aw = guard
-        .as_mut()
-        .ok_or_else(|| "no active workspace".to_string())?;
-    let workspace_id = aw.id.clone();
-    let workspace_path = aw.path.clone();
-    let briefing = projections::get_briefing(&aw.conn, briefing_id)
+/// Read the briefing projection on `conn` and assemble [`GenerationInputs`].
+/// The caller validates `status == "active"`; this only enforces that the
+/// briefing exists. Decoupled from `ActiveWorkspaceState` so the start command
+/// can call it under a held lock and the spawned task could also call it
+/// against an independently-opened connection if it needed to (it doesn't —
+/// inputs are passed in via the spawn boundary instead).
+fn load_generation_inputs_from_conn(
+    conn: &Connection,
+    workspace_id: &str,
+    workspace_path: &str,
+    briefing_id: &str,
+) -> Result<GenerationInputs, String> {
+    let briefing = projections::get_briefing(conn, briefing_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("briefing not found: {}", briefing_id))?;
     if briefing.status != "active" {
@@ -189,8 +200,8 @@ fn load_generation_inputs(app: &AppHandle, briefing_id: &str) -> Result<Generati
         .as_ref()
         .and_then(|v| serde_json::from_value::<BriefingEdits>(v.clone()).ok());
     Ok(GenerationInputs {
-        workspace_id,
-        workspace_path,
+        workspace_id: workspace_id.to_string(),
+        workspace_path: workspace_path.to_string(),
         provider_id: briefing.provider,
         model: briefing.model,
         user_description: briefing.initial_description,
@@ -199,39 +210,46 @@ fn load_generation_inputs(app: &AppHandle, briefing_id: &str) -> Result<Generati
     })
 }
 
-async fn run_and_record_generation(
-    app: &AppHandle,
-    briefing_id: &str,
-    inputs: GenerationInputs,
-) -> Result<BriefingDraft, String> {
-    let provider_path = resolve_provider_path(app, &inputs.provider_id)?;
-    let provider = providers::get(&inputs.provider_id)
-        .ok_or_else(|| format!("unknown provider: {}", inputs.provider_id))?;
+// ============================================================================
+// Background generation: kick off and execute.
+//
+// Lifecycle, in order, for both initial and refine:
+//
+//   1. `start_generation_internal` (synchronous prelude): under the active-
+//      workspace conn lock, validate the briefing exists and isn't already
+//      generating, register a slot in `InflightBriefings` (this is the
+//      authoritative idempotency gate — two concurrent starts can't both
+//      pass), append `BriefingRefineRequested` (refine only) and
+//      `BriefingGenerationStarted{kind}`. Lock is released before `spawn`
+//      so the spawned task — and any later cancel command — can take its
+//      own connection without contending.
+//   2. `tokio::spawn(execute_generation_task(...))`: drives the LLM call,
+//      and lands the appropriate terminal event:
+//        - success → `BriefingDraftProduced`
+//        - the cancel token was signalled → `BriefingGenerationCancelled`
+//        - everything else → `BriefingGenerationFailed { reason }`
+//      The spawned task opens a fresh per-workspace connection at write
+//      time — by then the user may have switched workspace, and we must
+//      land the event in the originating workspace's events.sqlite, not
+//      whatever happens to be active. WAL mode makes the parallel writer
+//      coexist cleanly with the active connection.
+//   3. `InflightGuard` (held by the spawned task) drops on completion no
+//      matter how the future ends — success, error, panic, runtime
+//      shutdown. That guarantees the in-memory map never out-lives the
+//      task that owned the slot.
+// ============================================================================
 
-    let tracker = app.state::<Arc<ChildTracker>>().inner().clone();
-    let cancel = CancellationToken::new();
-
-    let workspace_path = std::path::PathBuf::from(&inputs.workspace_path);
-    let outcome = briefing::run_briefing_generation(
-        &workspace_path,
-        &provider_path,
-        provider.as_ref(),
-        &inputs.model,
-        &inputs.user_description,
-        inputs.previous_draft.as_ref(),
-        inputs.user_feedback.as_ref(),
-        tracker,
-        cancel,
-    )
-    .await
-    .map_err(|e| match e {
+/// Build the user-facing error string for `BriefingError::ParseFailed`,
+/// embedding a snippet of the model's output so the UI shows something more
+/// useful than `expected value at line 1 column 1`. The trim is generous
+/// enough to spot the failure mode (trailing prose, missing brace, etc.) but
+/// short enough to render in a banner.
+fn format_briefing_error(err: BriefingError) -> String {
+    match err {
         BriefingError::ParseFailed {
             last_error,
             last_output,
         } => {
-            // Include a leading snippet of what the model actually said so the UI shows
-            // something more useful than "expected value at line 1 column 1". Trim hard
-            // because the textarea will render the full string verbatim.
             let snippet = last_output.chars().take(400).collect::<String>();
             let suffix = if last_output.chars().count() > 400 {
                 "…"
@@ -244,85 +262,356 @@ async fn run_and_record_generation(
             )
         }
         other => other.to_string(),
-    })?;
-
-    let validation_results = briefing::validate_draft_paths(&workspace_path, &outcome.draft);
-    let prompt_hash = crate::prompts::hash(&outcome.rendered_prompt);
-
-    // Determine the next generation_index from the projection.
-    let active = app.state::<ActiveWorkspaceState>();
-    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-    let aw = guard
-        .as_mut()
-        .ok_or_else(|| "no active workspace".to_string())?;
-    let current = projections::get_briefing(&aw.conn, briefing_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("briefing not found: {}", briefing_id))?;
-    let next_index = current.generation_count + 1;
-
-    let payload = json!({
-        "draft": outcome.draft,
-        "generation_index": next_index,
-        "prompt_template_hash": prompt_hash,
-        "duration_ms": outcome.duration_ms as i64,
-        "validation_results": validation_results,
-    });
-    append_briefing_event(
-        &mut aw.conn,
-        briefing_id,
-        "BriefingDraftProduced",
-        payload,
-        "system:briefing",
-    )?;
-    drop(guard);
-
-    emit_projection_updated(
-        app,
-        Some(&inputs.workspace_id),
-        BRIEFING_AGGREGATE,
-        briefing_id,
-    );
-    emit_projection_updated(
-        app,
-        Some(&inputs.workspace_id),
-        "recent_events",
-        &inputs.workspace_id,
-    );
-    Ok(outcome.draft)
+    }
 }
 
-#[tauri::command]
-pub async fn generate_briefing_draft(
-    app: AppHandle,
-    briefing_id: String,
-) -> Result<BriefingDraft, String> {
-    let inputs = load_generation_inputs(&app, &briefing_id)?;
-    run_and_record_generation(&app, &briefing_id, inputs).await
-}
+/// Synchronous prelude shared by `generate_briefing_draft` and
+/// `refine_briefing`. Returns the post-Started briefing projection so the
+/// frontend can update its cache immediately without waiting on the
+/// `projection_updated` round-trip.
+fn start_generation_internal(
+    app: &AppHandle,
+    briefing_id: &str,
+    kind: GenerationKind,
+) -> Result<BriefingProjection, String> {
+    let inflight = app.state::<Arc<InflightBriefings>>().inner().clone();
 
-#[tauri::command]
-pub async fn refine_briefing(app: AppHandle, briefing_id: String) -> Result<BriefingDraft, String> {
-    // Bookmark the user's intent to refine before doing the work.
-    let workspace_id = {
+    // The cancel token is created up front so we can register-then-spawn:
+    // if anything between fails, we still hold the token and can drop the
+    // slot cleanly without stranding the caller.
+    let cancel = CancellationToken::new();
+
+    let (workspace_id, _workspace_path, inputs, projection_after_start) = {
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         let aw = guard
             .as_mut()
             .ok_or_else(|| "no active workspace".to_string())?;
         let workspace_id = aw.id.clone();
-        append_briefing_event(
+        let workspace_path = aw.path.clone();
+
+        // Read the projection first so we get a clean error before mutating
+        // anything. The `is_generating` check is defence-in-depth alongside
+        // the InflightBriefings registration below — they can disagree only
+        // briefly during a stale state from a prior process; the
+        // workspace-activation sweep clears those before the user can
+        // interact.
+        let current = projections::get_briefing(&aw.conn, briefing_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("briefing not found: {}", briefing_id))?;
+        if current.status != "active" {
+            return Err(format!(
+                "briefing is not active (status: {})",
+                current.status
+            ));
+        }
+        if current.is_generating {
+            return Err("generation already in progress for this briefing".into());
+        }
+
+        // Capture inputs before the events land so we don't pick up half a
+        // mutation. Inputs are derived from current_draft + pending_edits
+        // which the start events don't touch — order is logically fine —
+        // but reading first is also slightly cheaper because we already
+        // hold the lock.
+        let inputs = load_generation_inputs_from_conn(
+            &aw.conn,
+            &workspace_id,
+            &workspace_path,
+            briefing_id,
+        )?;
+
+        // Register the in-memory slot before any DB writes. This is the
+        // *only* check that's safe against a near-simultaneous second start
+        // — the projection lookup above is advisory because it can only
+        // observe events that have already committed.
+        inflight.register(
+            briefing_id,
+            Inflight {
+                workspace_id: workspace_id.clone(),
+                kind,
+                started_at: now_millis(),
+                cancel: cancel.clone(),
+            },
+        )?;
+
+        // From here on, we own the slot — every error path below must drop
+        // it. We do that with an early-return-friendly closure plus
+        // explicit `inflight.remove` calls in the error arms; the spawned
+        // task takes ownership via `InflightGuard` once we hand off.
+        if matches!(kind, GenerationKind::Refine) {
+            if let Err(e) = append_briefing_event(
+                &mut aw.conn,
+                briefing_id,
+                "BriefingRefineRequested",
+                json!({}),
+                "user:local",
+            ) {
+                inflight.remove(briefing_id);
+                return Err(e);
+            }
+        }
+        if let Err(e) = append_briefing_event(
             &mut aw.conn,
-            &briefing_id,
-            "BriefingRefineRequested",
+            briefing_id,
+            "BriefingGenerationStarted",
+            json!({ "kind": kind.as_str() }),
+            "user:local",
+        ) {
+            inflight.remove(briefing_id);
+            return Err(e);
+        }
+
+        // Read the post-Started projection state to return; the frontend
+        // uses this to flip its UI to "generating" without waiting for the
+        // event-driven round-trip.
+        let after = projections::get_briefing(&aw.conn, briefing_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "briefing vanished after start event".to_string())?;
+        (workspace_id, workspace_path, inputs, after)
+    };
+
+    emit_projection_updated(app, Some(&workspace_id), BRIEFING_AGGREGATE, briefing_id);
+    emit_projection_updated(app, Some(&workspace_id), "recent_events", &workspace_id);
+
+    // Spawn the long-running work. The task takes ownership of an
+    // `InflightGuard` so the slot is removed no matter how the future ends.
+    let app_for_task = app.clone();
+    let briefing_id_owned = briefing_id.to_string();
+    let inflight_for_task = Arc::clone(&inflight);
+    tokio::spawn(async move {
+        let guard = InflightGuard::new(Arc::clone(&inflight_for_task), briefing_id_owned.clone());
+        execute_generation_task(app_for_task, briefing_id_owned, inputs, kind, cancel, guard).await;
+    });
+
+    Ok(projection_after_start)
+}
+
+/// The spawned worker. Runs the LLM call, then opens its own per-workspace
+/// connection to land exactly one terminal event. Never panics — internal
+/// failures are converted to `BriefingGenerationFailed`. `_guard` is held
+/// purely for its `Drop` side effect (deregister from `InflightBriefings`).
+async fn execute_generation_task(
+    app: AppHandle,
+    briefing_id: String,
+    inputs: GenerationInputs,
+    _kind: GenerationKind,
+    cancel: CancellationToken,
+    _guard: InflightGuard,
+) {
+    let workspace_id = inputs.workspace_id.clone();
+    let workspace_path = inputs.workspace_path.clone();
+
+    // Resolve provider lazily — it can fail (cache miss, cli no longer on
+    // PATH) and we want that surfaced via `BriefingGenerationFailed` rather
+    // than as a panic in the spawned task.
+    let provider_path = match resolve_provider_path(&app, &inputs.provider_id) {
+        Ok(p) => p,
+        Err(e) => {
+            land_terminal_event(
+                &app,
+                &workspace_id,
+                &workspace_path,
+                &briefing_id,
+                TerminalOutcome::Failed { reason: e },
+            );
+            return;
+        }
+    };
+    let provider = match providers::get(&inputs.provider_id) {
+        Some(p) => p,
+        None => {
+            land_terminal_event(
+                &app,
+                &workspace_id,
+                &workspace_path,
+                &briefing_id,
+                TerminalOutcome::Failed {
+                    reason: format!("unknown provider: {}", inputs.provider_id),
+                },
+            );
+            return;
+        }
+    };
+
+    let tracker = app.state::<Arc<ChildTracker>>().inner().clone();
+    let workspace_path_buf = std::path::PathBuf::from(&workspace_path);
+    let result = briefing::run_briefing_generation(
+        &workspace_path_buf,
+        &provider_path,
+        provider.as_ref(),
+        &inputs.model,
+        &inputs.user_description,
+        inputs.previous_draft.as_ref(),
+        inputs.user_feedback.as_ref(),
+        tracker,
+        cancel.clone(),
+    )
+    .await;
+
+    let outcome = match result {
+        Ok(o) => {
+            let validation_results = briefing::validate_draft_paths(&workspace_path_buf, &o.draft);
+            let prompt_hash = crate::prompts::hash(&o.rendered_prompt);
+            TerminalOutcome::Produced {
+                draft: o.draft,
+                duration_ms: o.duration_ms,
+                prompt_hash,
+                validation_results,
+            }
+        }
+        // Cancellation manifests as an error from the subprocess layer, but
+        // the *meaning* depends on whether we asked it to stop. Trust the
+        // token: if it's signalled, treat any error as a clean cancel.
+        Err(_) if cancel.is_cancelled() => TerminalOutcome::Cancelled,
+        Err(e) => TerminalOutcome::Failed {
+            reason: format_briefing_error(e),
+        },
+    };
+
+    land_terminal_event(&app, &workspace_id, &workspace_path, &briefing_id, outcome);
+}
+
+/// Discriminator for what the spawned task wants to record. Kept private to
+/// this module — none of these are exposed to callers beyond the events they
+/// produce.
+enum TerminalOutcome {
+    Produced {
+        draft: BriefingDraft,
+        duration_ms: u64,
+        prompt_hash: String,
+        validation_results: Vec<PathValidationResult>,
+    },
+    Failed {
+        reason: String,
+    },
+    Cancelled,
+}
+
+/// Open a fresh per-workspace connection and append the terminal event for
+/// this generation attempt. Errors are logged (via `eprintln!`) but not
+/// propagated — the only caller is the spawned task and there's no upstream
+/// to surface to. A failed write here would manifest as an `is_generating`
+/// row that never clears, which the next workspace-activation sweep will
+/// mop up (see `sweep_stale_inflight_on_activation`).
+fn land_terminal_event(
+    app: &AppHandle,
+    workspace_id: &str,
+    workspace_path: &str,
+    briefing_id: &str,
+    outcome: TerminalOutcome,
+) {
+    let mut conn = match open_workspace_db(workspace_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "briefing {}: failed to open workspace db at {}: {}",
+                briefing_id, workspace_path, e
+            );
+            return;
+        }
+    };
+
+    let result = match outcome {
+        TerminalOutcome::Produced {
+            draft,
+            duration_ms,
+            prompt_hash,
+            validation_results,
+        } => {
+            // generation_index is the post-write count; read the current
+            // value under the same conn we're about to write to.
+            let next_index = match projections::get_briefing(&conn, briefing_id) {
+                Ok(Some(b)) => b.generation_count + 1,
+                Ok(None) => {
+                    eprintln!(
+                        "briefing {}: vanished from projection before terminal write",
+                        briefing_id
+                    );
+                    return;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "briefing {}: projection read failed before terminal write: {}",
+                        briefing_id, e
+                    );
+                    return;
+                }
+            };
+            append_briefing_event(
+                &mut conn,
+                briefing_id,
+                "BriefingDraftProduced",
+                json!({
+                    "draft": draft,
+                    "generation_index": next_index,
+                    "prompt_template_hash": prompt_hash,
+                    "duration_ms": duration_ms as i64,
+                    "validation_results": validation_results,
+                }),
+                "system:briefing",
+            )
+        }
+        TerminalOutcome::Failed { reason } => append_briefing_event(
+            &mut conn,
+            briefing_id,
+            "BriefingGenerationFailed",
+            json!({ "reason": reason }),
+            "system:briefing",
+        ),
+        TerminalOutcome::Cancelled => append_briefing_event(
+            &mut conn,
+            briefing_id,
+            "BriefingGenerationCancelled",
             json!({}),
             "user:local",
-        )?;
-        workspace_id
+        ),
     };
-    emit_projection_updated(&app, Some(&workspace_id), BRIEFING_AGGREGATE, &briefing_id);
+    if let Err(e) = result {
+        eprintln!(
+            "briefing {}: failed to append terminal event: {}",
+            briefing_id, e
+        );
+        return;
+    }
 
-    let inputs = load_generation_inputs(&app, &briefing_id)?;
-    run_and_record_generation(&app, &briefing_id, inputs).await
+    emit_projection_updated(app, Some(workspace_id), BRIEFING_AGGREGATE, briefing_id);
+    emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+pub fn generate_briefing_draft(
+    app: AppHandle,
+    briefing_id: String,
+) -> Result<BriefingProjection, String> {
+    start_generation_internal(&app, &briefing_id, GenerationKind::Initial)
+}
+
+#[tauri::command]
+pub fn refine_briefing(app: AppHandle, briefing_id: String) -> Result<BriefingProjection, String> {
+    start_generation_internal(&app, &briefing_id, GenerationKind::Refine)
+}
+
+/// Cancel the in-flight generation for `briefing_id`. Idempotent: a no-op
+/// (returning Ok) when nothing is running, so the UI can fire it without
+/// having to inspect state first. The spawned task is responsible for
+/// landing the `BriefingGenerationCancelled` event in response to the
+/// cancel signal, which is what flips the projection back to a clean
+/// "active, not generating" state.
+#[tauri::command]
+pub fn cancel_briefing_generation(app: AppHandle, briefing_id: String) -> Result<(), String> {
+    let inflight = app.state::<Arc<InflightBriefings>>();
+    if let Some(entry) = inflight.get(&briefing_id) {
+        entry.cancel.cancel();
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -640,6 +929,18 @@ pub fn accept_briefing(
 
 #[tauri::command]
 pub fn cancel_briefing(app: AppHandle, briefing_id: String) -> Result<(), String> {
+    // Killing the whole briefing also cancels any attempt currently running.
+    // The spawned task will react by landing `BriefingGenerationCancelled`
+    // shortly after we land `BriefingCancelled`; both events are
+    // order-independent in the applier (each only zeroes the in-flight
+    // flags), so either landing first is fine.
+    {
+        let inflight = app.state::<Arc<InflightBriefings>>();
+        if let Some(entry) = inflight.get(&briefing_id) {
+            entry.cancel.cancel();
+        }
+    }
+
     let workspace_id = {
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
@@ -740,6 +1041,53 @@ pub fn list_briefing_history(
         out.push(r.map_err(|e| e.to_string())?);
     }
     Ok(out)
+}
+
+/// Restart-recovery: clear stale `is_generating = 1` rows that don't have a
+/// matching live in-memory entry. The previous process must have died (or
+/// the app was force-quit) while one or more generations were in flight; on
+/// activation we synthesise `BriefingGenerationFailed` for each so the UI
+/// stops showing a perpetual spinner and the user can retry.
+///
+/// Called from `commands::set_active_workspace`. Returns the number of rows
+/// cleaned up so callers can log it; non-fatal — failures are logged and
+/// swallowed because we'd rather activate a workspace with an inconsistent
+/// briefing list than refuse activation entirely.
+pub fn sweep_stale_inflight_on_activation(
+    app: &AppHandle,
+    conn: &mut Connection,
+    workspace_id: &str,
+) -> Result<usize, String> {
+    let inflight = app.state::<Arc<InflightBriefings>>();
+    let live: std::collections::HashSet<String> = inflight.snapshot_ids().into_iter().collect();
+
+    let stale =
+        projections::list_generating_briefings(conn, workspace_id).map_err(|e| e.to_string())?;
+    let mut count = 0;
+    for b in stale {
+        if live.contains(&b.id) {
+            continue; // Genuinely running in this process — leave alone.
+        }
+        if let Err(e) = append_briefing_event(
+            conn,
+            &b.id,
+            "BriefingGenerationFailed",
+            json!({ "reason": "interrupted by app restart" }),
+            "system:briefing",
+        ) {
+            eprintln!(
+                "briefing {}: restart sweep failed to land terminal event: {}",
+                b.id, e
+            );
+            continue;
+        }
+        emit_projection_updated(app, Some(workspace_id), BRIEFING_AGGREGATE, &b.id);
+        count += 1;
+    }
+    if count > 0 {
+        emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
+    }
+    Ok(count)
 }
 
 #[tauri::command]

@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
+use crate::commands_briefing;
 use crate::events::projections::{
     self, apply_briefing_event, apply_phase_run_event, apply_plan_event, apply_task_event,
     apply_workspace_event,
@@ -284,6 +285,30 @@ pub fn set_active_workspace(
     // Best-effort orphan reconciliation. Failures here must not block activation.
     if let Err(e) = reconcile_worktrees(&app, &ws.id, &ws.path) {
         eprintln!("worktree reconciliation failed for {}: {}", ws.path, e);
+    }
+
+    // Restart-recovery sweep: any briefing flagged `is_generating = 1` whose
+    // owning process didn't survive gets a synthetic GenerationFailed event so
+    // the spinner clears. Held under the active conn lock so the sweep sees a
+    // consistent snapshot; non-fatal on error (we'd rather have a workspace
+    // with stale spinners than refuse activation).
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        if let Some(aw) = guard.as_mut() {
+            match commands_briefing::sweep_stale_inflight_on_activation(&app, &mut aw.conn, &ws.id)
+            {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!(
+                        "workspace {}: cleared {n} stale in-flight briefing(s) on activation",
+                        ws.id
+                    );
+                }
+                Err(e) => {
+                    eprintln!("workspace {}: stale-briefing sweep failed: {}", ws.id, e);
+                }
+            }
+        }
     }
 
     Ok(ActiveWorkspaceInfo {
