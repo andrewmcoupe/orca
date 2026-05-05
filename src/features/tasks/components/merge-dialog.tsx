@@ -162,7 +162,7 @@ export function MergeDialog({ taskId, taskTitle, open, onOpenChange }: Props) {
           )}
         </DialogHeader>
 
-        {analyze.isPending && !analysis && (
+        {!analysis && analyzeError == null && (
           <div className="flex items-center gap-2 py-6">
             <CircleNotch className="size-5 animate-spin" />
             <p className="text-muted-foreground text-sm">Analyzing merge…</p>

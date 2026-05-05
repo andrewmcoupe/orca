@@ -507,7 +507,7 @@ function UnifiedView({
   concerns: Map<string, LineConcern>;
 }) {
   return (
-    <div className="font-mono leading-[1.55]">
+    <div className="font-mono leading-[1.55] min-w-max">
       {file.hunks.map((hunk, hi) => (
         <div key={hi}>
           {hi > 0 && <ModalHunkSeparator />}
@@ -566,7 +566,7 @@ function ModalDiffLine({
         {sigil}
       </span>
       <span
-        className="scrollbar-styled min-w-0 flex-1 whitespace-pre overflow-x-auto pr-3 text-[12px]"
+        className="flex-1 whitespace-pre pr-3 text-[12px]"
         dangerouslySetInnerHTML={{ __html: line.html || "&nbsp;" }}
       />
     </div>
@@ -639,7 +639,7 @@ function SplitView({
   concerns: Map<string, LineConcern>;
 }) {
   return (
-    <div className="font-mono leading-[1.55]">
+    <div className="font-mono leading-[1.55] min-w-max">
       {file.hunks.map((hunk, hi) => {
         const pairs = pairLines(hunk.lines);
         return (
@@ -726,7 +726,7 @@ function SplitCell({
         {lineNo ?? ""}
       </span>
       <span
-        className="scrollbar-styled min-w-0 flex-1 whitespace-pre overflow-x-auto pr-3 text-[12px]"
+        className="flex-1 whitespace-pre pr-3 text-[12px]"
         dangerouslySetInnerHTML={{ __html: line.html || "&nbsp;" }}
       />
     </div>

@@ -318,8 +318,9 @@ pub fn set_active_workspace(
 }
 
 /// Read the current branch of the workspace's main worktree. Returns `None`
-/// when HEAD is detached or unborn — both legitimate states for the status
-/// bar to render as "—" rather than crashing the bar with an error toast.
+/// only when HEAD is detached. For an unborn HEAD (fresh repo, no commits)
+/// we still return the symbolic branch name (typically "main") so the status
+/// bar matches what `git status` would show.
 #[tauri::command]
 pub fn get_workspace_branch(path: String) -> Result<Option<String>, String> {
     let repo = match git2::Repository::discover(&path) {
@@ -328,10 +329,14 @@ pub fn get_workspace_branch(path: String) -> Result<Option<String>, String> {
     };
     let head = match repo.head() {
         Ok(h) => h,
-        Err(e)
-            if e.code() == git2::ErrorCode::UnbornBranch
-                || e.code() == git2::ErrorCode::NotFound =>
-        {
+        Err(e) if e.code() == git2::ErrorCode::UnbornBranch => {
+            // Fresh repo with no commits yet. The branch name still exists as
+            // the symbolic target of HEAD ("refs/heads/main" by default), even
+            // though the ref itself hasn't been created. Surface it so the
+            // status bar reflects what `git status` would.
+            return Ok(symbolic_head_branch(&repo));
+        }
+        Err(e) if e.code() == git2::ErrorCode::NotFound => {
             return Ok(None);
         }
         Err(e) => return Err(e.message().to_string()),
@@ -340,6 +345,15 @@ pub fn get_workspace_branch(path: String) -> Result<Option<String>, String> {
         return Ok(None);
     }
     Ok(head.shorthand().map(|s| s.to_string()))
+}
+
+/// Read HEAD's symbolic target as a short branch name. Used when HEAD is
+/// unborn (no commits yet) so we can still tell the user which branch they're
+/// on rather than rendering nothing.
+fn symbolic_head_branch(repo: &git2::Repository) -> Option<String> {
+    let head_ref = repo.find_reference("HEAD").ok()?;
+    let target = head_ref.symbolic_target()?;
+    target.strip_prefix("refs/heads/").map(|s| s.to_string())
 }
 
 #[derive(Debug, Serialize)]
@@ -2455,6 +2469,7 @@ pub fn delete_worktree(
     let workspace_id;
     let workspace_path;
     let task;
+    let has_running_phase;
     {
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         let aw = require_active_workspace(&mut guard)?;
@@ -2463,6 +2478,10 @@ pub fn delete_worktree(
         task = projections::get_task(&aw.conn, &task_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("task not found: {}", task_id))?;
+        has_running_phase = projections::list_phase_runs_for_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|r| r.status == "running");
     }
 
     let path_str = task
@@ -2471,6 +2490,12 @@ pub fn delete_worktree(
         .ok_or_else(|| "task has no worktree".to_string())?;
     if task.worktree_status.as_deref() != Some("active") {
         return Err("task worktree is not active".into());
+    }
+    if has_running_phase {
+        return Err("cannot delete worktree while a phase is running; cancel it first".into());
+    }
+    if task.worktree_init_status.as_deref() == Some("running") {
+        return Err("cannot delete worktree while it is still initialising".into());
     }
     let path = std::path::PathBuf::from(&path_str);
 

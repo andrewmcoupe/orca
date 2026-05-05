@@ -80,7 +80,15 @@ pub fn create_worktree(
 
     let head_commit = repo
         .head()
-        .map_err(|e| WorktreeError::CreationFailed(format!("read HEAD: {}", e.message())))?
+        .map_err(|e| {
+            if e.code() == git2::ErrorCode::UnbornBranch {
+                WorktreeError::CreationFailed(
+                    "this repository has no commits yet — make an initial commit on your main branch before creating a worktree".to_string(),
+                )
+            } else {
+                WorktreeError::CreationFailed(format!("read HEAD: {}", e.message()))
+            }
+        })?
         .peel_to_commit()
         .map_err(|e| {
             WorktreeError::CreationFailed(format!("peel HEAD to commit: {}", e.message()))

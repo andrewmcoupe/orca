@@ -6,6 +6,7 @@
 - We shouldnt be able to press start on a task whilst it is being initialised
 - I had a gate set to run on implementor, gate failed after implementer, i removed the gate from the workspace config, reran the task, iplementer completed but auditor didnt start
 - Review modal should scroll full code block, not lines
+- on initial workspace setup the main branch doesnt seem to be recognised - only when i create a new branch from main and revisit the workspace.
 
 ## Ideas
 

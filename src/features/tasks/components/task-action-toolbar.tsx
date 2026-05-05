@@ -199,19 +199,23 @@ export function TaskActionToolbar({
     runIcon = <Play weight={primary === "run" ? "fill" : "regular"} />;
     runTooltip = phaseRunning
       ? "A phase is already running."
-      : isMerged
-        ? "Task is already merged."
-        : isCancelled
-          ? "Task was cancelled."
-          : hasAnyRun
-            ? "Restart from the beginning."
-            : "Start the pipeline.";
+      : task.worktree_init_status === "running"
+        ? "Worktree is still initialising — wait for it to finish."
+        : isMerged
+          ? "Task is already merged."
+          : isCancelled
+            ? "Task was cancelled."
+            : hasAnyRun
+              ? "Restart from the beginning."
+              : "Start the pipeline.";
   }
+  const initRunning = task.worktree_init_status === "running";
   const runDisabled =
     !task.is_queued &&
     (!!phaseRunning ||
       isMerged ||
       isCancelled ||
+      initRunning ||
       startTask.isPending ||
       unqueueTask.isPending);
 
@@ -551,7 +555,14 @@ function OverflowMenu({
           <span className="flex-1">Cancel running phase</span>
         </DropdownMenuItem>
         <DropdownMenuItem
-          disabled={!implementerCompleted || !!phaseRunning}
+          disabled={
+            !implementerCompleted ||
+            !!phaseRunning ||
+            task.status === "merged" ||
+            task.status === "approved" ||
+            task.status === "cancelled" ||
+            task.status === "archived"
+          }
           onClick={onRerunAuditor}
         >
           <Play />
@@ -599,7 +610,11 @@ function OverflowMenu({
           <span className="flex-1">Copy task ID</span>
         </DropdownMenuItem>
         <DropdownMenuItem
-          disabled={!worktreeActive}
+          disabled={
+            !worktreeActive ||
+            !!phaseRunning ||
+            task.worktree_init_status === "running"
+          }
           variant="destructive"
           onClick={onDeleteWorktree}
         >

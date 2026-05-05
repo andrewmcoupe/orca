@@ -1,9 +1,14 @@
 import { Button } from "@/components/ui/button";
 import { useDeleteWorktree } from "@/features/tasks/hooks";
+import { usePhaseRuns } from "@/features/phase-runs/hooks";
 import type { Task } from "@/features/tasks/types";
 
 export function WorktreeSection({ task }: { task: Task }) {
   const remove = useDeleteWorktree();
+  const phaseRunsQ = usePhaseRuns(task.workspace_id, task.id);
+  const phaseRunning = phaseRunsQ.data?.some((r) => r.status === "running");
+  const initRunning = task.worktree_init_status === "running";
+  const taskInProgress = phaseRunning || initRunning;
 
   if (!task.worktree_status) {
     return (
@@ -72,7 +77,14 @@ export function WorktreeSection({ task }: { task: Task }) {
           variant="outline"
           size="xs"
           onClick={onDelete}
-          disabled={remove.isPending}
+          disabled={remove.isPending || taskInProgress}
+          title={
+            taskInProgress
+              ? initRunning
+                ? "Worktree is still initialising."
+                : "A phase is running — cancel it before deleting the worktree."
+              : undefined
+          }
         >
           Delete worktree
         </Button>
