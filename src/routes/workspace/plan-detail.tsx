@@ -94,54 +94,56 @@ function PlanDetailView({
         </section>
       ) : null}
 
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-muted-foreground text-[10px] font-medium uppercase tracking-[0.08em]">
-            Tasks{" "}
-            <span className="text-muted-foreground/70 font-mono tabular-nums">
-              {plan.task_count}
-            </span>
-          </h2>
-          <Button
-            size="sm"
-            onClick={() => setNewTaskOpen(true)}
-            disabled={
-              plan.status === "cancelled" ||
-              plan.status === "archived" ||
-              plan.status === "completed"
-            }
-          >
-            + New task
-          </Button>
-        </div>
-        {tasks.isLoading ? (
-          <p className="text-muted-foreground text-sm">Loading tasks…</p>
-        ) : (tasks.data ?? []).length === 0 ? (
-          <div className="bg-muted/20 rounded-md border border-dashed py-10 text-center">
-            <p className="text-sm">No tasks yet</p>
-            <p className="text-muted-foreground mt-1 text-xs">
-              Add a task to start running phases.
-            </p>
+      <ContentColumn>
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-muted-foreground text-[10px] font-medium uppercase tracking-[0.08em]">
+              Tasks{" "}
+              <span className="text-muted-foreground/70 font-mono tabular-nums">
+                {plan.task_count}
+              </span>
+            </h2>
+            <Button
+              size="sm"
+              onClick={() => setNewTaskOpen(true)}
+              disabled={
+                plan.status === "cancelled" ||
+                plan.status === "archived" ||
+                plan.status === "completed"
+              }
+            >
+              + New task
+            </Button>
           </div>
-        ) : (
-          <div className="bg-card border">
-            {(() => {
-              const all = tasks.data ?? [];
-              const titlesById = new Map(all.map((t) => [t.id, t.title]));
-              return all.map((task) => (
-                <TaskRow
-                  key={task.id}
-                  task={task}
-                  workspaceId={workspaceId}
-                  dependencyTitles={task.depends_on.map(
-                    (id) => titlesById.get(id) ?? id,
-                  )}
-                />
-              ));
-            })()}
-          </div>
-        )}
-      </section>
+          {tasks.isLoading ? (
+            <p className="text-muted-foreground text-sm">Loading tasks…</p>
+          ) : (tasks.data ?? []).length === 0 ? (
+            <div className="bg-muted/20 rounded-md border border-dashed py-10 text-center">
+              <p className="text-sm">No tasks yet</p>
+              <p className="text-muted-foreground mt-1 text-xs">
+                Add a task to start running phases.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-card border">
+              {(() => {
+                const all = tasks.data ?? [];
+                const titlesById = new Map(all.map((t) => [t.id, t.title]));
+                return all.map((task) => (
+                  <TaskRow
+                    key={task.id}
+                    task={task}
+                    workspaceId={workspaceId}
+                    dependencyTitles={task.depends_on.map(
+                      (id) => titlesById.get(id) ?? id,
+                    )}
+                  />
+                ));
+              })()}
+            </div>
+          )}
+        </section>
+      </ContentColumn>
 
       <NewTaskDialog
         planId={plan.id}

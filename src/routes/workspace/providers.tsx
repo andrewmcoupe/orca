@@ -2,6 +2,7 @@ import { createRoute } from "@tanstack/react-router";
 import { ArrowSquareOut, CheckCircle, XCircle } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ContentColumn } from "@/components/layout/content-column";
 import { useProviders, useRefreshProviders } from "@/features/providers/hooks";
 import { workspaceLayoutRoute } from "./layout";
 
@@ -10,7 +11,7 @@ function ProvidersPage() {
   const refresh = useRefreshProviders();
 
   return (
-    <div className="space-y-4 px-5 py-4">
+    <ContentColumn className="space-y-4 px-5 py-4">
       <header className="flex items-center justify-between">
         <h1 className="text-[18px] font-medium tracking-tight">Providers</h1>
         <Button
@@ -79,7 +80,7 @@ function ProvidersPage() {
           </li>
         ))}
       </ul>
-    </div>
+    </ContentColumn>
   );
 }
 

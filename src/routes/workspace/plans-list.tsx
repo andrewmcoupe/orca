@@ -15,6 +15,7 @@ import { InProgressBriefings } from "@/features/briefings/components/in-progress
 import { useDebouncedValue } from "@/lib/hooks/use-debounced-value";
 import type { Plan } from "@/features/plans/types";
 import { Button } from "@/components/ui/button";
+import { ContentColumn } from "@/components/layout/content-column";
 
 const plansSearchSchema = z.object({
   status: z
@@ -74,7 +75,7 @@ function PlansListPage() {
   );
 
   return (
-    <div className="space-y-4 px-5 py-4">
+    <ContentColumn className="space-y-4 px-5 py-4">
       <div className="flex items-center justify-between">
         <h1 className="text-[18px] font-medium tracking-tight">Plans</h1>
         <span className="text-muted-foreground text-xs tabular-nums">
@@ -137,7 +138,7 @@ function PlansListPage() {
           })
         }
       />
-    </div>
+    </ContentColumn>
   );
 }
 
