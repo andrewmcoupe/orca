@@ -86,10 +86,6 @@ impl Provider for ClaudeProvider {
                 default: "acceptEdits".into(),
                 choices: vec![
                     SelectChoice {
-                        value: "plan".into(),
-                        label: "Plan (read-only)".into(),
-                    },
-                    SelectChoice {
                         value: "acceptEdits".into(),
                         label: "Accept edits".into(),
                     },
@@ -129,13 +125,17 @@ impl Provider for ClaudeProvider {
             .and_then(|v| v.as_str())
             .unwrap_or("acceptEdits");
         let phase = options.get("phase").and_then(|v| v.as_str());
-        // Defence-in-depth: the auditor never gets `bypassPermissions`. The resolution
-        // layer already clamps; if a stale call site somehow slips it through anyway we
-        // downgrade here too rather than handing the agent full trust on a read-only
-        // verification phase.
-        let permission_mode = if phase == Some("auditor") && raw_mode == "bypassPermissions" {
+        // Defence-in-depth: the auditor never runs with `bypassPermissions` (full trust
+        // on a verification phase is wrong) or `plan` (the model can call ExitPlanMode
+        // and stall the run waiting for an approval our closed-stdin subprocess can't
+        // deliver). The resolution layer already clamps; we mirror that here so a stale
+        // call site can't slip a bad mode through.
+        let permission_mode = if phase == Some("auditor")
+            && (raw_mode == "bypassPermissions" || raw_mode == "plan")
+        {
             eprintln!(
-                "claude provider: refusing bypassPermissions for auditor phase; downgrading to acceptEdits"
+                "claude provider: refusing {} for auditor phase; downgrading to acceptEdits",
+                raw_mode
             );
             "acceptEdits"
         } else {
@@ -272,10 +272,17 @@ mod tests {
     }
 
     #[test]
-    fn plan_mode_passes_through() {
+    fn auditor_plan_downgrades_to_accept_edits() {
         let invocation = ClaudeProvider.build_invocation("hi", &opts("auditor", "plan"));
         let args = invocation.args.join(" ");
-        assert!(args.contains("--permission-mode plan"), "got: {args}");
+        assert!(
+            args.contains("--permission-mode acceptEdits"),
+            "expected downgrade, got: {args}"
+        );
+        assert!(
+            !args.contains("--permission-mode plan"),
+            "auditor must not run in plan mode (deadlocks closed-stdin): {args}"
+        );
     }
 
     #[test]

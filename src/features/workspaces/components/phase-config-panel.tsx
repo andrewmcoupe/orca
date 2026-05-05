@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState, type CSSProperties } from "react";
+import { CaretRight } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import {
   useUpdateWorkspaceSettings,
   useWorkspaceSettings,
@@ -55,34 +57,80 @@ export function PhaseConfigPanel({ workspaceId }: { workspaceId: string }) {
     update.mutate(merged);
   };
 
+  // The three phase slots are rendered in pipeline order regardless of which
+  // ones are currently enabled — the order is fixed by the brief, and showing
+  // the disabled card greyed-out keeps the visual flow legible. The required
+  // implementer is locked checked.
+  const slots: Array<{
+    id: string;
+    label: PhaseType;
+    description: string;
+    checked: boolean;
+    onChange?: (next: boolean) => void;
+    required?: boolean;
+  }> = [
+    {
+      id: "phase-test-author",
+      label: "test_author",
+      description: "Write failing tests before the implementer.",
+      checked: includeTestAuthor,
+      onChange: setIncludeTestAuthor,
+    },
+    {
+      id: "phase-implementer",
+      label: "implementer",
+      description: "Required. Makes the code change.",
+      checked: true,
+      required: true,
+    },
+    {
+      id: "phase-auditor",
+      label: "auditor",
+      description:
+        "Reviews the diff and renders an approve / revise / reject verdict.",
+      checked: includeAuditor,
+      onChange: setIncludeAuditor,
+    },
+  ];
+
   return (
     <div className="space-y-3">
       <p className="text-muted-foreground text-xs">
         Phases run in this fixed order. Implementer is always included; the
         others are optional.
       </p>
-      <div className="space-y-2">
-        <PhaseToggle
-          id="phase-test-author"
-          label="test_author"
-          description="Write failing tests before the implementer."
-          checked={includeTestAuthor}
-          onChange={setIncludeTestAuthor}
-        />
-        <PhaseToggle
-          id="phase-implementer"
-          label="implementer"
-          description="Required. Makes the code change."
-          checked
-          disabled
-        />
-        <PhaseToggle
-          id="phase-auditor"
-          label="auditor"
-          description="Reviews the diff and renders an approve / revise / reject verdict."
-          checked={includeAuditor}
-          onChange={setIncludeAuditor}
-        />
+      <div
+        className="grid grid-cols-1 items-stretch gap-3 lg:gap-2 lg:[grid-template-columns:var(--phase-cols)]"
+        style={
+          {
+            "--phase-cols": slots
+              .map(() => "minmax(0,1fr)")
+              .join(" auto "),
+          } as CSSProperties
+        }
+      >
+        {slots.map((slot, idx) => (
+          <Fragment key={slot.id}>
+            <PhaseToggle
+              id={slot.id}
+              label={slot.label}
+              description={slot.description}
+              checked={slot.checked}
+              disabled={slot.required}
+              required={slot.required}
+              stepIndex={idx + 1}
+              onChange={slot.onChange}
+            />
+            {idx < slots.length - 1 && (
+              <div
+                className="text-muted-foreground/50 hidden items-center justify-center lg:flex"
+                aria-hidden="true"
+              >
+                <CaretRight className="size-5" />
+              </div>
+            )}
+          </Fragment>
+        ))}
       </div>
       <div className="flex items-center gap-2 pt-1">
         <Button size="sm" onClick={save} disabled={!dirty || update.isPending}>
@@ -104,6 +152,8 @@ function PhaseToggle({
   description,
   checked,
   disabled,
+  required,
+  stepIndex,
   onChange,
 }: {
   id: string;
@@ -111,27 +161,42 @@ function PhaseToggle({
   description: string;
   checked: boolean;
   disabled?: boolean;
+  required?: boolean;
+  stepIndex: number;
   onChange?: (next: boolean) => void;
 }) {
   return (
     <label
       htmlFor={id}
-      className="flex cursor-pointer items-start gap-3 rounded-md border p-3 hover:bg-muted/30"
+      className={cn(
+        "bg-card flex cursor-pointer flex-col gap-2 rounded-md border p-3 transition-colors",
+        !disabled && "hover:bg-muted/30",
+        !checked && "opacity-60",
+      )}
     >
-      <input
-        id={id}
-        type="checkbox"
-        className="mt-0.5"
-        checked={checked}
-        disabled={disabled}
-        onChange={(e) => onChange?.(e.target.checked)}
-      />
-      <div className="min-w-0 flex-1">
-        <Label htmlFor={id} className="font-mono text-sm">
-          {label}
-        </Label>
-        <p className="text-muted-foreground text-xs">{description}</p>
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <input
+            id={id}
+            type="checkbox"
+            checked={checked}
+            disabled={disabled}
+            onChange={(e) => onChange?.(e.target.checked)}
+          />
+          <Label htmlFor={id} className="font-mono text-sm">
+            {label}
+          </Label>
+          {required && (
+            <span className="text-muted-foreground/70 rounded-sm border px-1 text-[9px] uppercase tracking-wide">
+              required
+            </span>
+          )}
+        </div>
+        <span className="text-muted-foreground/60 font-mono text-[10px] tabular-nums">
+          {String(stepIndex).padStart(2, "0")}
+        </span>
       </div>
+      <p className="text-muted-foreground text-xs">{description}</p>
     </label>
   );
 }

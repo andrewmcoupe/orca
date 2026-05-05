@@ -5,11 +5,14 @@
 //! The registry below is the single place new providers are registered.
 
 mod claude;
+mod codex;
 
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::settings::{PermissionMode, PhaseType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderStatus {
@@ -109,12 +112,37 @@ pub trait Provider: Send + Sync {
     fn known_models(&self) -> Vec<KnownModel> {
         Vec::new()
     }
+
+    /// Which permission modes this provider can run for `phase`. Default: the
+    /// universal `PermissionMode::is_available_for(phase)` matrix, which conservatively
+    /// rejects `Plan` everywhere because Claude's `plan` mode deadlocks against our
+    /// closed-stdin subprocess (ExitPlanMode waits for an approval that never lands).
+    /// Providers whose CLI does not have that hazard (e.g. Codex's `--sandbox read-only`)
+    /// override this to widen the menu.
+    fn available_permission_modes(&self, phase: PhaseType) -> Vec<PermissionMode> {
+        [
+            PermissionMode::Plan,
+            PermissionMode::AcceptEdits,
+            PermissionMode::BypassPermissions,
+        ]
+        .into_iter()
+        .filter(|m| m.is_available_for(phase))
+        .collect()
+    }
+
+    /// Whether this provider can take a JSON Schema (placed at
+    /// `options["output_schema"]`) and constrain the model's output to match it.
+    /// Auditor / briefing call sites use this to decide whether to ship a schema or
+    /// fall back to prompt-only structured output. Default: false.
+    fn supports_structured_output(&self) -> bool {
+        false
+    }
 }
 
 // ---------- Registry ----------
 
 pub fn all() -> Vec<Box<dyn Provider>> {
-    vec![Box::new(claude::ClaudeProvider)]
+    vec![Box::new(claude::ClaudeProvider), Box::new(codex::CodexProvider)]
 }
 
 pub fn get(id: &str) -> Option<Box<dyn Provider>> {
@@ -123,4 +151,21 @@ pub fn get(id: &str) -> Option<Box<dyn Provider>> {
 
 pub fn detect_providers() -> Vec<ProviderStatus> {
     all().into_iter().map(|p| p.detect()).collect()
+}
+
+/// Permission modes the provider exposes for `phase`. Unknown providers fall back to
+/// the universal `PermissionMode::is_available_for` matrix so callers always get a
+/// usable list.
+pub fn available_permission_modes(provider_id: &str, phase: PhaseType) -> Vec<PermissionMode> {
+    match get(provider_id) {
+        Some(p) => p.available_permission_modes(phase),
+        None => [
+            PermissionMode::Plan,
+            PermissionMode::AcceptEdits,
+            PermissionMode::BypassPermissions,
+        ]
+        .into_iter()
+        .filter(|m| m.is_available_for(phase))
+        .collect(),
+    }
 }

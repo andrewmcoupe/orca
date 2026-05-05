@@ -247,6 +247,16 @@ pub async fn run(
         &make_metadata("system:implementer"),
     )?;
 
+    // Surface the worktree path through options so providers that need it on the CLI
+    // (e.g. codex's `--cd`) can pick it up. Claude ignores; the subprocess runner
+    // sets cwd anyway.
+    let mut options = options;
+    if let Some(map) = options.as_object_mut() {
+        map.insert(
+            "cwd".into(),
+            json!(worktree_dir.to_string_lossy().to_string()),
+        );
+    }
     let invocation = provider.build_invocation(&prompt, &options);
 
     let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();

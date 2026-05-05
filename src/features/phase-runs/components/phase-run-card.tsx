@@ -1,21 +1,33 @@
-import { Lock } from "@phosphor-icons/react";
+import { useState } from "react";
+import { Lock, Terminal } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { useCancelPhaseRun, usePhaseRunOutput } from "@/features/phase-runs/hooks";
+import {
+  useCancelPhaseRun,
+  usePhaseRunOutput,
+} from "@/features/phase-runs/hooks";
+import { PhaseRunOutputDialog } from "@/features/phase-runs/components/phase-run-output-dialog";
 import type { PhaseRun } from "@/features/phase-runs/types";
-import { PERMISSION_MODE_LABEL, type PermissionMode } from "@/features/workspaces/types";
+import {
+  PERMISSION_MODE_LABEL,
+  type PermissionMode,
+} from "@/features/workspaces/types";
 import { cn } from "@/lib/utils";
 
 const STATUS_BADGE: Record<string, string> = {
-  running: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
-  completed: "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30",
+  running:
+    "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
+  completed:
+    "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30",
   failed: "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30",
-  cancelled: "bg-zinc-500/15 text-zinc-700 dark:text-zinc-300 border-zinc-500/30",
+  cancelled:
+    "bg-zinc-500/15 text-zinc-700 dark:text-zinc-300 border-zinc-500/30",
 };
 
 export function PhaseRunCard({ phaseRun }: { phaseRun: PhaseRun }) {
   const output = usePhaseRunOutput(phaseRun.id);
   const cancel = useCancelPhaseRun();
+  const [terminalOpen, setTerminalOpen] = useState(false);
 
   const stream = (output.data ?? []).map((c) => c.chunk).join("");
 
@@ -49,6 +61,15 @@ export function PhaseRunCard({ phaseRun }: { phaseRun: PhaseRun }) {
         >
           {phaseRun.status}
         </Badge>
+        <Button
+          variant="ghost"
+          size="xs"
+          onClick={() => setTerminalOpen(true)}
+          title="Open full output in a terminal-style window"
+        >
+          <Terminal className="size-3" />
+          Output
+        </Button>
         {phaseRun.status === "running" && (
           <Button
             variant="ghost"
@@ -72,10 +93,14 @@ export function PhaseRunCard({ phaseRun }: { phaseRun: PhaseRun }) {
         />
       )}
       <pre className="bg-zinc-950 text-zinc-100 max-h-64 overflow-auto whitespace-pre-wrap p-3 font-mono text-[11px] leading-relaxed">
-        {stream || (
-          <span className="text-zinc-500">(no output)</span>
-        )}
+        {stream || <span className="text-zinc-500">(no output)</span>}
       </pre>
+
+      <PhaseRunOutputDialog
+        open={terminalOpen}
+        onOpenChange={setTerminalOpen}
+        phaseRun={phaseRun}
+      />
     </div>
   );
 }

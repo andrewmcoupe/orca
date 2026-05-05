@@ -340,6 +340,37 @@ pub async fn ensure_initialized(
         None => return Ok(EnsureInitOutcome::Skipped),
     };
 
+    // Mark init as running before we kick off the (potentially long) command.
+    // Without this the UI sees `worktree_init_status = NULL` for the entire
+    // duration and renders nothing — leaving the user staring at a blank panel
+    // while `pnpm install` chugs through node_modules.
+    let started_payload = json!({
+        "command": command,
+        "detection_kind": detection_kind,
+    })
+    .to_string();
+    let started_seq = current_seq(&conn, "task", task_id)
+        .map_err(EnsureInitError::Internal)?;
+    append_task_step(
+        &mut conn,
+        app,
+        workspace_id,
+        task_id,
+        started_seq,
+        NewEvent {
+            event_type: "WorktreeInitializationStarted".into(),
+            version: 1,
+            payload: started_payload,
+        },
+        &EventMetadata {
+            command_id: Ulid::new().to_string(),
+            actor: "system:worktree_init".into(),
+            correlation_id: None,
+            causation_id: None,
+        },
+    )
+    .map_err(EnsureInitError::Internal)?;
+
     let outcome = run_init(
         &worktree_pathbuf,
         &command,

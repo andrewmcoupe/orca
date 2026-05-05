@@ -195,6 +195,15 @@ pub async fn run(
         &make_metadata("system:test_author"),
     )?;
 
+    // Inject the worktree path into options so codex's `--cd` lands on the right
+    // place. Other providers ignore it — the subprocess runner sets cwd anyway.
+    let mut options = options;
+    if let Some(map) = options.as_object_mut() {
+        map.insert(
+            "cwd".into(),
+            json!(worktree_dir.to_string_lossy().to_string()),
+        );
+    }
     let invocation = provider.build_invocation(&prompt, &options);
 
     let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();

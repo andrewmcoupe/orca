@@ -20,6 +20,7 @@ import { usePlans } from "@/features/plans/hooks";
 import { useProviders } from "@/features/providers/hooks";
 import type { Workspace } from "@/features/workspaces/types";
 import { cn } from "@/lib/utils";
+import { Button } from "../ui/button";
 
 const EXPANSION_KEY = "orca:sidebar:expanded-workspaces";
 
@@ -76,18 +77,21 @@ export function WorkspacesSidebar() {
   const list = workspaces.data ?? [];
 
   return (
-    <aside className="bg-sidebar text-sidebar-foreground flex w-[220px] flex-shrink-0 flex-col border-r">
+    <aside className="bg-muted text-sidebar-foreground flex w-[220px] flex-shrink-0 flex-col border-r">
       <div className="flex h-7 items-center justify-between pr-1 pl-2 font-body text-sm">
-        <span className="text-muted-foreground ">Workspaces</span>
-        <button
+        <span className="text-muted-foreground text-xs font-mono lowercase font-thin">
+          Workspaces
+        </span>
+        <Button
+          variant={"outline"}
           type="button"
           onClick={onAdd}
           aria-label="Add workspace"
           title="Add workspace"
-          className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-[14px] items-center justify-center rounded-sm"
+          className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-4 items-center justify-center rounded-none p-0"
         >
-          <Plus className="size-3" />
-        </button>
+          <Plus className="size-2 text-foreground" />
+        </Button>
       </div>
       <div className="flex-1 overflow-y-auto">
         {list.length === 0 ? (
@@ -97,6 +101,7 @@ export function WorkspacesSidebar() {
         ) : (
           <Accordion
             value={expansion.open}
+            className={"bg-background border-b"}
             onValueChange={(v) =>
               expansion.setOpen(Array.isArray(v) ? (v as string[]) : [])
             }
@@ -112,7 +117,7 @@ export function WorkspacesSidebar() {
           </Accordion>
         )}
       </div>
-      <nav className="flex flex-col py-1">
+      <nav className="flex flex-col p-2 bg-background border-t">
         <SidebarGlobalLink to="/settings">Settings</SidebarGlobalLink>
         <SidebarGlobalLink to="/">About</SidebarGlobalLink>
       </nav>
@@ -130,13 +135,16 @@ function SidebarGlobalLink({
   return (
     <Link
       to={to}
-      className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-[20px] items-center gap-2 px-2 text-sm font-body no-underline transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
+      className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-[20px] items-center gap-2 px-2 text-xs font-body no-underline transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
       activeOptions={{ exact: true }}
     >
       {children}
     </Link>
   );
 }
+
+const navLinkClass =
+  "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-[20px] items-center gap-2 pl-[14px] pr-2 text-xs transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground [&.active]:font-medium";
 
 function WorkspaceItem({
   workspace,
@@ -168,17 +176,11 @@ function WorkspaceItem({
   const totalProviders = providers.data?.length ?? null;
 
   return (
-    <AccordionItem
-      value={workspace.id}
-      className={cn(
-        "border-b-0 font-body",
-        isActive && "border-l-primary border-l-2",
-      )}
-    >
+    <AccordionItem value={workspace.id} className={cn("border-none")}>
       <AccordionTrigger
         className={cn(
           // Override the UI primitive defaults so the row sits at ~22px.
-          "h-[22px] items-center px-2 py-4 text-sm font-normal hover:no-underline",
+          "h-[22px] items-center px-2 py-4 text-xs font-normal hover:no-underline text-foreground border-none",
           "**:data-[slot=accordion-trigger-icon]:size-[10px] **:data-[slot=accordion-trigger-icon]:opacity-70",
           isActive && "font-medium",
         )}
@@ -193,7 +195,7 @@ function WorkspaceItem({
           )}
         </span>
       </AccordionTrigger>
-      <AccordionContent className="pb-1 pt-0">
+      <AccordionContent className="py-1">
         <div className="flex flex-col">
           <Link
             to="/workspace/$workspaceId/plans"
@@ -214,7 +216,7 @@ function WorkspaceItem({
             className={navLinkClass}
           >
             <NavRowContent
-              label="Providers"
+              label="AI Providers"
               count={
                 totalProviders !== null
                   ? `${installedProviders}/${totalProviders}`
@@ -236,9 +238,6 @@ function WorkspaceItem({
   );
 }
 
-const navLinkClass =
-  "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-[20px] items-center gap-2 pl-[14px] pr-2 text-sm transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground [&.active]:font-medium";
-
 function NavRowContent({
   label,
   count,
@@ -248,7 +247,7 @@ function NavRowContent({
 }) {
   return (
     <>
-      <span className="flex-1 truncate">{label}</span>
+      <span className="flex-1 truncate text-xs">{label}</span>
       {count !== undefined && count !== null && (
         <span className="text-muted-foreground/70 text-[10px] tabular-nums">
           {count}

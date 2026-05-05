@@ -41,7 +41,7 @@ export function InProgressBriefings({
   return (
     <section
       aria-label="In-progress briefings"
-      className="border-border bg-muted/20 space-y-2 rounded-md border p-3"
+      className="border-border bg-muted/20 space-y-2 border p-3"
     >
       <div className="flex items-center justify-between">
         <h2 className="text-muted-foreground flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide">
@@ -54,11 +54,13 @@ export function InProgressBriefings({
       </div>
       <ul className="space-y-1.5">
         {data.map((b) => {
-          const title = b.current_draft?.title?.trim() || untitledFor(b.initial_description);
+          const title =
+            b.current_draft?.title?.trim() ||
+            untitledFor(b.initial_description);
           return (
             <li
               key={b.id}
-              className="border-border bg-card flex items-center justify-between gap-3 rounded-sm border px-3 py-2"
+              className="border-border bg-card flex items-center justify-between gap-3 border px-3 py-2"
             >
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{title}</p>

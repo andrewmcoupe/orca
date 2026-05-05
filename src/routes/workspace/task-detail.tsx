@@ -115,7 +115,7 @@ function TaskDetailView({
         {task.spec_markdown.trim() ? (
           <section className="space-y-2">
             <SectionLabel>Spec</SectionLabel>
-            <ContentColumn className="bg-muted/20 border p-1">
+            <ContentColumn className="bg-card rounded-sm border p-1">
               <Markdown className="text-xs">{task.spec_markdown}</Markdown>
             </ContentColumn>
           </section>
@@ -176,11 +176,7 @@ function TaskDetailView({
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <h2 className="text-muted-foreground/70 text-[10px] font-medium uppercase tracking-[0.08em]">
-      {children}
-    </h2>
-  );
+  return <h2 className="text-muted-foreground font-medium">{children}</h2>;
 }
 
 function TaskHeaderMeta({ task }: { task: Task }) {
@@ -190,9 +186,7 @@ function TaskHeaderMeta({ task }: { task: Task }) {
     return (
       <p className="text-muted-foreground mt-1 text-[11px] tabular-nums">
         Merged into{" "}
-        <code className="font-mono">
-          {task.merge_target_branch ?? "main"}
-        </code>{" "}
+        <code className="font-mono">{task.merge_target_branch ?? "main"}</code>{" "}
         as <CopyableSha sha={task.merged_commit_sha} />
         {task.merged_at != null && <> · {formatRelativeTime(task.merged_at)}</>}
       </p>

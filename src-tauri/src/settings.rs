@@ -76,20 +76,28 @@ impl PermissionMode {
         }
     }
 
-    /// Bundled fallback when no override exists at any level — conservative-pragmatic:
-    /// `plan` for the auditor (which only needs to read), `acceptEdits` for write phases.
+    /// Bundled fallback when no override exists at any level. `acceptEdits` for every
+    /// phase: the auditor only emits a JSON verdict so it doesn't *need* edit rights,
+    /// but `plan` deadlocks against our closed-stdin subprocess (the model can call
+    /// ExitPlanMode and sit there waiting for an approval that never arrives), so we
+    /// avoid that mode for any phase running non-interactively.
     pub fn bundled_default_for(phase: PhaseType) -> Self {
         match phase {
-            PhaseType::Auditor => PermissionMode::Plan,
-            PhaseType::TestAuthor | PhaseType::Implementer => PermissionMode::AcceptEdits,
+            PhaseType::Auditor | PhaseType::TestAuthor | PhaseType::Implementer => {
+                PermissionMode::AcceptEdits
+            }
         }
     }
 
-    /// Belt-and-braces auditor enforcement: the auditor never runs with full bypass,
-    /// regardless of how it was set. Clamps `bypassPermissions` to `acceptEdits` for
-    /// the auditor; leaves all other phase/mode combinations untouched.
+    /// Belt-and-braces auditor enforcement: the auditor never runs with full bypass and
+    /// never runs in plan mode. `bypassPermissions` is wrong on principle (verification
+    /// phase shouldn't get full trust); `plan` deadlocks against our closed-stdin
+    /// subprocess. Both clamp to `acceptEdits`. Other phase/mode combinations pass
+    /// through.
     pub fn clamp_for(self, phase: PhaseType) -> Self {
-        if phase == PhaseType::Auditor && self == PermissionMode::BypassPermissions {
+        if phase == PhaseType::Auditor
+            && (self == PermissionMode::BypassPermissions || self == PermissionMode::Plan)
+        {
             PermissionMode::AcceptEdits
         } else {
             self
@@ -98,12 +106,12 @@ impl PermissionMode {
 
     /// Whether this mode is selectable for the given phase. Used by the UI to filter
     /// dropdown options and by the resolution layer to validate inputs from older event
-    /// payloads.
+    /// payloads. `plan` is unavailable for *every* phase: it deadlocks against our
+    /// closed-stdin subprocess (ExitPlanMode waits for an approval that never arrives).
     pub fn is_available_for(self, phase: PhaseType) -> bool {
         match (phase, self) {
             (PhaseType::Auditor, PermissionMode::BypassPermissions) => false,
-            (PhaseType::TestAuthor, PermissionMode::Plan) => false,
-            (PhaseType::Implementer, PermissionMode::Plan) => false,
+            (_, PermissionMode::Plan) => false,
             _ => true,
         }
     }
@@ -315,10 +323,11 @@ impl WorkspaceSettings {
         self.default_models.get(key).cloned()
     }
 
-    /// The workspace-level default permission mode for `phase`. Honours per-phase
-    /// availability — if the stored value isn't valid for the phase (e.g. somebody
-    /// hand-edited `bypassPermissions` onto the auditor), we fall back to the bundled
-    /// default rather than propagating a forbidden mode.
+    /// The workspace-level default permission mode for `phase` under the conservative
+    /// (provider-agnostic) availability matrix. Provider-aware resolution lives in
+    /// `resolve_phase_settings_with`; this helper is retained for callers that don't
+    /// have a provider in hand and for back-compat tests.
+    #[cfg(test)]
     pub fn workspace_default_permission_mode(&self, phase: PhaseType) -> PermissionMode {
         let key = phase.as_str();
         let stored = self
@@ -348,6 +357,34 @@ pub fn resolve_phase_settings(
     task_phase_config: &PhaseConfig,
     phase: PhaseType,
 ) -> ResolvedPhaseSettings {
+    // Provider-agnostic resolution: applies the conservative universal availability
+    // matrix. Use `resolve_phase_settings_with` when the chosen provider is known and
+    // its `available_permission_modes` should widen or narrow the menu.
+    resolve_phase_settings_with(workspace_settings, task_phase_config, phase, |_| {
+        [
+            PermissionMode::Plan,
+            PermissionMode::AcceptEdits,
+            PermissionMode::BypassPermissions,
+        ]
+        .into_iter()
+        .filter(|m| m.is_available_for(phase))
+        .collect()
+    })
+}
+
+/// Provider-aware resolver. `available_modes(provider_id)` returns the modes the
+/// provider supports for `phase`; we filter task and workspace overrides through it
+/// before falling back. The closure shape (rather than a `&dyn Provider`) keeps
+/// `settings` from depending on the providers module.
+pub fn resolve_phase_settings_with<F>(
+    workspace_settings: &WorkspaceSettings,
+    task_phase_config: &PhaseConfig,
+    phase: PhaseType,
+    available_modes: F,
+) -> ResolvedPhaseSettings
+where
+    F: Fn(&str) -> Vec<PermissionMode>,
+{
     let key = phase.as_str();
 
     let model_choice = task_phase_config
@@ -356,12 +393,37 @@ pub fn resolve_phase_settings(
         .and_then(|m| m.get(key).cloned())
         .or_else(|| workspace_settings.workspace_default_model(phase));
 
-    let permission_mode = task_phase_config
+    let provider_id = model_choice.as_ref().map(|c| c.provider.clone());
+    let modes_for = |provider: Option<&str>| -> Vec<PermissionMode> {
+        match provider {
+            Some(id) => available_modes(id),
+            None => [
+                PermissionMode::Plan,
+                PermissionMode::AcceptEdits,
+                PermissionMode::BypassPermissions,
+            ]
+            .into_iter()
+            .filter(|m| m.is_available_for(phase))
+            .collect(),
+        }
+    };
+    let allowed = modes_for(provider_id.as_deref());
+
+    let task_mode = task_phase_config
         .permission_modes
         .as_ref()
         .and_then(|m| m.get(key).copied())
-        .filter(|m| m.is_available_for(phase))
-        .unwrap_or_else(|| workspace_settings.workspace_default_permission_mode(phase))
+        .filter(|m| allowed.contains(m));
+
+    let workspace_mode = workspace_settings
+        .default_phase_settings
+        .get(key)
+        .and_then(|s| s.permission_mode)
+        .filter(|m| allowed.contains(m));
+
+    let permission_mode = task_mode
+        .or(workspace_mode)
+        .unwrap_or_else(|| PermissionMode::bundled_default_for(phase))
         .clamp_for(phase);
 
     let (provider, model) = match model_choice {
@@ -509,7 +571,7 @@ mod tests {
         assert_eq!(r.permission_mode, PermissionMode::AcceptEdits);
         assert!(r.model.is_none());
         let a = resolve_phase_settings(&ws, &cfg, PhaseType::Auditor);
-        assert_eq!(a.permission_mode, PermissionMode::Plan);
+        assert_eq!(a.permission_mode, PermissionMode::AcceptEdits);
     }
 
     #[test]
@@ -576,7 +638,7 @@ mod tests {
         )]);
         let cfg = task_cfg_with(&[], &[]);
         let r = resolve_phase_settings(&ws, &cfg, PhaseType::Auditor);
-        assert_eq!(r.permission_mode, PermissionMode::Plan); // invalid → bundled default
+        assert_eq!(r.permission_mode, PermissionMode::AcceptEdits); // invalid → bundled default
     }
 
     #[test]
@@ -587,9 +649,9 @@ mod tests {
             &[(PhaseType::Auditor, PermissionMode::BypassPermissions)],
         );
         let r = resolve_phase_settings(&ws, &cfg, PhaseType::Auditor);
-        // The task-level override is filtered out as not-available-for-auditor and
-        // we fall through to the workspace default (which is the bundled default `plan`).
-        assert_eq!(r.permission_mode, PermissionMode::Plan);
+        // The task-level override is filtered out as not-available-for-auditor and we
+        // fall through to the bundled default (`acceptEdits` for every phase).
+        assert_eq!(r.permission_mode, PermissionMode::AcceptEdits);
     }
 
     #[test]
@@ -602,6 +664,22 @@ mod tests {
         let cfg = task_cfg_with(&[], &[]);
         let r = resolve_phase_settings(&ws, &cfg, PhaseType::Implementer);
         assert_eq!(r.permission_mode, PermissionMode::AcceptEdits);
+    }
+
+    #[test]
+    fn permission_mode_availability_per_phase() {
+        // Auditor never accepts bypassPermissions — the rule the per-task editor
+        // enforces both at the command layer (`update_task_phase_config`) and as
+        // the final clamp in `resolve_phase_settings`.
+        assert!(!PermissionMode::BypassPermissions.is_available_for(PhaseType::Auditor));
+        // Plan mode is unavailable for every phase — it deadlocks against our
+        // closed-stdin subprocess (ExitPlanMode waits on an approval that never lands).
+        assert!(!PermissionMode::Plan.is_available_for(PhaseType::Auditor));
+        assert!(!PermissionMode::Plan.is_available_for(PhaseType::Implementer));
+        assert!(!PermissionMode::Plan.is_available_for(PhaseType::TestAuthor));
+        assert!(PermissionMode::AcceptEdits.is_available_for(PhaseType::Auditor));
+        assert!(PermissionMode::AcceptEdits.is_available_for(PhaseType::Implementer));
+        assert!(PermissionMode::BypassPermissions.is_available_for(PhaseType::Implementer));
     }
 
     #[test]

@@ -1,5 +1,11 @@
 import { useState } from "react";
-import { CaretDown, CaretRight, CheckCircle, WarningCircle } from "@phosphor-icons/react";
+import {
+  CaretDown,
+  CaretRight,
+  CheckCircle,
+  CircleNotch,
+  WarningCircle,
+} from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
   useRetryWorktreeInit,
@@ -10,7 +16,8 @@ import type { Task } from "@/features/tasks/types";
 /**
  * Renders the worktree-init step that runs between worktree creation and the
  * first phase. The section is intentionally quiet on success (one collapsed
- * line, easily ignored) and loud on failure (expanded by default, with retry
+ * line, easily ignored), informative while running (so `pnpm install` doesn't
+ * look like a hung UI), and loud on failure (expanded by default, with retry
  * and skip affordances). Nothing renders when init has never run — no need to
  * tell the user about a step that hasn't happened yet.
  */
@@ -18,6 +25,9 @@ export function WorktreeInitSection({ task }: { task: Task }) {
   const status = task.worktree_init_status;
   // No init has run for this worktree yet — keep the UI quiet.
   if (!status) return null;
+  if (status === "running") {
+    return <RunningRow task={task} />;
+  }
   if (status === "initialized") {
     return <InitializedRow task={task} />;
   }
@@ -25,6 +35,26 @@ export function WorktreeInitSection({ task }: { task: Task }) {
     return <FailedRow task={task} />;
   }
   return null;
+}
+
+function RunningRow({ task }: { task: Task }) {
+  const cmd = task.worktree_init_command ?? "";
+  return (
+    <div
+      className="bg-muted/20 flex items-center gap-2 border px-3 py-2 text-xs"
+      role="status"
+      aria-live="polite"
+    >
+      <CircleNotch className="size-3.5 shrink-0 animate-spin text-sky-600 dark:text-sky-400" />
+      <span className="text-muted-foreground">Initializing worktree…</span>
+      {cmd && (
+        <>
+          <span className="text-muted-foreground">·</span>
+          <code className="truncate font-mono">{cmd}</code>
+        </>
+      )}
+    </div>
+  );
 }
 
 function InitializedRow({ task }: { task: Task }) {

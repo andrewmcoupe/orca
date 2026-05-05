@@ -167,6 +167,10 @@ All events carry standard fields (`id`, `aggregate_type`, `aggregate_id`, `seq`,
 - `error: string`
 - `reason: "task_merged" | "task_cancelled" | "manual" | "cleanup_orphan"`
 
+**WorktreeInitializationStarted** — init has been resolved to a concrete command and is about to run. Emitted immediately before the subprocess is spawned so the projection can flip `worktree_init_status` to `'running'` and the UI can show an in-flight indicator (otherwise the user stares at a blank panel for the duration of `pnpm install` etc). Always followed by exactly one of `WorktreeInitialized` or `WorktreeInitializationFailed` for the same `(task_id, command)` pair.
+- `command: string` — the shell command about to be invoked
+- `detection_kind: string` — same enum as `WorktreeInitialized` (excluding `"user_skipped"`, which never runs a command)
+
 **WorktreeInitialized** — dependency-install / setup finished successfully against the worktree. Emitted between `WorktreeCreated` and the first `PhaseRunStarted`. Phase runners check the projection's `worktree_init_status` and run init lazily on first use; subsequent phase runs reuse the result. Skipping via the UI also emits this event with `detection_kind = "user_skipped"`, `exit_code = 0`, and an explanatory `output` string.
 - `command: string` — the actual shell command that ran (or `"<skipped by user>"` for a manual skip)
 - `exit_code: i32` — typically `0`; non-zero values would never reach this event

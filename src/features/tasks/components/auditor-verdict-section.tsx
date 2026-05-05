@@ -10,13 +10,11 @@ const VERDICT_STYLES: Record<string, string> = {
     "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
   revise:
     "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30",
-  reject:
-    "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30",
+  reject: "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30",
 };
 
 const SEVERITY_STYLES: Record<string, string> = {
-  blocking:
-    "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30",
+  blocking: "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30",
   advisory:
     "bg-zinc-500/15 text-zinc-700 dark:text-zinc-300 border-zinc-500/30",
 };
@@ -35,9 +33,7 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
 
   return (
     <section className="space-y-2">
-      <h2 className="text-muted-foreground/70 text-[10px] font-medium uppercase tracking-[0.08em]">
-        Auditor verdict
-      </h2>
+      <h2 className="text-muted-foreground font-medium">Auditor verdict</h2>
       <ContentColumn className="bg-muted/20 space-y-2.5 border p-[14px]">
         <div className="flex flex-wrap items-center gap-2">
           <Badge
@@ -51,9 +47,7 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
           </Badge>
           <span className="text-muted-foreground text-[11px] tabular-nums">
             confidence{" "}
-            <span className="font-mono">
-              {Math.round(v.confidence * 100)}%
-            </span>
+            <span className="font-mono">{Math.round(v.confidence * 100)}%</span>
           </span>
         </div>
         {v.summary.trim() && (

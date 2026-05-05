@@ -356,7 +356,20 @@ async fn invoke_and_parse(
     stream_options: StreamOptions,
     extra_env: &std::collections::HashMap<String, String>,
 ) -> Result<(AuditorVerdict, i64), InvokeError> {
-    let invocation = provider.build_invocation(prompt, options);
+    // Pass the auditor verdict schema to providers that can constrain their output
+    // (currently codex via `--output-schema`). Claude ignores it. We splice into a
+    // local clone so we don't mutate the caller's options.
+    let mut options_with_schema = options.clone();
+    if provider.supports_structured_output() {
+        if let Some(map) = options_with_schema.as_object_mut() {
+            map.insert("output_schema".into(), auditor_verdict_schema());
+            map.insert(
+                "cwd".into(),
+                json!(worktree_dir.to_string_lossy().to_string()),
+            );
+        }
+    }
+    let invocation = provider.build_invocation(prompt, &options_with_schema);
     let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let chunk_tx_cb = chunk_tx.clone();
     let cancel_for_proc = cancel.clone();
@@ -510,6 +523,31 @@ fn relay_line(
         }
     }
     Ok(seq)
+}
+
+/// Schema for the auditor's verdict object. Mirrors `AuditorVerdict` and the
+/// `AuditorVerdictRendered` payload. Codex consumes this via `--output-schema`;
+/// providers that don't override `supports_structured_output` ignore it.
+fn auditor_verdict_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "verdict": { "type": "string", "enum": ["approve", "revise", "reject"] },
+            "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+            "summary": { "type": "string" },
+            "concerns": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "category": { "type": "string" },
+                        "severity": { "type": "string", "enum": ["blocking", "advisory"] },
+                        "rationale": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
 }
 
 fn started_payload(

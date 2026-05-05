@@ -93,6 +93,9 @@ pub fn summarize(event: &AppendedEvent) -> String {
         "WorktreeRemovalFailed" => {
             format!("Worktree removal failed ({}): {}", s("reason"), s("error"))
         }
+        "WorktreeInitializationStarted" => {
+            format!("Worktree init started: `{}`", s("command"))
+        }
         "WorktreeInitialized" => {
             let cmd = s("command");
             let kind = s("detection_kind");

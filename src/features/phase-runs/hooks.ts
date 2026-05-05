@@ -19,10 +19,14 @@ export function usePhaseRuns(workspaceId: string, taskId: string | undefined) {
   });
 }
 
-export function usePhaseRunOutput(phaseRunId: string) {
+export function usePhaseRunOutput(
+  phaseRunId: string,
+  options?: { enabled?: boolean },
+) {
   return useQuery<PhaseRunChunk[]>({
     queryKey: phaseRunKeys.output(phaseRunId),
     queryFn: () => phaseRunsApi.listOutput(phaseRunId),
+    enabled: (options?.enabled ?? true) && !!phaseRunId,
   });
 }
 

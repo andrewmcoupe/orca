@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Info } from "@phosphor-icons/react";
+import { Fragment, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { CaretRight, Info } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { ModelSelect } from "@/features/providers/components/model-select";
@@ -129,68 +129,105 @@ export function DefaultPhaseSettingsPanel({
           these settings; tasks can override per-phase from the preview screen
           before starting. The auditor never accepts <code>bypassPermissions</code>.
         </p>
-        <div className="space-y-3">
-          {phases.map((phase) => {
+        <div
+          // Pipeline layout: phase columns interleaved with auto-sized arrow
+          // columns at lg+. Stacks to a single column below lg. The template
+          // is computed from `phases` (joined with " auto ") and exposed via a
+          // CSS variable so the breakpoint switch lives entirely in CSS — no
+          // window.innerWidth, no resize listener, SSR-safe.
+          className="grid grid-cols-1 items-stretch gap-3 lg:gap-2 lg:[grid-template-columns:var(--phase-cols)]"
+          style={
+            {
+              "--phase-cols": phases
+                .map(() => "minmax(0,1fr)")
+                .join(" auto "),
+            } as CSSProperties
+          }
+        >
+          {phases.map((phase, idx) => {
             const entry = draft[phase] ?? {};
             const allowedModes = PERMISSION_MODES_FOR_PHASE[phase];
             const currentMode =
               entry.permission_mode ?? bundledDefaultPermissionMode(phase);
             return (
-              <div
-                key={phase}
-                className="grid grid-cols-[140px_1fr_220px] items-center gap-3"
-              >
-                <div>
-                  <Label className="font-mono text-sm">{phase}</Label>
+              <Fragment key={phase}>
+                <div
+                  className="bg-card border rounded-md p-3 flex flex-col gap-3"
+                  data-phase={phase}
+                >
+                  <div className="flex items-baseline justify-between gap-2">
+                    <Label className="font-mono text-sm">{phase}</Label>
+                    <span className="text-muted-foreground/60 font-mono text-[10px] tabular-nums">
+                      {String(idx + 1).padStart(2, "0")}
+                    </span>
+                  </div>
                   <p className="text-muted-foreground text-xs">
                     {PHASE_DESCRIPTIONS[phase] ?? ""}
                   </p>
-                </div>
-                <ModelSelect
-                  value={entry.model ?? null}
-                  onChange={(next) => setModelFor(phase, next)}
-                  nullLabel="Provider default"
-                />
-                <div className="flex items-center gap-1.5">
-                  <Select
-                    value={currentMode}
-                    onValueChange={(v) =>
-                      setModeFor(phase, v as PermissionMode)
-                    }
-                  >
-                    <SelectTrigger className="h-9">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {allowedModes.map((m) => (
-                        <SelectItem key={m} value={m}>
-                          {PERMISSION_MODE_LABEL[m]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={(props) => (
-                        <button
-                          type="button"
-                          aria-label={`What does ${PERMISSION_MODE_LABEL[currentMode]} mean?`}
-                          className="text-muted-foreground hover:text-foreground"
-                          {...props}
-                        >
-                          <Info className="size-4" />
-                        </button>
-                      )}
+                  <div className="space-y-1">
+                    <Label className="text-muted-foreground text-[10px] uppercase tracking-wide">
+                      Model
+                    </Label>
+                    <ModelSelect
+                      value={entry.model ?? null}
+                      onChange={(next) => setModelFor(phase, next)}
+                      nullLabel="Provider default"
                     />
-                    <TooltipContent
-                      side="left"
-                      className="max-w-xs text-xs leading-relaxed"
-                    >
-                      {PERMISSION_MODE_HELP[currentMode]}
-                    </TooltipContent>
-                  </Tooltip>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-muted-foreground text-[10px] uppercase tracking-wide">
+                      Permission mode
+                    </Label>
+                    <div className="flex items-center gap-1.5">
+                      <Select
+                        value={currentMode}
+                        onValueChange={(v) =>
+                          setModeFor(phase, v as PermissionMode)
+                        }
+                      >
+                        <SelectTrigger className="h-9 flex-1">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {allowedModes.map((m) => (
+                            <SelectItem key={m} value={m}>
+                              {PERMISSION_MODE_LABEL[m]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={(props) => (
+                            <button
+                              type="button"
+                              aria-label={`What does ${PERMISSION_MODE_LABEL[currentMode]} mean?`}
+                              className="text-muted-foreground hover:text-foreground"
+                              {...props}
+                            >
+                              <Info className="size-4" />
+                            </button>
+                          )}
+                        />
+                        <TooltipContent
+                          side="left"
+                          className="max-w-xs text-xs leading-relaxed"
+                        >
+                          {PERMISSION_MODE_HELP[currentMode]}
+                        </TooltipContent>
+                      </Tooltip>
+                    </div>
+                  </div>
                 </div>
-              </div>
+                {idx < phases.length - 1 && (
+                  <div
+                    className="text-muted-foreground/50 hidden items-center justify-center lg:flex"
+                    aria-hidden="true"
+                  >
+                    <CaretRight className="size-5" />
+                  </div>
+                )}
+              </Fragment>
             );
           })}
         </div>

@@ -125,9 +125,20 @@ function PlanDetailView({
           </div>
         ) : (
           <div className="bg-card border">
-            {(tasks.data ?? []).map((task) => (
-              <TaskRow key={task.id} task={task} workspaceId={workspaceId} />
-            ))}
+            {(() => {
+              const all = tasks.data ?? [];
+              const titlesById = new Map(all.map((t) => [t.id, t.title]));
+              return all.map((task) => (
+                <TaskRow
+                  key={task.id}
+                  task={task}
+                  workspaceId={workspaceId}
+                  dependencyTitles={task.depends_on.map(
+                    (id) => titlesById.get(id) ?? id,
+                  )}
+                />
+              ));
+            })()}
           </div>
         )}
       </section>

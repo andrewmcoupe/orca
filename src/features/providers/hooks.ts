@@ -32,3 +32,21 @@ export function useProviderModels(providerId: string | undefined) {
     enabled: !!providerId,
   });
 }
+
+/** Permission modes the provider exposes for a given phase. Provider-aware so
+ * codex (which has a non-deadlocking `plan` mode via `--sandbox read-only`) gets
+ * `plan` in the dropdown while claude does not. */
+export function usePermissionModes(
+  providerId: string | undefined | null,
+  phase: string | undefined | null,
+) {
+  return useQuery<string[]>({
+    queryKey: [
+      "permission_modes",
+      providerId ?? "__none__",
+      phase ?? "__none__",
+    ],
+    queryFn: () => providersApi.listPermissionModes(providerId!, phase!),
+    enabled: !!providerId && !!phase,
+  });
+}

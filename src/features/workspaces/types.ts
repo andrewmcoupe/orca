@@ -23,11 +23,15 @@ export type ModelChoice = {
 export type PermissionMode = "plan" | "acceptEdits" | "bypassPermissions";
 
 /** Modes the UI is allowed to surface for each phase. The auditor never sees
- * `bypassPermissions`; write phases never see `plan` (they need to write). */
+ * `bypassPermissions` (verification phase shouldn't get full trust). `plan` is
+ * unavailable for every phase — the model can call ExitPlanMode and stall waiting
+ * for an approval our closed-stdin subprocess can't deliver. The literal stays in
+ * the `PermissionMode` union for back-compat with stored values; the resolver and
+ * UI both filter it out. */
 export const PERMISSION_MODES_FOR_PHASE: Record<PhaseType, PermissionMode[]> = {
   test_author: ["acceptEdits", "bypassPermissions"],
   implementer: ["acceptEdits", "bypassPermissions"],
-  auditor: ["plan", "acceptEdits"],
+  auditor: ["acceptEdits"],
 };
 
 export const PERMISSION_MODE_LABEL: Record<PermissionMode, string> = {
@@ -44,8 +48,8 @@ export const PERMISSION_MODE_HELP: Record<PermissionMode, string> = {
     "Full trust: the agent runs anything without prompting. Use only when you've decided to trust the agent for this run.",
 };
 
-export function bundledDefaultPermissionMode(phase: PhaseType): PermissionMode {
-  return phase === "auditor" ? "plan" : "acceptEdits";
+export function bundledDefaultPermissionMode(_phase: PhaseType): PermissionMode {
+  return "acceptEdits";
 }
 
 export type DefaultPhaseSetting = {

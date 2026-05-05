@@ -8,4 +8,6 @@ export const providersApi = {
     invoke<ProviderOptionsSchema>("get_provider_options", { providerId }),
   listModels: (providerId: string) =>
     invoke<KnownModel[]>("list_models", { providerId }),
+  listPermissionModes: (providerId: string, phase: string) =>
+    invoke<string[]>("list_permission_modes", { providerId, phase }),
 };

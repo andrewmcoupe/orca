@@ -28,14 +28,21 @@ function ProvidersPage() {
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="flex items-center gap-2 text-sm">
-                  {p.installed ? (
+                  {p.installed && p.authenticated ? (
                     <CheckCircle className="text-emerald-600" weight="fill" />
+                  ) : p.installed ? (
+                    <XCircle className="text-amber-600" weight="fill" />
                   ) : (
                     <XCircle className="text-destructive" weight="fill" />
                   )}
                   <span>{p.display_name}</span>
                   <span className="text-muted-foreground ml-auto text-xs font-normal">
-                    {p.version ?? (p.installed ? "" : "not installed")}
+                    {p.version ??
+                      (p.installed
+                        ? p.authenticated
+                          ? ""
+                          : "not signed in"
+                        : "not installed")}
                   </span>
                 </CardTitle>
               </CardHeader>
@@ -46,19 +53,25 @@ function ProvidersPage() {
                   </div>
                 )}
                 <div className="text-muted-foreground">
-                  Authenticated: {p.authenticated ? "yes" : "unknown"}
+                  {p.installed
+                    ? p.authenticated
+                      ? "Ready"
+                      : `Installed but not signed in${p.id === "codex" ? " — run `codex login` in your terminal." : "."}`
+                    : "Not installed."}
                 </div>
                 {p.error && (
-                  <div className="text-destructive flex items-center gap-1">
+                  <div className="text-amber-700 dark:text-amber-400 flex items-center gap-1">
                     <span>{p.error}</span>
-                    <a
-                      href="https://docs.claude.com/en/docs/claude-code/overview"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-primary inline-flex items-center gap-0.5 underline-offset-2 hover:underline"
-                    >
-                      Install docs <ArrowSquareOut className="size-3" />
-                    </a>
+                    {!p.installed && (
+                      <a
+                        href={installDocsLink(p.id)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-primary inline-flex items-center gap-0.5 underline-offset-2 hover:underline"
+                      >
+                        Install docs <ArrowSquareOut className="size-3" />
+                      </a>
+                    )}
                   </div>
                 )}
               </CardContent>
@@ -68,6 +81,16 @@ function ProvidersPage() {
       </ul>
     </div>
   );
+}
+
+function installDocsLink(providerId: string): string {
+  switch (providerId) {
+    case "codex":
+      return "https://github.com/openai/codex";
+    case "claude":
+    default:
+      return "https://docs.claude.com/en/docs/claude-code/overview";
+  }
 }
 
 export const providersRoute = createRoute({

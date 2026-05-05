@@ -42,8 +42,12 @@ export function useProjectionInvalidation() {
 }
 
 export function useRecentEvents(workspaceId: string | null, limit = 100) {
+  // `limit` is part of the cache key so consumers asking for different sizes
+  // (e.g. the status bar's single-row peek vs the events drawer's full buffer)
+  // don't poison each other. Invalidation by prefix `["recent_events", id]`
+  // still catches every limit variant.
   return useQuery<RecentEvent[]>({
-    queryKey: ["recent_events", workspaceId],
+    queryKey: ["recent_events", workspaceId, limit],
     queryFn: () => eventsApi.listRecent(limit),
     enabled: !!workspaceId,
   });

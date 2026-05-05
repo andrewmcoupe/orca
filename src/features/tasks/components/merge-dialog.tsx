@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { CircleNotch } from "@phosphor-icons/react";
 import {
   Dialog,
   DialogContent,
@@ -43,6 +44,39 @@ function shortSha(sha: string): string {
 
 function defaultCommitMessage(taskTitle: string, taskId: string): string {
   return `[task] ${taskTitle.trim()}\n\nTask-ID: ${taskId}\n`;
+}
+
+/**
+ * Replaces the merge form while git is running. We swap the body rather than
+ * overlaying it because the overlay's translucent background was barely
+ * distinguishable from the dialog itself in some themes — users couldn't tell
+ * the click had registered. A dedicated panel makes the in-flight state
+ * unambiguous.
+ */
+function MergingProgress({
+  analysis,
+  strategy,
+}: {
+  analysis: MergeAnalysis;
+  strategy: MergeStrategy;
+}) {
+  const cmd = strategy === "squash" ? "git merge --squash" : "git merge";
+  return (
+    <div
+      className="flex flex-col items-center justify-center gap-3 py-10 text-center"
+      role="status"
+      aria-live="polite"
+    >
+      <CircleNotch className="size-8 animate-spin" />
+      <p className="text-base font-medium">Merging…</p>
+      <p className="text-muted-foreground max-w-sm text-xs">
+        Running <code className="font-mono">{cmd}</code> from{" "}
+        <code className="font-mono">{analysis.source_branch}</code> into{" "}
+        <code className="font-mono">{analysis.target_branch}</code>. This can
+        take a few seconds for large diffs — please don't close the window.
+      </p>
+    </div>
+  );
 }
 
 export function MergeDialog({ taskId, taskTitle, open, onOpenChange }: Props) {
@@ -129,7 +163,10 @@ export function MergeDialog({ taskId, taskTitle, open, onOpenChange }: Props) {
         </DialogHeader>
 
         {analyze.isPending && !analysis && (
-          <p className="text-muted-foreground text-sm">Analyzing merge…</p>
+          <div className="flex items-center gap-2 py-6">
+            <CircleNotch className="size-5 animate-spin" />
+            <p className="text-muted-foreground text-sm">Analyzing merge…</p>
+          </div>
         )}
 
         {analyzeError != null && (
@@ -153,22 +190,27 @@ export function MergeDialog({ taskId, taskTitle, open, onOpenChange }: Props) {
           />
         )}
 
-        {analysis && !analysis.already_merged && analysis.conflicts.length === 0 && (
-          <CleanMergeForm
-            analysis={analysis}
-            strategy={strategy}
-            onStrategyChange={setStrategy}
-            message={message}
-            onMessageChange={(v) => {
-              setMessage(v);
-              setMessageDirty(true);
-            }}
-            onConfirm={handleConfirm}
-            onCancel={() => onOpenChange(false)}
-            executing={execute.isPending}
-            executeError={executeError}
-          />
-        )}
+        {analysis &&
+          !analysis.already_merged &&
+          analysis.conflicts.length === 0 &&
+          (execute.isPending ? (
+            <MergingProgress analysis={analysis} strategy={strategy} />
+          ) : (
+            <CleanMergeForm
+              analysis={analysis}
+              strategy={strategy}
+              onStrategyChange={setStrategy}
+              message={message}
+              onMessageChange={(v) => {
+                setMessage(v);
+                setMessageDirty(true);
+              }}
+              onConfirm={handleConfirm}
+              onCancel={() => onOpenChange(false)}
+              executing={execute.isPending}
+              executeError={executeError}
+            />
+          ))}
       </DialogContent>
     </Dialog>
   );
@@ -357,6 +399,7 @@ function CleanMergeForm({
           Cancel
         </Button>
         <Button onClick={onConfirm} disabled={executing || !message.trim()}>
+          {executing && <CircleNotch className="size-4 animate-spin" />}
           {executing ? "Merging…" : "Merge"}
         </Button>
       </DialogFooter>

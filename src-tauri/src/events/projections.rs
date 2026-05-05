@@ -36,7 +36,21 @@ CREATE TABLE IF NOT EXISTS workspace_projection (
 "#;
 
 pub fn apply_workspace_projection_ddl(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(WORKSPACE_PROJECTION_DDL)
+    conn.execute_batch(WORKSPACE_PROJECTION_DDL)?;
+    // One-shot migration: prior to the path-freeing fix, archiving a workspace
+    // left its row's `path` intact, blocking re-registration of the same repo
+    // because of the UNIQUE constraint. Rewrite any leftover archived rows to
+    // the same sentinel form the applier now produces. Idempotent — already-
+    // sentineled rows match the LIKE filter but the UPDATE is a no-op for
+    // them (path = path). The original path remains in the row's
+    // `WorkspaceRegistered` event payload, so audit history is preserved.
+    conn.execute(
+        "UPDATE workspace_projection
+         SET path = '__archived:' || id || '__/' || id
+         WHERE archived = 1 AND path NOT LIKE '__archived:%'",
+        [],
+    )?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,9 +103,25 @@ pub fn apply_workspace_event(
         }
         "WorkspaceArchived" => {
             let p: WorkspaceArchivedPayload = serde_json::from_str(&event.payload)?;
+            // Free the path for re-registration. The `path` column is UNIQUE so
+            // leaving the archived row's original value in place blocks
+            // `add_workspace` if the user later re-adds the same repo (the row
+            // is hidden from `list_active_workspaces` but still wins the unique
+            // index). Rewriting to a sentinel keeps the audit trail intact —
+            // the `WorkspaceRegistered` payload still has the real path —
+            // while letting a fresh aggregate take the path. The sentinel
+            // includes the aggregate id so two archives of the same path don't
+            // collide with each other either.
+            let archived_path =
+                format!("__archived:{}__/{}", event.aggregate_id, event.aggregate_id);
             tx.execute(
-                "UPDATE workspace_projection SET archived = 1, archived_reason = ?1, updated_at = ?2 WHERE id = ?3",
-                params![p.reason, event.created_at, event.aggregate_id],
+                "UPDATE workspace_projection
+                 SET archived = 1,
+                     archived_reason = ?1,
+                     path = ?2,
+                     updated_at = ?3
+                 WHERE id = ?4",
+                params![p.reason, archived_path, event.created_at, event.aggregate_id],
             )?;
         }
         other => return Err(ProjectionError::UnknownEventType(other.to_string())),
@@ -559,9 +589,12 @@ pub struct TaskProjection {
     #[serde(default)]
     pub relevant_files: serde_json::Value,
     pub task_base_commit: Option<String>,
-    /// 'initialized' (success or user-skipped) | 'failed' | NULL (not yet run).
-    /// Phase runners check this before running; if NULL the runner triggers init,
-    /// if 'failed' the runner refuses until the user retries or skips.
+    /// 'initialized' (success or user-skipped) | 'failed' | 'running' (init in
+    /// flight) | NULL (not yet run). Phase runners check this before running;
+    /// if NULL the runner triggers init, if 'failed' the runner refuses until
+    /// the user retries or skips. 'running' is informational for the UI —
+    /// `ensure_initialized` doesn't observe it because it's only set inside its
+    /// own call.
     #[serde(default)]
     pub worktree_init_status: Option<String>,
     #[serde(default)]
@@ -757,6 +790,14 @@ struct WorktreeInitializedPayload {
     exit_code: i32,
     duration_ms: u64,
     output: String,
+    detection_kind: String,
+}
+
+/// Emitted right before init runs so the projection can show an in-flight state.
+/// The terminal exit/duration/output are unknown at this point.
+#[derive(Debug, Deserialize)]
+struct WorktreeInitializationStartedPayload {
+    command: String,
     detection_kind: String,
 }
 
@@ -1130,6 +1171,31 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                      updated_at = ?2
                  WHERE id = ?3",
                 params![p.reason, event.created_at, event.aggregate_id],
+            )?;
+        }
+        "WorktreeInitializationStarted" => {
+            let p: WorktreeInitializationStartedPayload =
+                serde_json::from_str(&event.payload)?;
+            // Surface the in-flight install in the projection so the UI can
+            // render a "running" row. Output/exit/duration stay NULL — they're
+            // only known once the command finishes and we apply
+            // `WorktreeInitialized` / `WorktreeInitializationFailed`.
+            tx.execute(
+                "UPDATE task_projection
+                 SET worktree_init_status = 'running',
+                     worktree_init_command = ?1,
+                     worktree_init_detection_kind = ?2,
+                     worktree_init_exit_code = NULL,
+                     worktree_init_duration_ms = NULL,
+                     worktree_init_output = NULL,
+                     updated_at = ?3
+                 WHERE id = ?4",
+                params![
+                    p.command,
+                    p.detection_kind,
+                    event.created_at,
+                    event.aggregate_id,
+                ],
             )?;
         }
         "WorktreeInitialized" => {

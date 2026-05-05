@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { GitBranch } from "@phosphor-icons/react";
 import { useRecentEvents } from "@/features/events/hooks";
+import { EventsDrawer } from "@/features/events/components/events-drawer";
 import { useProviders } from "@/features/providers/hooks";
 import { usePlans } from "@/features/plans/hooks";
 import {
@@ -14,7 +15,11 @@ import { cn } from "@/lib/utils";
 type EventTone = "success" | "running" | "failure" | "neutral";
 
 const EVENT_TONES: Array<[(t: string) => boolean, EventTone]> = [
-  [(t) => t === "PhaseRunCompleted" || t === "TaskMerged" || t === "TaskApproved", "success"],
+  [
+    (t) =>
+      t === "PhaseRunCompleted" || t === "TaskMerged" || t === "TaskApproved",
+    "success",
+  ],
   [
     (t) =>
       t === "PhaseRunFailed" ||
@@ -71,13 +76,25 @@ export function StatusBar() {
   const active = useActiveWorkspace();
   const activeId = active.data?.id ?? null;
   const activePath = active.data?.path ?? null;
+  const [eventsOpen, setEventsOpen] = useState(false);
 
   return (
-    <div className="border-border bg-background flex h-[22px] flex-shrink-0 items-center gap-4 border-t px-2 font-mono text-[10px]">
-      <LatestEvent activeWorkspaceId={activeId} />
-      <ProviderChips />
-      <WorkspaceState activeWorkspaceId={activeId} activePath={activePath} />
-    </div>
+    <>
+      <div className="border-border bg-background flex h-[22px] flex-shrink-0 items-center gap-4 border-t px-2 font-mono text-[10px]">
+        <LatestEvent activeWorkspaceId={activeId} />
+        <ProviderChips />
+        <WorkspaceState
+          activeWorkspaceId={activeId}
+          activePath={activePath}
+          onOpenEvents={() => setEventsOpen(true)}
+        />
+      </div>
+      <EventsDrawer
+        open={eventsOpen}
+        onOpenChange={setEventsOpen}
+        workspaceId={activeId}
+      />
+    </>
   );
 }
 
@@ -159,9 +176,11 @@ function ProviderChips() {
 function WorkspaceState({
   activeWorkspaceId,
   activePath,
+  onOpenEvents,
 }: {
   activeWorkspaceId: string | null;
   activePath: string | null;
+  onOpenEvents: () => void;
 }) {
   const plansQ = usePlans(activeWorkspaceId);
   const branchQ = useWorkspaceBranch(activePath);
@@ -186,13 +205,13 @@ function WorkspaceState({
       {activeWorkspaceId && (
         <span
           className={cn(
-            "inline-flex items-center gap-1",
+            "inline-flex items-center gap-1 font-body",
             inFlight > 0 && "text-foreground",
           )}
         >
           {inFlight > 0 && (
             <span
-              className="bg-emerald-500 inline-block size-[6px] animate-pulse rounded-full"
+              className="bg-emerald-500 inline-block size-1.5 animate-pulse rounded-full"
               aria-hidden="true"
             />
           )}
@@ -201,12 +220,9 @@ function WorkspaceState({
       )}
       <button
         type="button"
-        // The drawer/activity view is out of scope for this brief — the brief
-        // is explicit about that. We still show the affordance so users know
-        // where to look once it lands; the click is a no-op for now.
-        className="text-muted-foreground/60 hover:text-foreground/80 cursor-default underline-offset-2 hover:underline"
-        title="Activity drawer (coming soon)"
-        disabled
+        onClick={onOpenEvents}
+        className="text-muted-foreground/80 hover:text-foreground underline-offset-2 hover:underline"
+        title="Open recent events"
       >
         events
       </button>

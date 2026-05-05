@@ -1858,11 +1858,16 @@ fn append_task_event_simple(
     emit_projection_updated(app, Some(workspace_id), "recent_events", workspace_id);
     // Queue manager hook (Brief 4): a merge may unblock dependents.
     // Spawn outside the transaction lock — best-effort, failures logged.
+    // Use Tauri's runtime-agnostic spawner: this helper is invoked from sync
+    // `#[tauri::command]` functions whose thread has no Tokio reactor in
+    // scope, so a bare `tokio::spawn` panics with "there is no reactor
+    // running" and aborts the process. `async_runtime::spawn` finds the
+    // global Tauri runtime and dispatches there.
     if event_type == "TaskMerged" {
         let app_clone = app.clone();
         let ws = workspace_id.to_string();
         let tid = task_id.to_string();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             if let Err(e) = crate::pipeline::on_task_merged(app_clone, ws, tid).await {
                 eprintln!("pipeline::on_task_merged failed: {}", e);
             }
@@ -1933,11 +1938,14 @@ pub fn mark_task_merged(
     cleanup_task_worktree(&app, &workspace_id, &workspace_path, &task_id, "task_merged")?;
     maybe_complete_plan(&app, &workspace_id, &task_id);
     // Queue manager hook (Brief 4) — dependents may now be unblocked.
+    // `mark_task_merged` is a sync `#[tauri::command]`, so we must use
+    // `tauri::async_runtime::spawn` rather than `tokio::spawn` (the calling
+    // thread has no Tokio reactor; a bare `tokio::spawn` aborts the process).
     {
         let app_clone = app.clone();
         let ws = workspace_id.clone();
         let tid = task_id.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             if let Err(e) = crate::pipeline::on_task_merged(app_clone, ws, tid).await {
                 eprintln!("pipeline::on_task_merged failed: {}", e);
             }

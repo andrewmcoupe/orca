@@ -8,14 +8,14 @@ function RootLayout() {
   useProjectionInvalidation();
 
   return (
-    <div className="bg-background text-foreground flex h-screen flex-col">
-      <div className="flex min-h-0 flex-1">
-        <WorkspacesSidebar />
-        <main className="min-w-0 flex-1 overflow-auto">
+    <div className="bg-background text-foreground flex h-screen">
+      <WorkspacesSidebar />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <main className="min-h-0 flex-1 overflow-auto">
           <Outlet />
         </main>
+        <StatusBar />
       </div>
-      <StatusBar />
       <QuickTaskShortcut />
     </div>
   );

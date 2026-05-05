@@ -1,246 +1,285 @@
-# Brief for Claude Code: Per-Task Phase Config Editing
+# Brief for Claude Code: Task Dependencies and File-Overlap Warnings
 
 ## Context
 
-A task's phase configuration (provider, model, permission mode per phase) is currently set at task creation time via the preview screen. Changing it after the fact requires editing workspace defaults — which affects all future tasks — or recreating the task. There's no way to say "this specific task should use Opus for the implementer" without either changing the workspace default or starting over.
+The app currently has no concept of task ordering. If a user has a plan with 5 tasks and runs them in parallel, they all create worktrees from the same base commit and try to merge into the same branch. Where the tasks touch overlapping files, this produces merge conflicts on every merge after the first. There's also no way to express "Task B logically depends on Task A's output existing" — the user has to manually run them in order.
 
-This brief adds per-phase config editing on the task detail view. The user can change the provider, model, or permission mode for a specific phase of a specific task. The change applies to future phase runs of that phase; historical runs are unaffected.
+This brief adds task dependencies. Tasks can declare `depends_on` references to other tasks; running a task with unmet dependencies queues it; the queued task auto-starts when its last dependency merges. This is necessary infrastructure to make parallel multi-task execution actually testable — without it, dogfooding the parallel workflow devolves into merge conflict triage.
 
-The use case is real: "the implementer with Sonnet didn't quite work, let me try Opus for the retry" or "the auditor was too lenient, let me bump it to a smarter model and re-audit." This kind of per-task tuning is exactly what makes orca's per-phase model assignment valuable.
+The brief also adds a soft file-overlap warning: when a task is about to start while another in-flight task is touching overlapping files, surface a warning so the user can choose to proceed or wait. This catches a class of conflicts that explicit dependencies miss (the implementer touched a file outside the declared `relevant_files`).
 
 **Prerequisites already in place:**
 
-- Phase config schema with workspace defaults and per-task overrides in `phase_config`
-- Resolution function (task override > workspace default > hardcoded fallback)
-- `list_providers`, `list_models(provider)` Tauri commands
-- Phase cards on the task detail view showing model and permission mode
-- Permission mode handling with auditor restricted to `plan` and `acceptEdits`
-- `TaskCreated` event with `phase_config` snapshot at creation time
-- `PhaseRunStarted` event capturing the resolved config used for that run
+- Task aggregate with the existing event lifecycle (`TaskCreated`, `TaskMerged`, etc.)
+- `relevant_files` on `TaskCreated` from briefing-generated tasks
+- Pipeline orchestrator with `on_phase_completed` hook
+- Plan auto-completion logic (when last task is terminal, `PlanCompleted` fires)
+- Briefing aggregate producing structured drafts with tasks
+- Action toolbar on the task detail view with state-aware Run button
+- TanStack Query with `projection_updated` invalidation
 
 Read `docs/events.md` first.
 
 ## Goals
 
-1. The user can edit a phase's config (provider, model, permission mode) directly from the task detail view.
-2. Edits emit a new event that updates the task's effective config; the original `TaskCreated.phase_config` snapshot is preserved for audit.
-3. New phase runs use the latest effective config; historical runs are unaffected.
-4. Editing is disabled while any phase of the task is currently running.
-5. Phase cards visibly indicate when a phase's config differs from the workspace default.
-6. Auditor's permission mode dropdown still excludes `bypassPermissions`.
+1. Tasks can declare dependencies on other tasks via a `depends_on` field.
+2. The briefing model populates `depends_on` for generated drafts when it identifies dependencies between tasks.
+3. The user can manually edit a task's dependencies after creation via a UI affordance on the task detail view.
+4. Clicking Run on a task with unmet dependencies queues it; queued tasks auto-start when their last dependency merges.
+5. The pipeline orchestrator gains a queue manager that handles unblocking.
+6. A soft warning surfaces at task-start time when an in-flight task has overlapping `relevant_files`.
+7. Cyclic dependencies are detected and rejected at the moment of declaration.
 
 ## Schema additions
 
 Update `docs/events.md` and the implementation.
 
-**`TaskPhaseConfigChanged`** — new event on the Task aggregate. Records a user-initiated change to one phase's config.
-- `phase: "test_author" | "implementer" | "auditor"`
-- `provider: string | null` — null means "revert to workspace default"
-- `model: string | null` — null means "revert to workspace default"
-- `permission_mode: "plan" | "acceptEdits" | "bypassPermissions" | null` — null means revert
+### Task aggregate changes
 
-The event represents a delta to the named phase only. Other phases' configs are untouched.
+**`TaskCreated`** — gains:
+- `depends_on: string[]` — array of task IDs this task depends on. Defaults to empty.
 
-**`task_projection`** changes:
-- Existing `phase_config` column captures the *original* snapshot from `TaskCreated`. Don't change this.
-- Add a new `current_phase_config` column holding the *latest effective* config after applying all `TaskPhaseConfigChanged` events.
-- The applier for `TaskPhaseConfigChanged` updates `current_phase_config` for the named phase. The applier for `TaskCreated` initialises `current_phase_config = phase_config`.
+Bump `TaskCreated` to v4. No upcaster needed if you wipe dev data, or treat missing `depends_on` as `[]` on read.
 
-### Resolution
+**`TaskDependenciesChanged`** — new event. Fired when the user edits dependencies after task creation.
+- `depends_on: string[]` — full new list. Replaces previous; not a delta.
 
-When a phase run starts, the phase runner resolves config in this order:
+**`TaskQueued`** — new event. Fired when the user clicks Run on a task with unmet dependencies and chooses to queue.
+- `queued_at: int64` — timestamp; redundant with the event's own `created_at` but useful for the projection.
 
-1. `current_phase_config[phase]` — the latest user-set value, if present
-2. Workspace `default_phase_settings[phase]` — workspace default
-3. Hardcoded fallback (`acceptEdits` for write phases, `plan` for auditor)
+**`TaskUnblocked`** — new event. Fired automatically by the queue manager when a task's last unmet dependency reaches `merged` state.
+- `unblocked_at: int64`
+- `unblocking_task_id: string` — the dep whose merging caused this task to become unblocked. Useful audit info.
 
-This is the same resolution function used today, with the source updated from "original snapshot" to "current". Update the function once; everything downstream uses it.
+**`TaskUnqueued`** — new event. Fired when the user explicitly cancels a queued task's queued state (e.g. they decide they don't want to auto-start it after all).
 
-`PhaseRunStarted` continues to capture the resolved values at the moment of the run, so the event log accurately records "this run used Opus" regardless of whether config changes happen later.
+### Briefing draft schema changes
 
-### Schema versioning
+**`DraftTask`** in the briefing draft — gains:
+- `depends_on: string[]` — references to other task IDs *in the same draft* (not external task IDs). Empty for tasks with no dependencies.
 
-`TaskCreated` doesn't change. No version bump needed. The new event is additive.
+The model populates this in the briefing system prompt (see Milestone 4 below).
+
+The briefing's accept flow translates draft task IDs to actual task IDs at plan-creation time — the `depends_on` references in the draft refer to other draft tasks; on accept, those references resolve to the new ULIDs assigned to created tasks.
+
+### Projection changes
+
+`task_projection` gains:
+- `depends_on: string[]` (JSON column)
+- `is_blocked: bool` — computed: any dep not in a `merged` state?
+- `is_queued: bool` — has the user clicked Run while blocked?
+- `unblocked_at: int64 | null`
+
+The `is_blocked` flag is recomputed when:
+- `TaskCreated` lands (initial computation based on initial deps)
+- `TaskDependenciesChanged` lands (deps changed)
+- `TaskMerged` lands for any task in the same workspace (a dep might have merged)
+
+The `is_queued` flag toggles on `TaskQueued` and `TaskUnqueued`, and clears on the task's first phase actually starting.
+
+## Cyclic dependency rejection
+
+A task cannot depend (transitively) on itself. The system rejects:
+
+- Direct cycles (Task A depends on B, B depends on A)
+- Indirect cycles (A → B → C → A)
+- Self-loops (A depends on A)
+
+Validation happens at the moment of declaration:
+
+- `create_task` rejects if the new task's `depends_on` would create a cycle (impossible at creation since the new task doesn't exist yet, but check defensively for invalid IDs).
+- `update_task_dependencies` rejects if the change would create a cycle.
+
+Implement a small graph cycle detection function: build the dependency graph from `task_projection` rows in the workspace, add the proposed edge, run a DFS to detect cycles. Reject with `AppError::CyclicDependency` and an explanatory message identifying the cycle path.
 
 ## Milestones
 
-### Milestone 1: Event and projection plumbing
+### Milestone 1: Schema and projection plumbing
 
-- Update `docs/events.md` with the new event and projection column.
-- Implement Rust event type and serde derivations.
-- Update the task projection schema to add `current_phase_config`.
-- Implement the applier for `TaskPhaseConfigChanged` — finds the phase entry in `current_phase_config`, replaces the named field(s), emits a `projection_updated` after commit.
-- Update the `TaskCreated` applier to initialise `current_phase_config` from the original `phase_config` snapshot.
-- Run a one-time backfill on existing task projections: copy `phase_config` to `current_phase_config` for any task that doesn't have it. This is a `rebuild_projections` concern — running rebuild should populate the new column correctly because the appliers do the right thing.
+- Update `docs/events.md` with the new events and field changes.
+- Implement Rust event types and serde derivations.
+- Update `task_projection` schema for new columns.
+- Implement appliers:
+  - `TaskCreated` initialises `depends_on`, computes initial `is_blocked`.
+  - `TaskDependenciesChanged` updates `depends_on`, recomputes `is_blocked`.
+  - `TaskQueued` / `TaskUnqueued` toggle `is_queued`.
+  - `TaskUnblocked` updates `is_blocked = false` and `unblocked_at`.
+  - `TaskMerged` (existing applier) gains a side effect: scan `task_projection` for tasks whose `depends_on` includes this task's ID, recompute their `is_blocked` state.
+- The `TaskMerged` cross-task projection update is in the same transaction as the merge applier (cheap; same workspace db).
 
-### Milestone 2: Phase runner config resolution
+### Milestone 2: Cycle detection
 
-The phase runner currently reads from the task's original `phase_config` to resolve what provider/model/mode to use. Update it to read from `current_phase_config` instead.
+Implement `validate_no_cycle(workspace_id, task_id, proposed_depends_on) -> Result<(), CyclicDependencyError>`:
 
-This is a small change but worth being explicit about: the resolution function's input shifts from "task's original config" to "task's current config." The function signature and behaviour are otherwise identical.
+- Read all task projections for the workspace
+- Build a graph: nodes are task IDs, edges are dependency relationships
+- Add the proposed edges (task_id → each ID in proposed_depends_on)
+- Run DFS from task_id; if we reach task_id again, return the cycle path
+- Return Ok if no cycle
 
-Audit every place in the codebase that reads phase config for execution purposes. They should all go through the resolution function; if any read `phase_config` directly, fix them to use the resolution function (which now reads from `current_phase_config` internally).
+Used by `create_task` and `update_task_dependencies` commands. Tests on this function are mandatory — cycle detection is the kind of logic where subtle bugs allow data corruption.
 
-### Milestone 3: Tauri command
-
-Add `update_task_phase_config`:
+### Milestone 3: Tauri commands
 
 ```rust
 #[tauri::command]
-async fn update_task_phase_config(
+async fn update_task_dependencies(
     task_id: String,
-    phase: String,                          // "test_author" | "implementer" | "auditor"
-    provider: Option<String>,
-    model: Option<String>,
-    permission_mode: Option<String>,
+    depends_on: Vec<String>,
 ) -> Result<Task, AppError>;
+// Validates cycle-free, validates all referenced task IDs exist in the same plan,
+// emits TaskDependenciesChanged.
+
+#[tauri::command]
+async fn unqueue_task(task_id: String) -> Result<Task, AppError>;
+// Emits TaskUnqueued. The task is no longer queued; user clicks Run again to resume.
 ```
 
-Behaviour:
+The existing `start_real_phase` (or whatever your "run a phase" command is) gains pre-execution logic:
 
-1. Validate that no phase of this task is currently running. If a `PhaseRunStarted` exists without a corresponding `PhaseRunCompleted` or `PhaseRunFailed`, return `AppError::PhaseRunning`. The UI should never call this in a running state, but defence-in-depth.
-2. Validate the permission mode against the phase. If `phase == "auditor"` and `permission_mode == "bypassPermissions"`, return `AppError::InvalidPermissionMode`. Defence-in-depth — the UI dropdown shouldn't expose this combination, but the command guards it too.
-3. Emit `TaskPhaseConfigChanged` via `append_events` with the provided fields.
-4. Return the updated task projection.
+- Look up the task. If `is_blocked`:
+  - If the user explicitly invoked Run via the toolbar (the common case), emit `TaskQueued` and return early. Don't start the phase. Return a result indicating the task was queued, not started — so the UI can show appropriate feedback.
+  - If the call came from the queue manager (auto-start after unblocking), the unblocking should have already updated `is_blocked` to false; if it's still true, log a warning and don't start.
+- If not blocked, proceed as today.
 
-The command takes optional fields so partial updates work — e.g. just changing the model without touching provider or mode. Any field set to `None` in the call is left unchanged in the resulting event payload (the event only carries fields the user actually changed).
+### Milestone 4: Queue manager
 
-Wait — that conflicts with the "null means revert to default" semantics in the event. Resolve by using a different sentinel for "no change" vs "revert":
+Add a queue manager component to the orchestrator. It hooks into `TaskMerged` events:
+
+When `TaskMerged` lands:
+
+1. Find all tasks in the same workspace where:
+   - `depends_on` includes the merged task's ID
+   - `is_queued` is true
+   - All *other* dependencies are also in `merged` state (this task is now fully unblocked)
+2. For each, emit `TaskUnblocked` with the unblocking task ID, then emit a synthetic invocation that starts the task's first phase (same code path as user-clicked Run, but flagged as auto-started).
+
+The queue manager runs as part of the existing event-handling flow — when `TaskMerged`'s `projection_updated` fires, the queue manager is one of the handlers that responds. Async; doesn't block the merge completion.
+
+Edge case: if multiple queued tasks unblock simultaneously (the merged task was their last common dependency), they all start. This is correct — the user queued them precisely to run as soon as possible.
+
+Cross-plan note: the queue manager only operates within the same workspace, but dependencies are theoretically cross-plan. For v1, restrict dependencies to same-plan only (validate this in `update_task_dependencies` and `create_task`). Cross-plan dependencies are a complexity multiplier; defer.
+
+### Milestone 5: Briefing-generated dependencies
+
+Update the briefing prompt to instruct the model to identify task dependencies:
+
+Add to the briefing system prompt:
+
+```
+After identifying tasks, identify dependencies between them. Task B depends on Task A if:
+- B's tests would exercise functionality that A creates
+- B modifies code that A introduces
+- B logically requires A's completion to be meaningful
+
+Express dependencies via the `depends_on` field on each task, referencing the IDs of tasks within this same draft. Tasks with no dependencies have an empty array.
+
+Be conservative: only declare dependencies that are necessary. Tasks that could plausibly run in parallel should not have dependencies just to make the order more "obvious."
+```
+
+Update the briefing draft JSON schema to include `depends_on: string[]` on each task. Update the briefing draft Rust types accordingly.
+
+On briefing accept, when translating draft task IDs to actual task ULIDs, propagate the `depends_on` references — if draft task `task-3` had `depends_on: ["task-1"]`, the created Task corresponding to `task-3` has `depends_on: [<actual_ULID_of_task-1>]`.
+
+### Milestone 6: Toolbar Run button changes
+
+The Run button on the task detail toolbar gains nuance:
+
+- **When task is not blocked**: Run is enabled, primary if appropriate. Same as today.
+- **When task is blocked and not yet queued**: Run is enabled, label remains "Run", tooltip says "Will queue — task is blocked by N tasks". On click, emits `TaskQueued`. The button immediately reflects the queued state.
+- **When task is queued**: Button label changes to "Cancel queue". Tooltip: "Cancel — task is waiting for N dependencies to merge." On click, emits `TaskUnqueued`. The button reverts to "Run".
+- **When task is blocked but user wants to override** (run anyway, ignore deps): the overflow menu has "Run anyway (ignore dependencies)" with a strong warning tooltip about likely conflicts. This is an escape hatch, not the recommended path.
+
+The "blocked by N tasks" indicator also appears on the task title area — a small badge showing the count, expandable to a list of the blocking tasks (each a link to that task's detail).
+
+### Milestone 7: Manual dependency editing UI
+
+On the task detail view, add a "Dependencies" section (small, near the spec). Shows:
+
+- Current dependencies as a list of links to those tasks (with their current status — merged, in-flight, blocked, etc.)
+- An "Edit dependencies" button → opens a popover or dialog
+- Editor: a multi-select of other tasks in the same plan, currently dependencies marked. User adds/removes, clicks Save. Calls `update_task_dependencies`.
+- Cycle detection failure surfaces inline: "This dependency would create a cycle: A → B → A. Remove one of these dependencies first."
+
+The Dependencies section is hidden when the task has no dependencies AND isn't blocked. (Don't show empty sections by default; the "Edit dependencies" button is accessible via the overflow menu instead.)
+
+When dependencies exist, the section shows them prominently. When the task is blocked, the section header includes the blocked badge.
+
+### Milestone 8: File-overlap warnings
+
+When a task is about to start (via Run, or via queue manager auto-start), check for file overlaps:
 
 ```rust
-pub enum ConfigUpdate<T> {
-    Unchanged,         // skip this field in the event
-    SetTo(T),          // set to this value
-    RevertToDefault,   // set to None in the event (use default)
+fn detect_file_overlap(
+    starting_task: &Task,
+    workspace_id: &str,
+) -> Vec<FileOverlap>;
+
+struct FileOverlap {
+    other_task_id: String,
+    other_task_title: String,
+    overlapping_files: Vec<String>,
 }
 ```
 
-Or simpler: have two commands, `update_task_phase_config` (sets fields) and `reset_task_phase_config` (reverts a phase to defaults). Pick the simpler split. I'd suggest the two-command approach — clearer, easier to reason about.
+The function:
 
-```rust
-#[tauri::command]
-async fn update_task_phase_config(
-    task_id: String,
-    phase: String,
-    provider: String,
-    model: String,
-    permission_mode: String,
-) -> Result<Task, AppError>;
-// All three fields required; no field-level "unchanged" support. UI sends the full
-// resolved config from the popover; user explicitly clicked Save.
+1. Query `task_projection` for in-flight tasks (tasks with at least one phase run started but not all phases completed) in the same workspace.
+2. For each, compute intersection of their `relevant_files` paths with the starting task's `relevant_files`.
+3. Return `FileOverlap` for each in-flight task with non-empty intersection.
 
-#[tauri::command]
-async fn reset_task_phase_config(
-    task_id: String,
-    phase: String,
-) -> Result<Task, AppError>;
-// Emits TaskPhaseConfigChanged with provider/model/permission_mode all null.
-// Phase reverts to workspace default.
-```
+If overlaps exist, the UI surfaces a warning dialog before the task actually starts:
 
-This is cleaner. Use this split.
+- Title: "File overlap detected"
+- Body: "This task touches files that another in-flight task is also working on. Conflicts may arise when both tasks merge."
+- For each overlap: "Task '{other_title}' is touching {overlapping_files joined}"
+- Buttons: "Proceed anyway" (continues to start the task) and "Cancel" (don't start).
 
-### Milestone 4: Edit affordance on phase cards
+**Suppression policy:** within the current session, don't show the warning twice for the same `(starting_task, other_task)` combination. If the user dismissed the warning when starting Task A while Task B was in flight, don't show it again when Task A's auto-retry hits the same overlap. Use a simple in-memory set keyed by ordered pair.
 
-Add a small edit affordance to each phase card on the task detail view.
+Persistence: don't persist suppression across app restarts. Sessions are short enough that re-prompting on restart is fine.
 
-**Visual treatment:**
-
-- A small icon (`⋯` or a pencil/gear icon) in the top-right corner of each phase card. shadcn doesn't have one out of the box; use Lucide's `Settings2` or `Pencil` icon at 14px, muted-foreground colour.
-- Click → opens a popover anchored to the card.
-- The icon button has a tooltip: "Edit phase config" when enabled, "Cannot edit while a phase is running" when disabled.
-
-**Disabled state:**
-
-- The edit button is disabled when any phase of the task is currently running (any `PhaseRunStarted` without matching completion/failure).
-- Disabled state is muted further (lower opacity) and not clickable. Tooltip explains why.
-
-### Milestone 5: Edit popover
-
-The popover, anchored to the phase card, contains the editor.
-
-**Header:** "Edit {phase name} config" (e.g. "Edit implementer config").
-
-**Body:** three dropdowns plus a footer.
-
-- **Provider** dropdown. Options come from `list_providers()`, filtered to providers that are installed and authenticated. Shows the current value.
-- **Model** dropdown. Options come from `list_models(provider)`. Refreshes when provider changes (clear the model selection on provider change; user must re-pick).
-- **Permission mode** dropdown. Options depend on phase:
-  - `test_author` and `implementer`: `acceptEdits`, `bypassPermissions`
-  - `auditor`: `plan`, `acceptEdits`
-- Display labels are user-friendly: "Plan (read-only)", "Accept edits", "Bypass permissions".
-- A small help icon next to the permission mode dropdown opens a brief explanation on click — same content as the workspace settings help text.
-
-**Footer:**
-
-- "Reset to default" button (left-aligned). Calls `reset_task_phase_config`. Closes popover on success.
-- "Cancel" and "Save" buttons (right-aligned). Save calls `update_task_phase_config` with the popover's current values. Closes on success.
-
-**Initial state:**
-
-The popover pre-populates with the *currently effective* config for this phase — the resolved value (current task config > workspace default > hardcoded). Show that as the starting state. The user is editing "what would the next run use?" — so we show what it would use today.
-
-### Milestone 6: Customisation indicator
-
-When a phase's `current_phase_config` value differs from the workspace default for that phase, the phase card shows a small indicator.
-
-**Visual:**
-
-- A small dot (3-4px) next to the phase name on the card, or after the model name. Use accent colour (the same green used elsewhere for "configured" states) or a neutral muted-secondary colour — pick whichever reads as informational rather than warning.
-- Tooltip on hover: "Phase config has been customised for this task."
-- The indicator is per-phase: the implementer card might show the dot while the auditor card doesn't.
-
-**Computation:**
-
-For each phase on the card, compute `is_customised = current_phase_config[phase] != workspace_default_phase_settings[phase]`. This needs both values; the task projection should expose `current_phase_config`, and the workspace projection exposes defaults. The frontend can compare them to determine the indicator.
-
-Edge case: if a phase has been customised and then reset, the `TaskPhaseConfigChanged` with all-null fields means "use defaults" — the projection should reflect this with `current_phase_config[phase]` matching workspace default, so the indicator correctly disappears.
-
-### Milestone 7: Wiring with task toolbar
-
-The task detail view's action toolbar (from the previous brief) interacts with this feature in one specific way: the **Re-run auditor only** action in the overflow menu, and the **Run / Restart** action, will pick up the latest `current_phase_config` automatically — they go through the resolution function, which now reads from the current config.
-
-This is automatic; no extra work needed beyond confirming the resolution function behaves correctly. But worth verifying: change the auditor's model via the popover, click "Re-run auditor only," confirm the new auditor run uses the new model.
+This warning runs *after* the dependency check. If a task is blocked by dependencies, it queues; the warning doesn't fire until the queue manager actually starts it (and at that point, the dependent tasks have merged, so the in-flight tasks set is different). The warning is for "what's running right now" — it's race-time information, not plan-time.
 
 ## Conventions
 
 - Read and update `docs/events.md` before implementing.
 - Tauri events emitted **after** transaction commit. One `projection_updated` per affected aggregate.
-- TanStack Query for all reads. Phase config changes invalidate the task projection query, which re-renders the phase cards with new model/mode/indicator state.
-- Typed errors with `thiserror`. New variants: `AppError::PhaseRunning`, `AppError::InvalidPermissionMode`.
-- shadcn primitives for the popover (Popover), dropdowns (Select), and tooltips (Tooltip).
-- Don't duplicate the dropdown components. Reuse the same model/permission-mode dropdowns from workspace settings if they exist as separate components; if they're inlined, factor them out as part of this work.
+- Cross-aggregate projection updates (TaskMerged updating other tasks' `is_blocked`) happen in the same transaction.
+- Auto-derived events (`TaskUnblocked` from queue manager) are emitted after the triggering event's transaction commits, not inside it.
+- TanStack Query for all reads. The task detail view's query refetches on `projection_updated` for the task or its dependencies.
+- Typed errors with `thiserror`. New variants: `AppError::CyclicDependency`, `AppError::DependencyNotFound`, `AppError::CrossPlanDependency`.
+- shadcn primitives for the UI: Dialog for the warning, Select (multi-select if available; otherwise checkbox list) for the dependency editor.
 
 ## Out of scope
 
-- Per-task prompt overrides (large UX question; defer)
-- Editing config on completed historical phase runs (immutable; the right pattern is "re-run with new config")
-- Multi-phase batch editing (edit each phase individually)
-- Saving customised task config back as workspace default (cute but premature)
-- Diff display between current task config and workspace default in the popover (the dot indicator is enough)
-- Per-phase prompt template hash override (use whatever the workspace-level prompt is; per-phase prompt editing is a separate concern)
-- Auto-detecting which models a provider has access to (still hardcoded list per provider)
-- Showing config history (when was this changed? by whom?) — the event log has it; no UI needed for v1
-- Per-task gate config overrides (still workspace-level only)
+- Cross-plan dependencies (same-plan only for v1)
+- Visual dependency graph display (could be useful but separate design problem)
+- Dependency-based task ordering in the plan list view (sort by dep order rather than insertion order) — interesting future feature
+- Auto-rebase or auto-conflict-resolution at merge time (still requires human resolution)
+- Soft warnings beyond file overlap (e.g. "you're about to run 5 tasks; that's a lot")
+- Per-task dependency overrides ("ignore this one dependency just for this run") — overflow's "Run anyway" is the only escape hatch
+- Dependency-aware briefing refinement ("the model should refine the dependency graph if I push back") — out of scope; user manually edits if needed
+- Notification when a queued task auto-starts (could be nice; defer)
 
 ## Deliverable
 
 A working app where:
 
-1. Each phase card on the task detail view has an edit affordance (icon button) opening a config popover.
-2. The popover lets the user change provider, model, and permission mode for that phase.
-3. Auditor's permission mode dropdown excludes `bypassPermissions`.
-4. Saving emits `TaskPhaseConfigChanged`; the projection updates; the phase card re-renders with new values.
-5. A reset button on the popover reverts the phase to workspace default.
-6. The edit affordance is disabled (with explanatory tooltip) while any phase of the task is running.
-7. Phase cards show a small dot indicator when the phase's config differs from workspace default.
-8. New phase runs (Run, Restart, Re-run auditor only) use the updated config.
-9. Historical phase runs are unaffected; their `PhaseRunStarted` events remain accurate.
-10. `docs/events.md` reflects the new event and projection column.
+1. Briefing-generated draft tasks include `depends_on` references where the model identifies dependencies.
+2. The user can manually edit a task's dependencies via the task detail view.
+3. Cyclic dependencies are detected and rejected with a clear error message.
+4. Clicking Run on a blocked task queues it; the toolbar reflects queued state; the user can cancel the queue.
+5. When a task's last dependency merges, the queue manager auto-starts it.
+6. The blocked-by indicator appears prominently on blocked tasks.
+7. A file-overlap warning surfaces when a task is about to start while another in-flight task is touching overlapping files. Dismissable; suppression within session.
+8. Cross-plan dependencies are rejected at the validation layer.
+9. `docs/events.md` reflects the new events and schema changes.
 
 Plus tests on:
-- The resolution function correctly preferring current task config over workspace default and over hardcoded fallback.
-- The applier for `TaskPhaseConfigChanged` updating only the named phase, not others.
-- The `update_task_phase_config` command rejecting bypassPermissions for the auditor.
+- Cycle detection (direct cycles, indirect cycles, self-loops, valid graphs).
+- Queue manager (a task with two deps; merge one, task remains queued; merge the other, task auto-starts).
+- File-overlap detection (overlap correctly identified; suppression within session works).
+- Briefing draft → task creation correctly translates `depends_on` from draft IDs to created task IDs.
 
-Three commits: schema and projection (Milestones 1-2), command and core UI (Milestones 3-5), customisation indicator and polish (Milestones 6-7).
+Three commits is right: schema and projection (Milestones 1-2-3), queue manager and briefing integration (Milestones 4-5), UI surfaces and warnings (Milestones 6-7-8).
