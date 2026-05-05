@@ -5,6 +5,7 @@
 - We shouldnt be able to delete a worktree whilst task is in progress
 - We shouldnt be able to press start on a task whilst it is being initialised
 - I had a gate set to run on implementor, gate failed after implementer, i removed the gate from the workspace config, reran the task, iplementer completed but auditor didnt start
+- Review modal should scroll full code block, not lines
 
 ## Ideas
 

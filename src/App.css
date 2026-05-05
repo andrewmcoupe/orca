@@ -142,6 +142,38 @@ body {
   color: var(--foreground);
 }
 
+/* App-wide custom scrollbar. WebKit-only, which is fine for Tauri (macOS
+ * WebKit, Windows WebView2 — both support these pseudo-elements). Thumb uses
+ * the muted-foreground token so it adapts to light/dark themes. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: color-mix(
+    in oklch,
+    var(--muted-foreground) 35%,
+    transparent
+  );
+  border-radius: none;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(
+    in oklch,
+    var(--muted-foreground) 60%,
+    transparent
+  );
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* Tauri custom title bar. The bar itself is draggable; interactive children
  * opt out so clicks/inputs work. `-webkit-app-region` is the macOS-native
  * mechanism (inherits through children), and works alongside Tauri's
