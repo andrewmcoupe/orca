@@ -5,8 +5,8 @@ use rusqlite::Connection;
 use std::path::PathBuf;
 
 pub fn db_path() -> PathBuf {
-    let dirs = ProjectDirs::from("com", "yourname", "appname")
-        .expect("could not resolve app data dir");
+    let dirs =
+        ProjectDirs::from("com", "yourname", "appname").expect("could not resolve app data dir");
     let data_dir = dirs.data_dir();
     std::fs::create_dir_all(data_dir).expect("could not create app data dir");
     data_dir.join("app.sqlite")

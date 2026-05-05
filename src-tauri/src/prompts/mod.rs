@@ -109,7 +109,9 @@ pub fn resolve(workspace_path: &Path, phase: PhaseType) -> Result<String, Prompt
     let path = prompt_file_path(workspace_path, phase);
     match std::fs::read_to_string(&path) {
         Ok(s) => Ok(s),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(bundled_default(phase).to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(bundled_default(phase).to_string())
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -208,7 +210,8 @@ mod tests {
 
     #[test]
     fn render_resolves_nested_prior_phase_commits() {
-        let tmpl = "{{#if prior_phase_commits.test_author}}sha={{prior_phase_commits.test_author}}{{/if}}";
+        let tmpl =
+            "{{#if prior_phase_commits.test_author}}sha={{prior_phase_commits.test_author}}{{/if}}";
         let out = render(tmpl, &ctx()).unwrap();
         assert_eq!(out, "sha=abc123");
     }
@@ -302,7 +305,9 @@ mod tests {
         assert_eq!(h1, h2);
         assert_ne!(h1, h3);
         assert_eq!(h1.len(), 64);
-        assert!(h1.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(h1
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
     }
 
     #[test]
@@ -341,7 +346,11 @@ mod tests {
 
     #[test]
     fn defaults_are_nonempty_for_all_phases() {
-        for p in [PhaseType::TestAuthor, PhaseType::Implementer, PhaseType::Auditor] {
+        for p in [
+            PhaseType::TestAuthor,
+            PhaseType::Implementer,
+            PhaseType::Auditor,
+        ] {
             assert!(!bundled_default(p).is_empty());
         }
     }

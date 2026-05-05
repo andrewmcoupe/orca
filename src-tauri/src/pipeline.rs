@@ -21,9 +21,7 @@ use crate::events::projections;
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::gates::{self, GateResult};
 use crate::phases::runtime::{append_phase_run_step, current_seq};
-use crate::settings::{
-    self, PhaseConfig, PhaseType, ResolvedPhaseSettings, WorkspaceSettings,
-};
+use crate::settings::{self, PhaseConfig, PhaseType, ResolvedPhaseSettings, WorkspaceSettings};
 use crate::subprocess::ChildTracker;
 use crate::workspace_db::open_workspace_db;
 use crate::{ActiveWorkspaceState, GlobalDb};
@@ -61,10 +59,7 @@ fn make_metadata(actor: &str) -> EventMetadata {
 /// Pure decision: given a task's phase config and the phase that just completed, return
 /// the phase that should run next. Returns `None` if the completed phase is the last in
 /// the configured list (or not found at all — defensive).
-pub fn decide_next_phase(
-    config: &PhaseConfig,
-    completed_phase: PhaseType,
-) -> Option<PhaseType> {
+pub fn decide_next_phase(config: &PhaseConfig, completed_phase: PhaseType) -> Option<PhaseType> {
     let idx = config.phases.iter().position(|p| *p == completed_phase)?;
     config.phases.get(idx + 1).copied()
 }
@@ -334,9 +329,7 @@ fn read_task_pipeline_state(
         .0
         .lock()
         .map_err(|e| PipelineError::Internal(e.to_string()))?;
-    let aw = guard
-        .as_mut()
-        .ok_or(PipelineError::NoActiveWorkspace)?;
+    let aw = guard.as_mut().ok_or(PipelineError::NoActiveWorkspace)?;
     let task = projections::get_task(&aw.conn, task_id)
         .map_err(|e| PipelineError::Internal(e.to_string()))?
         .ok_or_else(|| PipelineError::TaskNotFound(task_id.to_string()))?;
@@ -356,9 +349,7 @@ fn task_is_terminal(app: &AppHandle, task_id: &str) -> Result<bool, PipelineErro
         .0
         .lock()
         .map_err(|e| PipelineError::Internal(e.to_string()))?;
-    let aw = guard
-        .as_mut()
-        .ok_or(PipelineError::NoActiveWorkspace)?;
+    let aw = guard.as_mut().ok_or(PipelineError::NoActiveWorkspace)?;
     let task = projections::get_task(&aw.conn, task_id)
         .map_err(|e| PipelineError::Internal(e.to_string()))?
         .ok_or_else(|| PipelineError::TaskNotFound(task_id.to_string()))?;
@@ -387,9 +378,7 @@ fn task_plan_status(app: &AppHandle, task_id: &str) -> Result<Option<String>, Pi
         .0
         .lock()
         .map_err(|e| PipelineError::Internal(e.to_string()))?;
-    let aw = guard
-        .as_mut()
-        .ok_or(PipelineError::NoActiveWorkspace)?;
+    let aw = guard.as_mut().ok_or(PipelineError::NoActiveWorkspace)?;
     let row: Option<String> = aw
         .conn
         .query_row(
@@ -471,6 +460,7 @@ pub fn resolve_for_phase(
 /// show the user what would resolve without yet having a task). Mirrors
 /// `resolve_for_phase` but takes the workspace id and a (possibly empty) task config
 /// directly rather than reading from the projection.
+#[allow(dead_code)]
 pub fn preview_resolved_settings(
     app: &AppHandle,
     workspace_id: &str,
@@ -494,7 +484,6 @@ pub fn preview_resolved_settings(
         .collect()
 }
 
-
 /// Hook fired after a `PhaseRunCompleted` event commits. For non-auditor phases: run
 /// configured gates and, on success, dispatch the next phase. For auditor: do nothing
 /// here — the matching `AuditorVerdictRendered` handler progresses the pipeline.
@@ -512,9 +501,7 @@ pub async fn on_phase_completed(
             .0
             .lock()
             .map_err(|e| PipelineError::Internal(e.to_string()))?;
-        let aw = guard
-            .as_mut()
-            .ok_or(PipelineError::NoActiveWorkspace)?;
+        let aw = guard.as_mut().ok_or(PipelineError::NoActiveWorkspace)?;
         let row: Option<(String, String)> = aw
             .conn
             .query_row(
@@ -548,7 +535,8 @@ pub async fn on_phase_completed(
     // Run gates configured for this phase. If any fail (or error), stop the pipeline.
     // Gates still run on paused plans — pausing controls auto-progression, not gating;
     // the user might have already passed the gate-check window before they paused.
-    let all_passed = run_gates_for_phase(&app, &workspace_id, &task_id, &phase_run_id, phase).await?;
+    let all_passed =
+        run_gates_for_phase(&app, &workspace_id, &task_id, &phase_run_id, phase).await?;
     if !all_passed {
         return Ok(());
     }
@@ -588,9 +576,7 @@ pub async fn on_auditor_verdict(
             .0
             .lock()
             .map_err(|e| PipelineError::Internal(e.to_string()))?;
-        let aw = guard
-            .as_mut()
-            .ok_or(PipelineError::NoActiveWorkspace)?;
+        let aw = guard.as_mut().ok_or(PipelineError::NoActiveWorkspace)?;
         let row: Option<String> = aw
             .conn
             .query_row(
@@ -604,8 +590,14 @@ pub async fn on_auditor_verdict(
             None => return Ok(()),
         }
     };
-    let _ =
-        run_gates_for_phase(&app, &workspace_id, &task_id, &phase_run_id, PhaseType::Auditor).await?;
+    let _ = run_gates_for_phase(
+        &app,
+        &workspace_id,
+        &task_id,
+        &phase_run_id,
+        PhaseType::Auditor,
+    )
+    .await?;
     // Regardless of verdict, auto-progression stops. The user takes the next action via
     // the auditor verdict UI (M8).
     Ok(())
@@ -630,9 +622,7 @@ async fn run_gates_for_phase(
             .0
             .lock()
             .map_err(|e| PipelineError::Internal(e.to_string()))?;
-        let aw = guard
-            .as_mut()
-            .ok_or(PipelineError::NoActiveWorkspace)?;
+        let aw = guard.as_mut().ok_or(PipelineError::NoActiveWorkspace)?;
         let task = projections::get_task(&aw.conn, task_id)
             .map_err(|e| PipelineError::Internal(e.to_string()))?
             .ok_or_else(|| PipelineError::TaskNotFound(task_id.to_string()))?;
@@ -675,8 +665,8 @@ async fn run_gates_for_phase(
 
     // Use a fresh per-workspace connection to append GateRan events; the runtime helpers
     // expect &mut Connection.
-    let mut conn = open_workspace_db(&workspace_path)
-        .map_err(|e| PipelineError::Internal(e.to_string()))?;
+    let mut conn =
+        open_workspace_db(&workspace_path).map_err(|e| PipelineError::Internal(e.to_string()))?;
 
     let mut all_passed = true;
     for (name, command, timeout_secs) in gates_to_run {
@@ -700,8 +690,7 @@ async fn run_gates_for_phase(
             Err(e) => (false, format!("gate spawn failed: {}", e), 0i64),
         };
 
-        let seq = current_seq(&conn, "phase_run", phase_run_id)
-            .map_err(PipelineError::Internal)?;
+        let seq = current_seq(&conn, "phase_run", phase_run_id).map_err(PipelineError::Internal)?;
         let payload = json!({
             "gate_name": name,
             "passed": passed,
@@ -873,4 +862,3 @@ mod tests {
         assert!(g.is_empty());
     }
 }
-

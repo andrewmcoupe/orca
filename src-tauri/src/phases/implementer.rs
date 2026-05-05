@@ -96,14 +96,13 @@ pub async fn run(
 
     // Build the prior_phase_commits map up front so it's available both for the prompt
     // context and the PhaseRunStarted payload.
-    let prior_phase_commits = projections::prior_phase_commits(&conn, &task_id)
-        .map_err(|e| e.to_string())?;
+    let prior_phase_commits =
+        projections::prior_phase_commits(&conn, &task_id).map_err(|e| e.to_string())?;
 
     let workspace_path_buf = std::path::PathBuf::from(&workspace_path);
-    let template = prompts::resolve(&workspace_path_buf, PhaseType::Implementer)
-        .map_err(|e| e.to_string())?;
-    let (retry_auditor_block, retry_user_feedback) =
-        parse_retry_context(retry_context.as_deref());
+    let template =
+        prompts::resolve(&workspace_path_buf, PhaseType::Implementer).map_err(|e| e.to_string())?;
+    let (retry_auditor_block, retry_user_feedback) = parse_retry_context(retry_context.as_deref());
 
     // Pull the task's `relevant_files` from the projection. This is task-level data
     // (set on TaskCreated by the briefing flow); empty array for tasks created via
@@ -133,7 +132,11 @@ pub async fn run(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let model_str = if model.is_empty() { provider.id() } else { &model };
+    let model_str = if model.is_empty() {
+        provider.id()
+    } else {
+        &model
+    };
 
     // Per-task worktree: reuse if it exists, otherwise create lazily.
     let (worktree_dir, base_commit) = match ensure_task_worktree(
@@ -334,7 +337,10 @@ pub async fn run(
             let (head_commit_after, commit_note) =
                 match worktree::commit_all(&worktree_dir, &commit_message) {
                     Ok(sha) => (sha, None),
-                    Err(e) => (base_commit.clone(), Some(format!("auto-commit failed: {}", e))),
+                    Err(e) => (
+                        base_commit.clone(),
+                        Some(format!("auto-commit failed: {}", e)),
+                    ),
                 };
 
             let summary = match commit_note {
@@ -412,8 +418,7 @@ fn ensure_task_worktree(
         }
     }
 
-    let info = worktree::create_worktree(workspace_path, task_id, "")
-        .map_err(|e| e.to_string())?;
+    let info = worktree::create_worktree(workspace_path, task_id, "").map_err(|e| e.to_string())?;
     let payload = json!({
         "worktree_path": info.path.to_string_lossy(),
         "branch_name": info.branch,

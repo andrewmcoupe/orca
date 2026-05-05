@@ -202,7 +202,9 @@ pub fn get_workspace_settings(
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    Ok(crate::settings::WorkspaceSettings::from_json_str(&settings_json))
+    Ok(crate::settings::WorkspaceSettings::from_json_str(
+        &settings_json,
+    ))
 }
 
 #[tauri::command]
@@ -284,7 +286,10 @@ pub fn set_active_workspace(
         eprintln!("worktree reconciliation failed for {}: {}", ws.path, e);
     }
 
-    Ok(ActiveWorkspaceInfo { id: ws.id, path: ws.path })
+    Ok(ActiveWorkspaceInfo {
+        id: ws.id,
+        path: ws.path,
+    })
 }
 
 /// Read the current branch of the workspace's main worktree. Returns `None`
@@ -334,7 +339,9 @@ fn find_orphans(
     conn: &rusqlite::Connection,
     workspace_path: &str,
 ) -> Result<Vec<OrphanWorktree>, String> {
-    let dir = std::path::Path::new(workspace_path).join(".orca").join("worktrees");
+    let dir = std::path::Path::new(workspace_path)
+        .join(".orca")
+        .join("worktrees");
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -347,10 +354,8 @@ fn find_orphans(
     let rows = stmt
         .query_map([], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?;
-    for r in rows {
-        if let Ok(id) = r {
-            active_task_ids.insert(id);
-        }
+    for id in rows.flatten() {
+        active_task_ids.insert(id);
     }
 
     let mut out = Vec::new();
@@ -403,9 +408,7 @@ fn reconcile_worktrees(
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
             .map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for r in rows {
@@ -548,7 +551,10 @@ fn maybe_complete_plan(app: &AppHandle, workspace_id: &str, task_id: &str) {
             Ok(Some(pid)) => pid,
             Ok(None) => return,
             Err(e) => {
-                eprintln!("plan_completion_eligible failed for task {}: {}", task_id, e);
+                eprintln!(
+                    "plan_completion_eligible failed for task {}: {}",
+                    task_id, e
+                );
                 return;
             }
         }
@@ -562,7 +568,13 @@ fn maybe_complete_plan(app: &AppHandle, workspace_id: &str, task_id: &str) {
         Some(aw) => aw,
         None => return,
     };
-    if let Err(e) = append_plan_event(aw, &plan_id, "PlanCompleted", json!({}), "system:auto_complete") {
+    if let Err(e) = append_plan_event(
+        aw,
+        &plan_id,
+        "PlanCompleted",
+        json!({}),
+        "system:auto_complete",
+    ) {
         eprintln!("auto-emit PlanCompleted for {} failed: {}", plan_id, e);
         return;
     }
@@ -692,7 +704,13 @@ pub fn pause_plan(
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         let aw = require_active_workspace(&mut guard)?;
         workspace_id = aw.id.clone();
-        append_plan_event(aw, &plan_id, "PlanPaused", json!({ "reason": reason }), "user:local")?;
+        append_plan_event(
+            aw,
+            &plan_id,
+            "PlanPaused",
+            json!({ "reason": reason }),
+            "user:local",
+        )?;
     }
     emit_projection_updated(&app, Some(&workspace_id), "plan", &plan_id);
     emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
@@ -769,7 +787,7 @@ fn collect_active_tasks_for_plan(
                 .map_err(|e| e.to_string())?
                 .into_iter()
                 .find(|r| &r.id == pr_id)
-                .map_or(false, |r| r.status == "running"),
+                .is_some_and(|r| r.status == "running"),
             None => false,
         };
         out.push(PlanCascadePreview {
@@ -858,7 +876,10 @@ fn cascade_cancel_tasks(
                 break;
             }
             if let Err(e) = recent_events::record_event(&tx, ev) {
-                eprintln!("cascade cancel: recent_events failed for {}: {}", task_id, e);
+                eprintln!(
+                    "cascade cancel: recent_events failed for {}: {}",
+                    task_id, e
+                );
                 applied_ok = false;
                 break;
             }
@@ -888,7 +909,13 @@ pub fn cancel_plan(
         let aw = require_active_workspace(&mut guard)?;
         workspace_id = aw.id.clone();
         cascade = build_cascade_targets(aw, &plan_id)?;
-        append_plan_event(aw, &plan_id, "PlanCancelled", json!({ "reason": reason }), "user:local")?;
+        append_plan_event(
+            aw,
+            &plan_id,
+            "PlanCancelled",
+            json!({ "reason": reason }),
+            "user:local",
+        )?;
     }
     cascade_cancel_tasks(&app, &workspace_id, &cascade, "plan_cancelled");
     emit_projection_updated(&app, Some(&workspace_id), "plan", &plan_id);
@@ -944,7 +971,9 @@ pub fn get_plan(
 fn require_active_workspace<'a>(
     guard: &'a mut std::sync::MutexGuard<'_, Option<ActiveWorkspace>>,
 ) -> Result<&'a mut ActiveWorkspace, String> {
-    guard.as_mut().ok_or_else(|| "no active workspace".to_string())
+    guard
+        .as_mut()
+        .ok_or_else(|| "no active workspace".to_string())
 }
 
 #[tauri::command]
@@ -972,13 +1001,8 @@ pub fn create_task(
         let aw = guard
             .as_ref()
             .ok_or_else(|| "no active workspace".to_string())?;
-        crate::dependencies::validate_dependencies(
-            &aw.conn,
-            &task_id,
-            &plan_id,
-            &depends_on,
-        )
-        .map_err(|e| serde_json::to_string(&e).unwrap_or_else(|_| e.to_string()))?;
+        crate::dependencies::validate_dependencies(&aw.conn, &task_id, &plan_id, &depends_on)
+            .map_err(|e| serde_json::to_string(&e).unwrap_or_else(|_| e.to_string()))?;
     }
 
     // Resolve phase_config at create time. Per-task override wins; otherwise inherit
@@ -1120,8 +1144,8 @@ pub struct ProviderOptionsSchema {
 
 #[tauri::command]
 pub fn get_provider_options(provider_id: String) -> Result<ProviderOptionsSchema, String> {
-    let p = providers::get(&provider_id)
-        .ok_or_else(|| format!("unknown provider: {}", provider_id))?;
+    let p =
+        providers::get(&provider_id).ok_or_else(|| format!("unknown provider: {}", provider_id))?;
     Ok(ProviderOptionsSchema {
         provider_id: p.id().to_string(),
         schema: p.options_schema(),
@@ -1131,8 +1155,8 @@ pub fn get_provider_options(provider_id: String) -> Result<ProviderOptionsSchema
 
 #[tauri::command]
 pub fn list_models(provider_id: String) -> Result<Vec<KnownModel>, String> {
-    let p = providers::get(&provider_id)
-        .ok_or_else(|| format!("unknown provider: {}", provider_id))?;
+    let p =
+        providers::get(&provider_id).ok_or_else(|| format!("unknown provider: {}", provider_id))?;
     Ok(p.known_models())
 }
 
@@ -1141,12 +1165,14 @@ pub fn list_models(provider_id: String) -> Result<Vec<KnownModel>, String> {
 /// as option values. Unknown providers fall back to the universal availability matrix.
 #[tauri::command]
 pub fn list_permission_modes(provider_id: String, phase: String) -> Result<Vec<String>, String> {
-    let phase_typed = PhaseType::parse(&phase)
-        .ok_or_else(|| format!("invalid phase: {}", phase))?;
-    Ok(providers::available_permission_modes(&provider_id, phase_typed)
-        .into_iter()
-        .map(|m| m.as_str().to_string())
-        .collect())
+    let phase_typed =
+        PhaseType::parse(&phase).ok_or_else(|| format!("invalid phase: {}", phase))?;
+    Ok(
+        providers::available_permission_modes(&provider_id, phase_typed)
+            .into_iter()
+            .map(|m| m.as_str().to_string())
+            .collect(),
+    )
 }
 
 // ======================================================================
@@ -1246,8 +1272,8 @@ pub async fn start_real_phase(
     let provider_id = provider_id
         .or_else(|| resolved.provider.clone())
         .unwrap_or_else(|| "claude".to_string());
-    let provider = providers::get(&provider_id)
-        .ok_or_else(|| format!("unknown provider: {}", provider_id))?;
+    let provider =
+        providers::get(&provider_id).ok_or_else(|| format!("unknown provider: {}", provider_id))?;
 
     // Final permission_mode = caller override (if the chosen provider accepts it for
     // this phase) > resolved. Auditor clamp applies last so `bypassPermissions` can
@@ -1278,7 +1304,9 @@ pub async fn start_real_phase(
             "phase".into(),
             serde_json::Value::String(phase_typed.as_str().to_string()),
         );
-        if !map.contains_key("model") || map.get("model") == Some(&serde_json::Value::String(String::new())) {
+        if !map.contains_key("model")
+            || map.get("model") == Some(&serde_json::Value::String(String::new()))
+        {
             if let Some(model) = &resolved.model {
                 map.insert("model".into(), serde_json::Value::String(model.clone()));
             }
@@ -1293,7 +1321,7 @@ pub async fn start_real_phase(
         let needs_refresh = g
             .iter()
             .find(|p| p.id == provider_id)
-            .map_or(true, |p| !p.installed);
+            .is_none_or(|p| !p.installed);
         if needs_refresh {
             *g = providers::detect_providers();
         }
@@ -1459,10 +1487,7 @@ pub async fn start_task_phase(
 }
 
 #[tauri::command]
-pub async fn cancel_phase_run(
-    app: AppHandle,
-    phase_run_id: String,
-) -> Result<bool, String> {
+pub async fn cancel_phase_run(app: AppHandle, phase_run_id: String) -> Result<bool, String> {
     // `async` so `tokio::spawn` below has a runtime context — sync Tauri commands run
     // on the main thread without a reactor and panic on spawn.
     let inflight = app.state::<InflightRuns>();
@@ -1647,7 +1672,10 @@ pub enum MergeCommandError {
     #[error("conflicts prevent merge")]
     Conflicts { conflicts: Vec<String> },
     #[error("source already merged into target at {commit_sha}")]
-    AlreadyMerged { commit_sha: String, target_branch: String },
+    AlreadyMerged {
+        commit_sha: String,
+        target_branch: String,
+    },
     #[error("git error: {0}")]
     GitError(String),
     #[error("internal error: {0}")]
@@ -1659,9 +1687,7 @@ impl From<crate::merge::MergeError> for MergeCommandError {
         use crate::merge::MergeError;
         match e {
             MergeError::DetachedHead => Self::DetachedHead,
-            MergeError::WorkingTreeDirty { dirty_files } => {
-                Self::WorkingTreeDirty { dirty_files }
-            }
+            MergeError::WorkingTreeDirty { dirty_files } => Self::WorkingTreeDirty { dirty_files },
             MergeError::SourceBranchMissing(b) => Self::SourceBranchMissing(b),
             MergeError::TargetBranchMissing(b) => Self::TargetBranchMissing(b),
             MergeError::Conflicts { conflicts } => Self::Conflicts { conflicts },
@@ -1703,20 +1729,15 @@ pub fn analyze_task_merge(
     active: State<'_, ActiveWorkspaceState>,
 ) -> Result<crate::merge::MergeAnalysis, MergeCommandError> {
     let (workspace_id, workspace_path, source_branch) = {
-        let mut guard = active
-            .0
-            .lock()
-            .map_err(|_| MergeCommandError::InternalError("active workspace mutex poisoned".into()))?;
-        let aw = guard
-            .as_mut()
-            .ok_or(MergeCommandError::NoActiveWorkspace)?;
+        let mut guard = active.0.lock().map_err(|_| {
+            MergeCommandError::InternalError("active workspace mutex poisoned".into())
+        })?;
+        let aw = guard.as_mut().ok_or(MergeCommandError::NoActiveWorkspace)?;
         lookup_task_workspace_and_branch(aw, &task_id)?
     };
 
-    let analysis = crate::merge::analyze_merge(
-        std::path::Path::new(&workspace_path),
-        &source_branch,
-    )?;
+    let analysis =
+        crate::merge::analyze_merge(std::path::Path::new(&workspace_path), &source_branch)?;
 
     if analysis.already_merged {
         // Materialise the merge as a TaskMerged event so the projection reflects reality.
@@ -1749,13 +1770,8 @@ pub fn analyze_task_merge(
             "conflicts": analysis.conflicts,
             "target_head_sha": analysis.target_head_sha,
         });
-        let _ = append_task_event_simple(
-            &app,
-            &workspace_id,
-            &task_id,
-            "TaskMergeAttempted",
-            payload,
-        );
+        let _ =
+            append_task_event_simple(&app, &workspace_id, &task_id, "TaskMergeAttempted", payload);
     }
 
     Ok(analysis)
@@ -1770,13 +1786,10 @@ pub fn execute_task_merge(
     active: State<'_, ActiveWorkspaceState>,
 ) -> Result<crate::merge::ExecutedMerge, MergeCommandError> {
     let (workspace_id, workspace_path, source_branch) = {
-        let mut guard = active
-            .0
-            .lock()
-            .map_err(|_| MergeCommandError::InternalError("active workspace mutex poisoned".into()))?;
-        let aw = guard
-            .as_mut()
-            .ok_or(MergeCommandError::NoActiveWorkspace)?;
+        let mut guard = active.0.lock().map_err(|_| {
+            MergeCommandError::InternalError("active workspace mutex poisoned".into())
+        })?;
+        let aw = guard.as_mut().ok_or(MergeCommandError::NoActiveWorkspace)?;
         lookup_task_workspace_and_branch(aw, &task_id)?
     };
 
@@ -1802,7 +1815,7 @@ pub fn execute_task_merge(
         "parent_commits": result.parent_commits,
     });
     append_task_event_simple(&app, &workspace_id, &task_id, "TaskMerged", payload)
-        .map_err(|e| MergeCommandError::InternalError(e))?;
+        .map_err(MergeCommandError::InternalError)?;
 
     // Existing wiring: cleanup the worktree (force=true since we just merged its branch
     // into the target — the worktree files are now redundant), then check plan completion.
@@ -1883,8 +1896,7 @@ pub fn get_latest_merge_attempt_for_task(
 ) -> Result<Option<projections::TaskMergeAttempt>, String> {
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
     let aw = require_active_workspace(&mut guard)?;
-    projections::latest_merge_attempt_for_task(&aw.conn, &task_id)
-        .map_err(|e| e.to_string())
+    projections::latest_merge_attempt_for_task(&aw.conn, &task_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1935,7 +1947,13 @@ pub fn mark_task_merged(
     emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
     emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
 
-    cleanup_task_worktree(&app, &workspace_id, &workspace_path, &task_id, "task_merged")?;
+    cleanup_task_worktree(
+        &app,
+        &workspace_id,
+        &workspace_path,
+        &task_id,
+        "task_merged",
+    )?;
     maybe_complete_plan(&app, &workspace_id, &task_id);
     // Queue manager hook (Brief 4) — dependents may now be unblocked.
     // `mark_task_merged` is a sync `#[tauri::command]`, so we must use
@@ -1995,7 +2013,13 @@ pub fn cancel_task(
     emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
     emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
 
-    cleanup_task_worktree(&app, &workspace_id, &workspace_path, &task_id, "task_cancelled")?;
+    cleanup_task_worktree(
+        &app,
+        &workspace_id,
+        &workspace_path,
+        &task_id,
+        "task_cancelled",
+    )?;
     maybe_complete_plan(&app, &workspace_id, &task_id);
     Ok(())
 }
@@ -2016,8 +2040,8 @@ pub async fn pass_back_to_implementer(
             .into_iter()
             .next()
             .ok_or_else(|| "no auditor verdict for task".to_string())?;
-        let runs = projections::list_phase_runs_for_task(&aw.conn, &task_id)
-            .map_err(|e| e.to_string())?;
+        let runs =
+            projections::list_phase_runs_for_task(&aw.conn, &task_id).map_err(|e| e.to_string())?;
         let prior = runs
             .iter()
             .rev()
@@ -2132,13 +2156,8 @@ pub fn update_task_dependencies(
                 task.status
             ));
         }
-        crate::dependencies::validate_dependencies(
-            &aw.conn,
-            &task_id,
-            &task.plan_id,
-            &depends_on,
-        )
-        .map_err(|e| serde_json::to_string(&e).unwrap_or_else(|_| e.to_string()))?;
+        crate::dependencies::validate_dependencies(&aw.conn, &task_id, &task.plan_id, &depends_on)
+            .map_err(|e| serde_json::to_string(&e).unwrap_or_else(|_| e.to_string()))?;
 
         let payload = json!({ "depends_on": depends_on }).to_string();
         let seq = current_task_seq(&aw.conn, &task_id)?;
@@ -2266,8 +2285,8 @@ pub fn update_task_phase_config(
 ) -> Result<projections::TaskProjection, String> {
     // Phase + permission mode validation up front — defence-in-depth against the UI
     // calling with a forbidden combination.
-    let phase_typed = PhaseType::parse(&phase)
-        .ok_or_else(|| format!("invalid phase: {}", phase))?;
+    let phase_typed =
+        PhaseType::parse(&phase).ok_or_else(|| format!("invalid phase: {}", phase))?;
     let mode_typed = PermissionMode::parse(&permission_mode)
         .ok_or_else(|| format!("invalid permission_mode: {}", permission_mode))?;
     if provider.trim().is_empty() {
@@ -2363,7 +2382,10 @@ fn apply_task_phase_config_change(
             )
             .map_err(|e| e.to_string())?;
         if running > 0 {
-            return Err("phase_running: cannot edit phase config while a phase of this task is running".into());
+            return Err(
+                "phase_running: cannot edit phase config while a phase of this task is running"
+                    .into(),
+            );
         }
 
         let seq = current_task_seq(&aw.conn, task_id)?;
@@ -2435,7 +2457,6 @@ pub fn get_latest_auditor_verdict_for_task(
     Ok(verdicts.into_iter().next())
 }
 
-
 #[tauri::command]
 pub fn delete_worktree(
     app: AppHandle,
@@ -2470,7 +2491,9 @@ pub fn delete_worktree(
         if path.exists() {
             if let Ok(status) = crate::worktree::worktree_status(&path) {
                 if status.has_uncommitted_changes {
-                    return Err("worktree has uncommitted changes; pass force=true to delete".into());
+                    return Err(
+                        "worktree has uncommitted changes; pass force=true to delete".into(),
+                    );
                 }
             }
         }
@@ -2632,8 +2655,7 @@ pub struct ResolvedPrompt {
 }
 
 fn parse_phase_arg(phase: &str) -> Result<crate::settings::PhaseType, String> {
-    crate::settings::PhaseType::parse(phase)
-        .ok_or_else(|| format!("unknown phase: {}", phase))
+    crate::settings::PhaseType::parse(phase).ok_or_else(|| format!("unknown phase: {}", phase))
 }
 
 #[tauri::command]
@@ -2668,10 +2690,7 @@ pub fn save_prompt(
 }
 
 #[tauri::command]
-pub fn reset_prompt(
-    phase: String,
-    active: State<'_, ActiveWorkspaceState>,
-) -> Result<(), String> {
+pub fn reset_prompt(phase: String, active: State<'_, ActiveWorkspaceState>) -> Result<(), String> {
     let phase_t = parse_phase_arg(&phase)?;
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
     let aw = require_active_workspace(&mut guard)?;
@@ -2757,11 +2776,11 @@ pub fn rebuild_projections(
     let mut events_replayed = 0i64;
     let mut rebuilt = Vec::new();
 
-    let do_workspace = aggregate_type.as_deref().map_or(true, |t| t == "workspace");
-    let do_plan = aggregate_type.as_deref().map_or(true, |t| t == "plan");
-    let do_task = aggregate_type.as_deref().map_or(true, |t| t == "task");
-    let do_phase_run = aggregate_type.as_deref().map_or(true, |t| t == "phase_run");
-    let do_briefing = aggregate_type.as_deref().map_or(true, |t| t == "briefing");
+    let do_workspace = aggregate_type.as_deref().is_none_or(|t| t == "workspace");
+    let do_plan = aggregate_type.as_deref().is_none_or(|t| t == "plan");
+    let do_task = aggregate_type.as_deref().is_none_or(|t| t == "task");
+    let do_phase_run = aggregate_type.as_deref().is_none_or(|t| t == "phase_run");
+    let do_briefing = aggregate_type.as_deref().is_none_or(|t| t == "briefing");
 
     // --- Workspace (global db) ---
     if do_workspace {
@@ -2865,7 +2884,10 @@ pub fn rebuild_projections(
             }
 
             tx.commit().map_err(|e| e.to_string())?;
-        } else if aggregate_type.as_deref().map_or(false, |t| t == "task" || t == "phase_run" || t == "briefing") {
+        } else if aggregate_type
+            .as_deref()
+            .is_some_and(|t| t == "task" || t == "phase_run" || t == "briefing")
+        {
             return Err("no active workspace; cannot rebuild task/phase_run projections".into());
         }
     }
@@ -2887,6 +2909,7 @@ pub fn rebuild_projections(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use crate::events::projections::apply_workspace_db_projection_ddl;
@@ -2989,10 +3012,12 @@ mod tests {
         let conn = make_db();
         assert_eq!(plan_completion_eligible(&conn, "nope").unwrap(), None);
     }
-
 }
 
-type ApplyFn = fn(&rusqlite::Transaction, &crate::events::types::AppendedEvent) -> Result<(), projections::ProjectionError>;
+type ApplyFn = fn(
+    &rusqlite::Transaction,
+    &crate::events::types::AppendedEvent,
+) -> Result<(), projections::ProjectionError>;
 
 fn apply_workspace_event_wrapper(
     tx: &rusqlite::Transaction,
@@ -3063,4 +3088,3 @@ fn replay_into(
     }
     Ok(count)
 }
-

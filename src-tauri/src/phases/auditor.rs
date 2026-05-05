@@ -95,8 +95,8 @@ pub async fn run(
 
     let mut conn = open_workspace_db(&workspace_path).map_err(|e| e.to_string())?;
 
-    let prior_phase_commits = projections::prior_phase_commits(&conn, &task_id)
-        .map_err(|e| e.to_string())?;
+    let prior_phase_commits =
+        projections::prior_phase_commits(&conn, &task_id).map_err(|e| e.to_string())?;
 
     let task = projections::get_task(&conn, &task_id)
         .map_err(|e| e.to_string())?
@@ -115,14 +115,14 @@ pub async fn run(
         .or_else(|| task.worktree_base_commit.clone())
         .ok_or_else(|| "auditor requires task_base_commit but none recorded".to_string())?;
 
-    let raw_diff = worktree::diff_against_base(&worktree_dir, &task_base_commit)
-        .map_err(|e| e.to_string())?;
+    let raw_diff =
+        worktree::diff_against_base(&worktree_dir, &task_base_commit).map_err(|e| e.to_string())?;
     let diff_for_prompt =
         worktree::truncate_diff(&raw_diff, DIFF_TRUNCATION_LIMIT, &task_base_commit);
 
     let workspace_path_buf = std::path::PathBuf::from(&workspace_path);
-    let template = prompts::resolve(&workspace_path_buf, PhaseType::Auditor)
-        .map_err(|e| e.to_string())?;
+    let template =
+        prompts::resolve(&workspace_path_buf, PhaseType::Auditor).map_err(|e| e.to_string())?;
     let context = PromptContext {
         task_title: task_title.clone(),
         task_spec_markdown: spec_markdown.clone(),
@@ -139,7 +139,11 @@ pub async fn run(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let model_str = if model.is_empty() { provider.id() } else { &model };
+    let model_str = if model.is_empty() {
+        provider.id()
+    } else {
+        &model
+    };
 
     let worktree_path_str = worktree_dir.to_string_lossy().to_string();
     let started = started_payload(
@@ -418,10 +422,12 @@ async fn invoke_and_parse(
                 &mut accumulated,
                 line.trim_end_matches('\n'),
             )
-            .map_err(|e| InvokeError::Subprocess(
-                json!({ "error_kind": "subprocess_error", "error_message": e }).to_string(),
-                seq,
-            ))?;
+            .map_err(|e| {
+                InvokeError::Subprocess(
+                    json!({ "error_kind": "subprocess_error", "error_message": e }).to_string(),
+                    seq,
+                )
+            })?;
         }
     }
     if !line_buf.trim().is_empty() {
@@ -437,16 +443,17 @@ async fn invoke_and_parse(
             &mut accumulated,
             &trailing,
         )
-        .map_err(|e| InvokeError::Subprocess(
-            json!({ "error_kind": "subprocess_error", "error_message": e }).to_string(),
-            seq,
-        ))?;
+        .map_err(|e| {
+            InvokeError::Subprocess(
+                json!({ "error_kind": "subprocess_error", "error_message": e }).to_string(),
+                seq,
+            )
+        })?;
     }
 
     let proc_result = proc_task.await.map_err(|e| {
         InvokeError::Subprocess(
-            json!({ "error_kind": "subprocess_error", "error_message": e.to_string() })
-                .to_string(),
+            json!({ "error_kind": "subprocess_error", "error_message": e.to_string() }).to_string(),
             seq,
         )
     })?;
@@ -488,8 +495,7 @@ fn relay_line(
                 }
                 accumulated.push_str(&text);
                 *chunk_seq += 1;
-                let payload =
-                    json!({ "chunk": text, "chunk_seq": *chunk_seq }).to_string();
+                let payload = json!({ "chunk": text, "chunk_seq": *chunk_seq }).to_string();
                 seq = append_phase_run_step(
                     conn,
                     app,

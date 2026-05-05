@@ -98,9 +98,8 @@ pub fn create_worktree(
 
     let worktree_dir = worktree_path_for(repo_root, task_id);
     if let Some(parent) = worktree_dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            WorktreeError::CreationFailed(format!("create parent dir: {}", e))
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| WorktreeError::CreationFailed(format!("create parent dir: {}", e)))?;
     }
     if worktree_dir.exists() {
         return Err(WorktreeError::CreationFailed(format!(
@@ -178,9 +177,8 @@ pub fn remove_worktree(
     }
 
     if worktree_path.exists() {
-        std::fs::remove_dir_all(worktree_path).map_err(|e| {
-            WorktreeError::RemovalFailed(format!("remove dir: {}", e))
-        })?;
+        std::fs::remove_dir_all(worktree_path)
+            .map_err(|e| WorktreeError::RemovalFailed(format!("remove dir: {}", e)))?;
     }
 
     if let Some(name) = found_name {
@@ -206,6 +204,7 @@ pub fn remove_worktree(
 }
 
 /// List all worktrees registered in `repo_root`.
+#[allow(dead_code)]
 pub fn list_worktrees(repo_root: &Path) -> Result<Vec<WorktreeInfo>, WorktreeError> {
     let repo = Repository::open(repo_root)?;
     let worktrees = repo.worktrees()?;
@@ -273,6 +272,7 @@ pub fn worktree_status(worktree_path: &Path) -> Result<WorktreeStatus, WorktreeE
     })
 }
 
+#[allow(dead_code)]
 fn repo_has_uncommitted(repo: &Repository) -> Result<bool, git2::Error> {
     let mut opts = git2::StatusOptions::new();
     opts.include_untracked(true).recurse_untracked_dirs(true);
@@ -320,10 +320,7 @@ pub fn diff_against_base(
     let base_oid = git2::Oid::from_str(base_commit_sha)
         .map_err(|e| WorktreeError::GitError(format!("invalid base sha: {}", e)))?;
     let base_tree = repo.find_commit(base_oid)?.tree()?;
-    let head_tree = repo
-        .head()?
-        .peel_to_commit()?
-        .tree()?;
+    let head_tree = repo.head()?.peel_to_commit()?.tree()?;
 
     let mut opts = git2::DiffOptions::new();
     opts.context_lines(3).include_untracked(false);
@@ -373,12 +370,32 @@ mod tests {
     fn init_repo() -> TempDir {
         let dir = TempDir::new().unwrap();
         let path = dir.path();
-        Command::new("git").args(["init", "-b", "main"]).current_dir(path).output().unwrap();
-        Command::new("git").args(["config", "user.email", "t@t"]).current_dir(path).output().unwrap();
-        Command::new("git").args(["config", "user.name", "t"]).current_dir(path).output().unwrap();
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "t@t"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "t"])
+            .current_dir(path)
+            .output()
+            .unwrap();
         std::fs::write(path.join("README"), "hi").unwrap();
-        Command::new("git").args(["add", "."]).current_dir(path).output().unwrap();
-        Command::new("git").args(["commit", "-m", "init"]).current_dir(path).output().unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(path)
+            .output()
+            .unwrap();
         dir
     }
 
@@ -392,9 +409,9 @@ mod tests {
 
         let canon = std::fs::canonicalize(&info.path).unwrap();
         let listed = list_worktrees(repo.path()).unwrap();
-        assert!(listed
-            .iter()
-            .any(|w| std::fs::canonicalize(&w.path).map(|c| c == canon).unwrap_or(false)));
+        assert!(listed.iter().any(|w| std::fs::canonicalize(&w.path)
+            .map(|c| c == canon)
+            .unwrap_or(false)));
 
         remove_worktree(repo.path(), &info.path, false).unwrap();
         assert!(!info.path.exists());

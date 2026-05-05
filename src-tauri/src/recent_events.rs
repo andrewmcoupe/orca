@@ -64,7 +64,13 @@ pub fn record_event(tx: &Transaction, event: &AppendedEvent) -> rusqlite::Result
 pub fn summarize(event: &AppendedEvent) -> String {
     let payload: serde_json::Value =
         serde_json::from_str(&event.payload).unwrap_or(serde_json::Value::Null);
-    let s = |key: &str| payload.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let s = |key: &str| {
+        payload
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
 
     match event.event_type.as_str() {
         "WorkspaceRegistered" => format!("Workspace registered: {}", s("name")),
@@ -99,7 +105,10 @@ pub fn summarize(event: &AppendedEvent) -> String {
         "WorktreeInitialized" => {
             let cmd = s("command");
             let kind = s("detection_kind");
-            let dur = payload.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            let dur = payload
+                .get("duration_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             if kind == "user_skipped" {
                 "Worktree init skipped by user".to_string()
             } else {
@@ -114,18 +123,17 @@ pub fn summarize(event: &AppendedEvent) -> String {
                 .unwrap_or(-1);
             format!("Worktree init failed: `{}` exited {}", cmd, exit)
         }
-        "PhaseRunStarted" => format!(
-            "Phase run started: {} ({})",
-            s("phase"),
-            s("provider"),
-        ),
+        "PhaseRunStarted" => format!("Phase run started: {} ({})", s("phase"), s("provider"),),
         "PhaseRunOutputAppended" => {
             let chunk = payload.get("chunk").and_then(|v| v.as_str()).unwrap_or("");
             format!("Output: {} chars", chunk.chars().count())
         }
         "PhaseRunToolCalled" => format!("Tool called: {}", s("tool_name")),
         "PhaseRunCompleted" => {
-            let exit = payload.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let exit = payload
+                .get("exit_code")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(-1);
             format!("Phase run completed (exit {})", exit)
         }
         "PhaseRunFailed" => format!(
@@ -135,7 +143,10 @@ pub fn summarize(event: &AppendedEvent) -> String {
         ),
         "AuditorVerdictRendered" => {
             let verdict = s("verdict");
-            let confidence = payload.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let confidence = payload
+                .get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
             format!("Auditor verdict: {} ({:.0}%)", verdict, confidence * 100.0)
         }
         "BriefingStarted" => "Briefing started".into(),

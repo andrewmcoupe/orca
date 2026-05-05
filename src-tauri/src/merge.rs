@@ -96,10 +96,7 @@ impl From<git2::Error> for MergeError {
 /// (HEAD of `repo_root`) and `source_branch`, then runs `git2`'s in-memory merge to
 /// detect conflicts and summarize the diff. Detached HEAD on the target is treated as a
 /// hard error here — callers can't pick a branch to merge into.
-pub fn analyze_merge(
-    repo_root: &Path,
-    source_branch: &str,
-) -> Result<MergeAnalysis, MergeError> {
+pub fn analyze_merge(repo_root: &Path, source_branch: &str) -> Result<MergeAnalysis, MergeError> {
     let repo = Repository::open(repo_root)?;
     let target_branch = current_branch_shorthand(&repo)?;
     let target_commit = head_commit(&repo)?;
@@ -128,9 +125,7 @@ pub fn analyze_merge(
         });
     }
 
-    let merge_base = repo
-        .merge_base(target_commit.id(), source_commit.id())
-        .ok();
+    let merge_base = repo.merge_base(target_commit.id(), source_commit.id()).ok();
 
     let source_commits = collect_source_commits(&repo, &source_commit, merge_base)?;
     let diff_summary = compute_diff_summary(&repo, merge_base, &source_commit)?;
@@ -208,9 +203,7 @@ fn execute_merge_inner(
         });
     }
 
-    let merge_base = repo
-        .merge_base(target_commit.id(), source_commit.id())
-        .ok();
+    let merge_base = repo.merge_base(target_commit.id(), source_commit.id()).ok();
 
     let parent_commits = collect_source_commits(&repo, &source_commit, merge_base)?
         .into_iter()
@@ -219,8 +212,7 @@ fn execute_merge_inner(
 
     // Build the merge tree in memory. If anything conflicts, bail before mutating disk.
     let opts = MergeOptions::new();
-    let merged_index =
-        repo.merge_commits(&target_commit, &source_commit, Some(&opts))?;
+    let merged_index = repo.merge_commits(&target_commit, &source_commit, Some(&opts))?;
     let conflicts = collect_conflicts(&merged_index)?;
     if !conflicts.is_empty() {
         return Err(MergeError::Conflicts { conflicts });
@@ -550,7 +542,13 @@ mod tests {
         // Detach HEAD on main.
         let head_sha = {
             let repo = Repository::open(&p).unwrap();
-            let sha = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
+            let sha = repo
+                .head()
+                .unwrap()
+                .peel_to_commit()
+                .unwrap()
+                .id()
+                .to_string();
             sha
         };
         sh(&p, &["checkout", "--detach", &head_sha]);

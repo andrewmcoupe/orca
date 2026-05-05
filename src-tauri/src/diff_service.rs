@@ -268,7 +268,8 @@ pub fn get_unchanged_file_content(
         return Err("diff is unavailable for this task".to_string());
     }
 
-    let content = diff::read_file_at_head(&diff, &workspace_path, &path).map_err(|e| e.to_string())?;
+    let content =
+        diff::read_file_at_head(&diff, &workspace_path, &path).map_err(|e| e.to_string())?;
     let language = diff::detect_language(&path);
     Ok(UnchangedFileContent {
         path,
@@ -283,4 +284,3 @@ pub struct UnchangedFileContent {
     pub content: String,
     pub language: Option<String>,
 }
-

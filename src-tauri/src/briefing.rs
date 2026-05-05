@@ -24,15 +24,11 @@ const BRIEFING_PROMPT_FILENAME: &str = "briefing.md";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
+#[derive(Default)]
 pub enum FileCertainty {
     Confirmed,
+    #[default]
     Candidate,
-}
-
-impl Default for FileCertainty {
-    fn default() -> Self {
-        FileCertainty::Candidate
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -123,11 +119,15 @@ pub enum BriefingError {
     #[error("workspace path not found: {0}")]
     WorkspaceNotFound(String),
     #[error("provider not installed or unavailable: {0}")]
+    #[allow(dead_code)]
     ProviderUnavailable(String),
     #[error("CLI invocation failed: {0}")]
     CliInvocationFailed(String),
     #[error("model output could not be parsed as JSON after retry")]
-    ParseFailed { last_output: String, last_error: String },
+    ParseFailed {
+        last_output: String,
+        last_error: String,
+    },
     #[error("prompt template error: {0}")]
     Prompt(String),
     #[error("io: {0}")]
@@ -311,12 +311,8 @@ pub async fn run_briefing_generation(
     }
 
     let template = resolve_briefing_prompt(workspace_path)?;
-    let base_prompt = render_briefing_prompt(
-        &template,
-        user_description,
-        previous_draft,
-        user_feedback,
-    )?;
+    let base_prompt =
+        render_briefing_prompt(&template, user_description, previous_draft, user_feedback)?;
 
     let mut last_parse_err: Option<(String, String)> = None;
     for attempt in 0..2 {
@@ -492,10 +488,7 @@ fn build_provider_options(provider: &dyn Provider, model: &str) -> serde_json::V
         );
         // The Claude provider clamps `bypassPermissions` for the auditor by inspecting
         // `phase`; we reuse the same hint so the briefing inherits the read-only clamp.
-        map.insert(
-            "phase".into(),
-            serde_json::Value::String("auditor".into()),
-        );
+        map.insert("phase".into(), serde_json::Value::String("auditor".into()));
     }
     opts
 }

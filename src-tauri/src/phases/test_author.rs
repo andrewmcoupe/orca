@@ -20,9 +20,7 @@ use crate::subprocess::{self, ChildTracker, StreamOptions};
 use crate::workspace_db::open_workspace_db;
 use crate::worktree;
 
-use super::runtime::{
-    append_phase_run_step, append_task_step, current_seq,
-};
+use super::runtime::{append_phase_run_step, append_task_step, current_seq};
 
 const PHASE_NAME: &str = "test_author";
 
@@ -85,8 +83,8 @@ pub async fn run(
     // Resolve and render the test-author prompt before the worktree dance — if templating
     // fails we want to know up front. Test-author has no prior phase commits and no diff.
     let workspace_path_buf = std::path::PathBuf::from(&workspace_path);
-    let template = prompts::resolve(&workspace_path_buf, PhaseType::TestAuthor)
-        .map_err(|e| e.to_string())?;
+    let template =
+        prompts::resolve(&workspace_path_buf, PhaseType::TestAuthor).map_err(|e| e.to_string())?;
     let context = PromptContext {
         task_title: task_title.clone(),
         task_spec_markdown: spec_markdown.clone(),
@@ -111,7 +109,11 @@ pub async fn run(
             let started = started_payload(
                 &task_id,
                 provider.id(),
-                if model.is_empty() { provider.id() } else { &model },
+                if model.is_empty() {
+                    provider.id()
+                } else {
+                    &model
+                },
                 permission_mode,
                 &prompt_template_hash,
                 "",
@@ -175,7 +177,11 @@ pub async fn run(
     let started = started_payload(
         &task_id,
         provider.id(),
-        if model.is_empty() { provider.id() } else { &model },
+        if model.is_empty() {
+            provider.id()
+        } else {
+            &model
+        },
         permission_mode,
         &prompt_template_hash,
         &worktree_path_str,
@@ -281,7 +287,10 @@ pub async fn run(
             let (head_commit_after, commit_note) =
                 match worktree::commit_all(&worktree_dir, &commit_message) {
                     Ok(sha) => (sha, None),
-                    Err(e) => (base_commit.clone(), Some(format!("auto-commit failed: {}", e))),
+                    Err(e) => (
+                        base_commit.clone(),
+                        Some(format!("auto-commit failed: {}", e)),
+                    ),
                 };
 
             let summary = match commit_note {
@@ -358,8 +367,7 @@ fn ensure_task_worktree(
         }
     }
 
-    let info = worktree::create_worktree(workspace_path, task_id, "")
-        .map_err(|e| e.to_string())?;
+    let info = worktree::create_worktree(workspace_path, task_id, "").map_err(|e| e.to_string())?;
     let payload = json!({
         "worktree_path": info.path.to_string_lossy(),
         "branch_name": info.branch,

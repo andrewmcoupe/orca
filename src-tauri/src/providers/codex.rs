@@ -326,7 +326,9 @@ fn tool_call_for_item(v: &Value) -> ProviderEvent {
 /// validator rejects the schema before the model ever runs.
 pub fn enforce_openai_schema_rules(schema: &Value) -> Value {
     match schema {
-        Value::Array(items) => Value::Array(items.iter().map(enforce_openai_schema_rules).collect()),
+        Value::Array(items) => {
+            Value::Array(items.iter().map(enforce_openai_schema_rules).collect())
+        }
         Value::Object(map) => {
             let mut out = serde_json::Map::with_capacity(map.len());
             for (k, v) in map {
@@ -550,9 +552,14 @@ mod tests {
     #[test]
     fn available_modes_include_plan_for_every_phase_including_auditor() {
         let p = CodexProvider;
-        for ph in [PhaseType::Implementer, PhaseType::TestAuthor, PhaseType::Auditor] {
+        for ph in [
+            PhaseType::Implementer,
+            PhaseType::TestAuthor,
+            PhaseType::Auditor,
+        ] {
             assert!(
-                p.available_permission_modes(ph).contains(&PermissionMode::Plan),
+                p.available_permission_modes(ph)
+                    .contains(&PermissionMode::Plan),
                 "plan must be available for {:?}",
                 ph
             );

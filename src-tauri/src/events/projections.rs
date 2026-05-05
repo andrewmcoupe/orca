@@ -121,7 +121,12 @@ pub fn apply_workspace_event(
                      path = ?2,
                      updated_at = ?3
                  WHERE id = ?4",
-                params![p.reason, archived_path, event.created_at, event.aggregate_id],
+                params![
+                    p.reason,
+                    archived_path,
+                    event.created_at,
+                    event.aggregate_id
+                ],
             )?;
         }
         other => return Err(ProjectionError::UnknownEventType(other.to_string())),
@@ -366,7 +371,8 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
     for sql in migrations {
         match conn.execute(sql, []) {
             Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column") => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                if msg.contains("duplicate column") => {}
             Err(e) => {
                 let s = e.to_string();
                 if !s.contains("duplicate column") {
@@ -439,10 +445,7 @@ pub fn apply_plan_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
     match event.event_type.as_str() {
         "PlanCreated" => {
             let p: PlanCreatedPayload = serde_json::from_str(&event.payload)?;
-            let metadata_str = p
-                .source_metadata
-                .as_ref()
-                .map(|v| v.to_string());
+            let metadata_str = p.source_metadata.as_ref().map(|v| v.to_string());
             tx.execute(
                 "INSERT INTO plan_projection
                     (id, workspace_id, title, description, source, source_metadata, status,
@@ -822,14 +825,18 @@ fn ensure_object<'a>(
     if !value.is_object() {
         *value = serde_json::Value::Object(serde_json::Map::new());
     }
-    let obj = value.as_object_mut().expect("ensure_object: value is now object");
+    let obj = value
+        .as_object_mut()
+        .expect("ensure_object: value is now object");
     let entry = obj
         .entry(key.to_string())
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
     if !entry.is_object() {
         *entry = serde_json::Value::Object(serde_json::Map::new());
     }
-    entry.as_object_mut().expect("ensure_object: entry is now object")
+    entry
+        .as_object_mut()
+        .expect("ensure_object: entry is now object")
 }
 
 pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), ProjectionError> {
@@ -845,9 +852,9 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                     |r| r.get(0),
                 )
                 .map_err(|e| match e {
-                    rusqlite::Error::QueryReturnedNoRows => ProjectionError::Database(
-                        rusqlite::Error::QueryReturnedNoRows,
-                    ),
+                    rusqlite::Error::QueryReturnedNoRows => {
+                        ProjectionError::Database(rusqlite::Error::QueryReturnedNoRows)
+                    }
                     other => ProjectionError::Database(other),
                 })?;
             // Phase config: events are immutable, so we serialize whatever was on the
@@ -869,10 +876,9 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
             // Initial is_blocked: any dep not in 'merged' state. The dependency
             // resolver lives in `crate::dependencies` so it's exercised by the
             // command-time validator and the same query here.
-            let is_blocked =
-                crate::dependencies::compute_is_blocked(tx, &depends_on)
-                    .map(|b| b as i64)
-                    .map_err(ProjectionError::Database)?;
+            let is_blocked = crate::dependencies::compute_is_blocked(tx, &depends_on)
+                .map(|b| b as i64)
+                .map_err(ProjectionError::Database)?;
             // `current_phase_config` starts equal to `phase_config` — the task hasn't
             // been edited yet. Subsequent `TaskPhaseConfigChanged` events mutate only
             // the current column, leaving the original snapshot intact for audit.
@@ -902,10 +908,9 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
         "TaskDependenciesChanged" => {
             let p: TaskDependenciesChangedPayload = serde_json::from_str(&event.payload)?;
             let depends_on_json = serde_json::to_string(&p.depends_on)?;
-            let is_blocked =
-                crate::dependencies::compute_is_blocked(tx, &p.depends_on)
-                    .map(|b| b as i64)
-                    .map_err(ProjectionError::Database)?;
+            let is_blocked = crate::dependencies::compute_is_blocked(tx, &p.depends_on)
+                .map(|b| b as i64)
+                .map_err(ProjectionError::Database)?;
             tx.execute(
                 "UPDATE task_projection
                  SET depends_on = ?1, is_blocked = ?2, updated_at = ?3
@@ -968,8 +973,8 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                 params![event.aggregate_id],
                 |r| r.get(0),
             )?;
-            let mut current: serde_json::Value = serde_json::from_str(&current_str)
-                .unwrap_or_else(|_| serde_json::json!({}));
+            let mut current: serde_json::Value =
+                serde_json::from_str(&current_str).unwrap_or_else(|_| serde_json::json!({}));
             let phase_name = p.phase.clone();
 
             // Models map: `{ phase -> { provider, model } }`.
@@ -990,10 +995,7 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
             let modes_obj = ensure_object(&mut current, "permission_modes");
             match p.permission_mode.as_ref() {
                 Some(m) => {
-                    modes_obj.insert(
-                        phase_name.clone(),
-                        serde_json::Value::String(m.clone()),
-                    );
+                    modes_obj.insert(phase_name.clone(), serde_json::Value::String(m.clone()));
                 }
                 None => {
                     modes_obj.remove(&phase_name);
@@ -1073,17 +1075,15 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                     })?;
                     for r in rows {
                         let (id, deps_str) = r?;
-                        let deps: Vec<String> =
-                            serde_json::from_str(&deps_str).unwrap_or_default();
+                        let deps: Vec<String> = serde_json::from_str(&deps_str).unwrap_or_default();
                         if deps.iter().any(|d| d == &event.aggregate_id) {
                             dependents.push((id, deps));
                         }
                     }
                 }
                 for (dep_task_id, deps) in dependents {
-                    let still_blocked =
-                        crate::dependencies::compute_is_blocked(tx, &deps)
-                            .map_err(ProjectionError::Database)?;
+                    let still_blocked = crate::dependencies::compute_is_blocked(tx, &deps)
+                        .map_err(ProjectionError::Database)?;
                     if !still_blocked {
                         // Note: we update the flag here so reads see consistent
                         // state, but do NOT auto-emit TaskUnblocked from inside
@@ -1174,8 +1174,7 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
             )?;
         }
         "WorktreeInitializationStarted" => {
-            let p: WorktreeInitializationStartedPayload =
-                serde_json::from_str(&event.payload)?;
+            let p: WorktreeInitializationStartedPayload = serde_json::from_str(&event.payload)?;
             // Surface the in-flight install in the projection so the UI can
             // render a "running" row. Output/exit/duration stay NULL — they're
             // only known once the command finishes and we apply
@@ -1379,7 +1378,13 @@ pub fn apply_phase_run_event(
             tx.execute(
                 "INSERT INTO phase_run_tool_call (phase_run_id, seq, tool_name, args, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![event.aggregate_id, event.seq, p.tool_name, p.args.to_string(), event.created_at],
+                params![
+                    event.aggregate_id,
+                    event.seq,
+                    p.tool_name,
+                    p.args.to_string(),
+                    event.created_at
+                ],
             )?;
         }
         "PhaseRunCompleted" => {
@@ -1429,7 +1434,12 @@ pub fn apply_phase_run_event(
                      completed_at = ?3,
                      updated_at = ?3
                  WHERE id = ?4",
-                params![p.error_kind, p.error_message, event.created_at, event.aggregate_id],
+                params![
+                    p.error_kind,
+                    p.error_message,
+                    event.created_at,
+                    event.aggregate_id
+                ],
             )?;
             // Cross-aggregate: running -1, failed +1 on the parent plan.
             tx.execute(
@@ -1493,17 +1503,16 @@ pub fn apply_phase_run_event(
 
 fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
     let phase_config_str: String = r.get(18)?;
-    let phase_config = serde_json::from_str(&phase_config_str)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let phase_config =
+        serde_json::from_str(&phase_config_str).unwrap_or_else(|_| serde_json::json!({}));
     let current_phase_config_str: String = r.get(19)?;
-    let current_phase_config = serde_json::from_str(&current_phase_config_str)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let current_phase_config =
+        serde_json::from_str(&current_phase_config_str).unwrap_or_else(|_| serde_json::json!({}));
     let relevant_files_str: String = r.get(20)?;
     let relevant_files = serde_json::from_str(&relevant_files_str)
         .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
     let depends_on_str: String = r.get(28)?;
-    let depends_on: Vec<String> =
-        serde_json::from_str(&depends_on_str).unwrap_or_default();
+    let depends_on: Vec<String> = serde_json::from_str(&depends_on_str).unwrap_or_default();
     Ok(TaskProjection {
         id: r.get(0)?,
         workspace_id: r.get(1)?,
@@ -1816,6 +1825,7 @@ struct BriefingDraftEditedPayload {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct BriefingPushedBackPayload {
     assumption_id: String,
     pushback: String,
@@ -1956,10 +1966,7 @@ fn read_briefing(r: &rusqlite::Row) -> rusqlite::Result<BriefingProjection> {
     })
 }
 
-pub fn get_briefing(
-    conn: &Connection,
-    id: &str,
-) -> rusqlite::Result<Option<BriefingProjection>> {
+pub fn get_briefing(conn: &Connection, id: &str) -> rusqlite::Result<Option<BriefingProjection>> {
     let sql = format!("SELECT {BRIEFING_COLUMNS} FROM briefing_projection WHERE id = ?1");
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params![id])?;
@@ -2050,7 +2057,9 @@ mod tests {
         apply_task_event(&tx, &ev).unwrap();
         tx.commit().unwrap();
 
-        let attempt = latest_merge_attempt_for_task(&conn, "task1").unwrap().unwrap();
+        let attempt = latest_merge_attempt_for_task(&conn, "task1")
+            .unwrap()
+            .unwrap();
         assert_eq!(attempt.target_branch, "main");
         assert_eq!(attempt.source_branch, "orca/task1");
         assert_eq!(attempt.target_head_sha, "deadbeef");

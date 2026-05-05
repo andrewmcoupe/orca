@@ -12,9 +12,7 @@ use tauri::{AppHandle, Manager, State};
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use crate::briefing::{
-    self, BriefingDraft, BriefingEdits, BriefingError, PathValidationResult,
-};
+use crate::briefing::{self, BriefingDraft, BriefingEdits, BriefingError, PathValidationResult};
 use crate::commands::{emit_projection_updated, make_metadata_for};
 use crate::events::append::append_events_in_tx;
 use crate::events::projections::{
@@ -29,11 +27,7 @@ use crate::{ActiveWorkspaceState, GlobalDb};
 
 const BRIEFING_AGGREGATE: &str = "briefing";
 
-fn current_seq(
-    conn: &Connection,
-    aggregate_type: &str,
-    aggregate_id: &str,
-) -> Result<i64, String> {
+fn current_seq(conn: &Connection, aggregate_type: &str, aggregate_id: &str) -> Result<i64, String> {
     conn.query_row(
         "SELECT COALESCE(MAX(seq), 0) FROM events WHERE aggregate_type = ?1 AND aggregate_id = ?2",
         params![aggregate_type, aggregate_id],
@@ -78,7 +72,7 @@ fn resolve_provider_path(app: &AppHandle, provider_id: &str) -> Result<String, S
     let needs_refresh = g
         .iter()
         .find(|p| p.id == provider_id)
-        .map_or(true, |p| !p.installed);
+        .is_none_or(|p| !p.installed);
     if needs_refresh {
         *g = providers::detect_providers();
     }
@@ -112,7 +106,9 @@ pub async fn start_briefing(
     let (workspace_id, _workspace_path) = {
         let active = app.state::<ActiveWorkspaceState>();
         let guard = active.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_ref().ok_or_else(|| "no active workspace".to_string())?;
+        let aw = guard
+            .as_ref()
+            .ok_or_else(|| "no active workspace".to_string())?;
         (aw.id.clone(), aw.path.clone())
     };
 
@@ -121,14 +117,22 @@ pub async fn start_briefing(
     {
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+        let aw = guard
+            .as_mut()
+            .ok_or_else(|| "no active workspace".to_string())?;
         let payload = json!({
             "workspace_id": workspace_id,
             "initial_description": initial_description,
             "provider": provider,
             "model": model,
         });
-        append_briefing_event(&mut aw.conn, &briefing_id, "BriefingStarted", payload, "user:local")?;
+        append_briefing_event(
+            &mut aw.conn,
+            &briefing_id,
+            "BriefingStarted",
+            payload,
+            "user:local",
+        )?;
     }
 
     emit_projection_updated(&app, Some(&workspace_id), BRIEFING_AGGREGATE, &briefing_id);
@@ -136,7 +140,9 @@ pub async fn start_briefing(
 
     let active = app.state::<ActiveWorkspaceState>();
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-    let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+    let aw = guard
+        .as_mut()
+        .ok_or_else(|| "no active workspace".to_string())?;
     projections::get_briefing(&aw.conn, &briefing_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "briefing not found after insert".into())
@@ -157,20 +163,22 @@ struct GenerationInputs {
     user_feedback: Option<BriefingEdits>,
 }
 
-fn load_generation_inputs(
-    app: &AppHandle,
-    briefing_id: &str,
-) -> Result<GenerationInputs, String> {
+fn load_generation_inputs(app: &AppHandle, briefing_id: &str) -> Result<GenerationInputs, String> {
     let active = app.state::<ActiveWorkspaceState>();
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-    let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+    let aw = guard
+        .as_mut()
+        .ok_or_else(|| "no active workspace".to_string())?;
     let workspace_id = aw.id.clone();
     let workspace_path = aw.path.clone();
     let briefing = projections::get_briefing(&aw.conn, briefing_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("briefing not found: {}", briefing_id))?;
     if briefing.status != "active" {
-        return Err(format!("briefing is not active (status: {})", briefing.status));
+        return Err(format!(
+            "briefing is not active (status: {})",
+            briefing.status
+        ));
     }
     let previous_draft = briefing
         .current_draft
@@ -217,14 +225,14 @@ async fn run_and_record_generation(
     )
     .await
     .map_err(|e| match e {
-        BriefingError::ParseFailed { last_error, last_output } => {
+        BriefingError::ParseFailed {
+            last_error,
+            last_output,
+        } => {
             // Include a leading snippet of what the model actually said so the UI shows
             // something more useful than "expected value at line 1 column 1". Trim hard
             // because the textarea will render the full string verbatim.
-            let snippet = last_output
-                .chars()
-                .take(400)
-                .collect::<String>();
+            let snippet = last_output.chars().take(400).collect::<String>();
             let suffix = if last_output.chars().count() > 400 {
                 "…"
             } else {
@@ -244,7 +252,9 @@ async fn run_and_record_generation(
     // Determine the next generation_index from the projection.
     let active = app.state::<ActiveWorkspaceState>();
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-    let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+    let aw = guard
+        .as_mut()
+        .ok_or_else(|| "no active workspace".to_string())?;
     let current = projections::get_briefing(&aw.conn, briefing_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("briefing not found: {}", briefing_id))?;
@@ -266,8 +276,18 @@ async fn run_and_record_generation(
     )?;
     drop(guard);
 
-    emit_projection_updated(app, Some(&inputs.workspace_id), BRIEFING_AGGREGATE, briefing_id);
-    emit_projection_updated(app, Some(&inputs.workspace_id), "recent_events", &inputs.workspace_id);
+    emit_projection_updated(
+        app,
+        Some(&inputs.workspace_id),
+        BRIEFING_AGGREGATE,
+        briefing_id,
+    );
+    emit_projection_updated(
+        app,
+        Some(&inputs.workspace_id),
+        "recent_events",
+        &inputs.workspace_id,
+    );
     Ok(outcome.draft)
 }
 
@@ -281,15 +301,14 @@ pub async fn generate_briefing_draft(
 }
 
 #[tauri::command]
-pub async fn refine_briefing(
-    app: AppHandle,
-    briefing_id: String,
-) -> Result<BriefingDraft, String> {
+pub async fn refine_briefing(app: AppHandle, briefing_id: String) -> Result<BriefingDraft, String> {
     // Bookmark the user's intent to refine before doing the work.
     let workspace_id = {
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+        let aw = guard
+            .as_mut()
+            .ok_or_else(|| "no active workspace".to_string())?;
         let workspace_id = aw.id.clone();
         append_briefing_event(
             &mut aw.conn,
@@ -324,7 +343,9 @@ pub fn apply_briefing_edits(
     let workspace_id = {
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+        let aw = guard
+            .as_mut()
+            .ok_or_else(|| "no active workspace".to_string())?;
         let workspace_id = aw.id.clone();
 
         // Emit BriefingDraftEdited carrying the full edit snapshot.
@@ -421,7 +442,9 @@ pub fn accept_briefing(
     let (workspace_id, default_phase_config) = {
         let active = app.state::<ActiveWorkspaceState>();
         let guard = active.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_ref().ok_or_else(|| "no active workspace".to_string())?;
+        let aw = guard
+            .as_ref()
+            .ok_or_else(|| "no active workspace".to_string())?;
         let workspace_id = aw.id.clone();
         // Pull workspace settings for the default phase config to stamp on each task.
         let conn = global.0.lock().map_err(|e| e.to_string())?;
@@ -441,7 +464,9 @@ pub fn accept_briefing(
     let (final_draft, generation_count) = {
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+        let aw = guard
+            .as_mut()
+            .ok_or_else(|| "no active workspace".to_string())?;
         let briefing = projections::get_briefing(&aw.conn, &briefing_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("briefing not found: {}", briefing_id))?;
@@ -488,7 +513,9 @@ pub fn accept_briefing(
     {
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+        let aw = guard
+            .as_mut()
+            .ok_or_else(|| "no active workspace".to_string())?;
         // Plan aggregate.
         let seq = current_seq(&aw.conn, "plan", &plan_id)?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
@@ -546,7 +573,9 @@ pub fn accept_briefing(
         });
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+        let aw = guard
+            .as_mut()
+            .ok_or_else(|| "no active workspace".to_string())?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
         let outcome = append_events_in_tx(
             &tx,
@@ -572,7 +601,9 @@ pub fn accept_briefing(
     {
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+        let aw = guard
+            .as_mut()
+            .ok_or_else(|| "no active workspace".to_string())?;
         append_briefing_event(
             &mut aw.conn,
             &briefing_id,
@@ -595,7 +626,9 @@ pub fn accept_briefing(
 
     let active = app.state::<ActiveWorkspaceState>();
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-    let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+    let aw = guard
+        .as_mut()
+        .ok_or_else(|| "no active workspace".to_string())?;
     projections::get_plan(&aw.conn, &plan_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "plan not found after insert".into())
@@ -610,7 +643,9 @@ pub fn cancel_briefing(app: AppHandle, briefing_id: String) -> Result<(), String
     let workspace_id = {
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-        let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+        let aw = guard
+            .as_mut()
+            .ok_or_else(|| "no active workspace".to_string())?;
         let workspace_id = aw.id.clone();
         append_briefing_event(
             &mut aw.conn,
@@ -636,7 +671,9 @@ pub fn get_briefing(
     active: State<'_, ActiveWorkspaceState>,
 ) -> Result<Option<BriefingProjection>, String> {
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-    let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+    let aw = guard
+        .as_mut()
+        .ok_or_else(|| "no active workspace".to_string())?;
     projections::get_briefing(&aw.conn, &briefing_id).map_err(|e| e.to_string())
 }
 
@@ -645,7 +682,9 @@ pub fn list_active_briefings(
     active: State<'_, ActiveWorkspaceState>,
 ) -> Result<Vec<BriefingProjection>, String> {
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-    let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+    let aw = guard
+        .as_mut()
+        .ok_or_else(|| "no active workspace".to_string())?;
     let workspace_id = aw.id.clone();
     projections::list_active_briefings(&aw.conn, &workspace_id).map_err(|e| e.to_string())
 }
@@ -669,7 +708,9 @@ pub fn list_briefing_history(
     active: State<'_, ActiveWorkspaceState>,
 ) -> Result<Vec<BriefingHistoryEntry>, String> {
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
-    let aw = guard.as_mut().ok_or_else(|| "no active workspace".to_string())?;
+    let aw = guard
+        .as_mut()
+        .ok_or_else(|| "no active workspace".to_string())?;
     let mut stmt = aw
         .conn
         .prepare(
@@ -706,9 +747,12 @@ pub fn validate_briefing_paths(
     workspace_path: String,
     draft: serde_json::Value,
 ) -> Result<Vec<PathValidationResult>, String> {
-    let draft: BriefingDraft = serde_json::from_value(draft)
-        .map_err(|e| format!("invalid draft payload: {}", e))?;
-    Ok(briefing::validate_draft_paths(Path::new(&workspace_path), &draft))
+    let draft: BriefingDraft =
+        serde_json::from_value(draft).map_err(|e| format!("invalid draft payload: {}", e))?;
+    Ok(briefing::validate_draft_paths(
+        Path::new(&workspace_path),
+        &draft,
+    ))
 }
 
 #[cfg(test)]

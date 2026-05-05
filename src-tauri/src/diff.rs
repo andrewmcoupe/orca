@@ -180,6 +180,7 @@ pub enum DiffError {
     #[error("git error: {0}")]
     Git(String),
     #[error("worktree missing at {0}")]
+    #[allow(dead_code)]
     WorktreeMissing(PathBuf),
     #[error("commit not found: {0}")]
     CommitNotFound(String),
@@ -248,12 +249,10 @@ pub fn compute_task_diff(inputs: TaskDiffInputs<'_>) -> Result<TaskDiff, DiffErr
     // 1. Live worktree.
     if let Some(wt) = inputs.worktree_path {
         if wt.exists() {
-            let repo = Repository::open(wt)
-                .map_err(|e| DiffError::Git(format!("open worktree {}: {}", wt.display(), e.message())))?;
-            let head_oid = repo
-                .head()?
-                .peel_to_commit()?
-                .id();
+            let repo = Repository::open(wt).map_err(|e| {
+                DiffError::Git(format!("open worktree {}: {}", wt.display(), e.message()))
+            })?;
+            let head_oid = repo.head()?.peel_to_commit()?.id();
             let base_oid = parse_oid(&base_commit_str)?;
             let files = build_files(&repo, base_oid, head_oid)?;
             return Ok(TaskDiff {
@@ -395,51 +394,48 @@ fn build_files(repo: &Repository, base: Oid, head: Oid) -> Result<Vec<DiffFile>,
         if !is_binary {
             // `Patch::from_diff` is per-delta. Returns Ok(None) for binary entries (we
             // already short-circuited via `is_binary` above) or for empty patches.
-            match Patch::from_diff(&diff, idx)? {
-                Some(mut patch) => {
-                    let nh = patch.num_hunks();
-                    for h in 0..nh {
-                        let (hunk, line_count) = patch.hunk(h)?;
-                        let header = std::str::from_utf8(hunk.header())
-                            .ok()
-                            .map(|s| s.trim_end_matches('\n').to_string());
-                        let mut lines = Vec::with_capacity(line_count);
-                        for l in 0..line_count {
-                            let line = patch.line_in_hunk(h, l)?;
-                            let kind = match line.origin() {
-                                '+' => {
-                                    additions += 1;
-                                    DiffLineKind::Added
-                                }
-                                '-' => {
-                                    deletions += 1;
-                                    DiffLineKind::Removed
-                                }
-                                _ => DiffLineKind::Context,
-                            };
-                            // Lines from git2 may or may not have a trailing newline;
-                            // we keep whatever git provides so the rendered diff round-
-                            // trips. The frontend strips a single trailing `\n` per line
-                            // when laying out.
-                            let content = String::from_utf8_lossy(line.content()).into_owned();
-                            lines.push(DiffLine {
-                                kind,
-                                old_lineno: line.old_lineno().map(|n| n as usize),
-                                new_lineno: line.new_lineno().map(|n| n as usize),
-                                content,
-                            });
-                        }
-                        hunks.push(DiffHunk {
-                            old_start: hunk.old_start() as usize,
-                            old_lines: hunk.old_lines() as usize,
-                            new_start: hunk.new_start() as usize,
-                            new_lines: hunk.new_lines() as usize,
-                            header,
-                            lines,
+            if let Some(patch) = Patch::from_diff(&diff, idx)? {
+                let nh = patch.num_hunks();
+                for h in 0..nh {
+                    let (hunk, line_count) = patch.hunk(h)?;
+                    let header = std::str::from_utf8(hunk.header())
+                        .ok()
+                        .map(|s| s.trim_end_matches('\n').to_string());
+                    let mut lines = Vec::with_capacity(line_count);
+                    for l in 0..line_count {
+                        let line = patch.line_in_hunk(h, l)?;
+                        let kind = match line.origin() {
+                            '+' => {
+                                additions += 1;
+                                DiffLineKind::Added
+                            }
+                            '-' => {
+                                deletions += 1;
+                                DiffLineKind::Removed
+                            }
+                            _ => DiffLineKind::Context,
+                        };
+                        // Lines from git2 may or may not have a trailing newline;
+                        // we keep whatever git provides so the rendered diff round-
+                        // trips. The frontend strips a single trailing `\n` per line
+                        // when laying out.
+                        let content = String::from_utf8_lossy(line.content()).into_owned();
+                        lines.push(DiffLine {
+                            kind,
+                            old_lineno: line.old_lineno().map(|n| n as usize),
+                            new_lineno: line.new_lineno().map(|n| n as usize),
+                            content,
                         });
                     }
+                    hunks.push(DiffHunk {
+                        old_start: hunk.old_start() as usize,
+                        old_lines: hunk.old_lines() as usize,
+                        new_start: hunk.new_start() as usize,
+                        new_lines: hunk.new_lines() as usize,
+                        header,
+                        lines,
+                    });
                 }
-                None => {}
             }
         }
 
@@ -561,9 +557,10 @@ fn map_one(diff: &TaskDiff, concern: &AuditorConcern) -> AnchorMapping {
 
     // 1. Find the file. Match new path first, then old path (so anchors against
     //    pre-rename names still resolve).
-    let file_index = diff.files.iter().position(|f| {
-        f.path == anchor.path || f.old_path.as_deref() == Some(anchor.path.as_str())
-    });
+    let file_index = diff
+        .files
+        .iter()
+        .position(|f| f.path == anchor.path || f.old_path.as_deref() == Some(anchor.path.as_str()));
 
     match file_index {
         Some(idx) => {
@@ -620,13 +617,18 @@ fn nth_line(content: &str, n: usize) -> Option<String> {
 /// Read the contents of `relative_path` at the diff's head commit. Used by the
 /// `get_unchanged_file_content` Tauri command when the user expands a file that
 /// has concerns but isn't part of the diff.
-pub fn read_file_at_head(diff: &TaskDiff, repo_root: &Path, relative_path: &str) -> Result<String, DiffError> {
+pub fn read_file_at_head(
+    diff: &TaskDiff,
+    repo_root: &Path,
+    relative_path: &str,
+) -> Result<String, DiffError> {
     match &diff.source {
         DiffSource::Worktree { path } => {
             // The worktree is a checkout — just read the file off disk. Avoids needing
             // to walk the tree and works regardless of whether the file is tracked.
             let p = Path::new(path).join(relative_path);
-            std::fs::read_to_string(&p).map_err(|e| DiffError::Io(format!("{}: {}", p.display(), e)))
+            std::fs::read_to_string(&p)
+                .map_err(|e| DiffError::Io(format!("{}: {}", p.display(), e)))
         }
         DiffSource::MergedFromHistory { merge_commit } => {
             read_blob_at_path(repo_root, merge_commit, relative_path)
@@ -641,7 +643,11 @@ pub fn read_file_at_head(diff: &TaskDiff, repo_root: &Path, relative_path: &str)
     }
 }
 
-fn read_blob_at_path(repo_root: &Path, commit_sha: &str, relative_path: &str) -> Result<String, DiffError> {
+fn read_blob_at_path(
+    repo_root: &Path,
+    commit_sha: &str,
+    relative_path: &str,
+) -> Result<String, DiffError> {
     let repo = Repository::open(repo_root)?;
     let oid = parse_oid(commit_sha)?;
     let tree = repo.find_commit(oid)?.tree()?;
@@ -727,7 +733,14 @@ fn assets() -> &'static SyntectAssets {
             .themes
             .get("base16-ocean.dark")
             .cloned()
-            .unwrap_or_else(|| themes.themes.values().next().cloned().expect("at least one theme"));
+            .unwrap_or_else(|| {
+                themes
+                    .themes
+                    .values()
+                    .next()
+                    .cloned()
+                    .expect("at least one theme")
+            });
         SyntectAssets { syntaxes, theme }
     })
 }
@@ -817,16 +830,12 @@ fn highlight_file(f: &DiffFile) -> HighlightedDiffFile {
     let new_lines_html = if f.is_binary {
         None
     } else {
-        f.new_content
-            .as_deref()
-            .map(|c| highlight_lines(c, lang))
+        f.new_content.as_deref().map(|c| highlight_lines(c, lang))
     };
     let old_lines_html = if f.is_binary {
         None
     } else {
-        f.old_content
-            .as_deref()
-            .map(|c| highlight_lines(c, lang))
+        f.old_content.as_deref().map(|c| highlight_lines(c, lang))
     };
 
     let mut hunks = Vec::with_capacity(f.hunks.len());
@@ -1171,7 +1180,11 @@ mod tests {
         let diff = build_diff_for_modified();
         let mappings = map_concerns_to_diff(&diff, &[concern_at("file.ts", 5)]);
         match &mappings[0].mapping {
-            AnchorMapping::OnDiffLine { file_index, hunk_index, line_index } => {
+            AnchorMapping::OnDiffLine {
+                file_index,
+                hunk_index,
+                line_index,
+            } => {
                 let line = &diff.files[*file_index].hunks[*hunk_index].lines[*line_index];
                 assert_eq!(line.new_lineno, Some(5));
                 assert_eq!(line.kind, DiffLineKind::Added);
@@ -1187,7 +1200,10 @@ mod tests {
         // OnDiffLine because the line *is* part of the hunk's printed lines.
         let diff = build_diff_for_modified();
         let mappings = map_concerns_to_diff(&diff, &[concern_at("file.ts", 4)]);
-        assert!(matches!(mappings[0].mapping, AnchorMapping::OnDiffLine { .. }));
+        assert!(matches!(
+            mappings[0].mapping,
+            AnchorMapping::OnDiffLine { .. }
+        ));
     }
 
     #[test]
@@ -1196,7 +1212,11 @@ mod tests {
         let diff = build_diff_for_modified();
         let mappings = map_concerns_to_diff(&diff, &[concern_at("file.ts", 10)]);
         match &mappings[0].mapping {
-            AnchorMapping::OnUnchangedLine { line_in_file, content, .. } => {
+            AnchorMapping::OnUnchangedLine {
+                line_in_file,
+                content,
+                ..
+            } => {
                 assert_eq!(*line_in_file, 10);
                 assert_eq!(content, "line10");
             }
@@ -1208,7 +1228,10 @@ mod tests {
     fn anchor_file_not_in_diff() {
         let diff = build_diff_for_modified();
         let mappings = map_concerns_to_diff(&diff, &[concern_at("other.ts", 3)]);
-        assert!(matches!(mappings[0].mapping, AnchorMapping::FileNotInDiff { .. }));
+        assert!(matches!(
+            mappings[0].mapping,
+            AnchorMapping::FileNotInDiff { .. }
+        ));
     }
 
     #[test]

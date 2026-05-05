@@ -108,10 +108,7 @@ pub async fn run_gate(
     timer.abort();
 
     let timed_out_flag = timed_out.load(std::sync::atomic::Ordering::SeqCst);
-    let mut output = output_buf
-        .lock()
-        .map(|g| g.clone())
-        .unwrap_or_default();
+    let mut output = output_buf.lock().map(|g| g.clone()).unwrap_or_default();
     if output.len() >= OUTPUT_TRUNCATION_LIMIT {
         output.push_str(
             "\n...[gate output truncated; rerun the command in the worktree for the full \
@@ -133,10 +130,7 @@ pub async fn run_gate(
             // Cancelled — almost always because the timer fired. Report as a timed-out,
             // failed gate so the orchestrator can stop the pipeline.
             let suffix = if timed_out_flag {
-                format!(
-                    "\n...[gate timed out after {}s]\n",
-                    timeout.as_secs(),
-                )
+                format!("\n...[gate timed out after {}s]\n", timeout.as_secs(),)
             } else {
                 "\n...[gate cancelled]\n".to_string()
             };
@@ -159,7 +153,10 @@ pub async fn run_gate(
 
 #[cfg(unix)]
 fn shell_command(gate_command: &str) -> (String, Vec<String>) {
-    ("sh".to_string(), vec!["-c".to_string(), gate_command.to_string()])
+    (
+        "sh".to_string(),
+        vec!["-c".to_string(), gate_command.to_string()],
+    )
 }
 
 #[cfg(not(unix))]

@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, OptionalExtension, Transaction};
 #[cfg(test)]
 use rusqlite::Connection;
+use rusqlite::{params, OptionalExtension, Transaction};
 use ulid::Ulid;
 
 use super::types::{AppendError, AppendOutcome, AppendedEvent, EventMetadata, NewEvent};
@@ -153,8 +153,14 @@ pub fn append_events(
     metadata: EventMetadata,
 ) -> Result<AppendOutcome, AppendError> {
     let tx = conn.transaction()?;
-    let outcome =
-        append_events_in_tx(&tx, aggregate_type, aggregate_id, expected_seq, events, &metadata)?;
+    let outcome = append_events_in_tx(
+        &tx,
+        aggregate_type,
+        aggregate_id,
+        expected_seq,
+        events,
+        &metadata,
+    )?;
     tx.commit()?;
     Ok(outcome)
 }

@@ -142,7 +142,10 @@ pub trait Provider: Send + Sync {
 // ---------- Registry ----------
 
 pub fn all() -> Vec<Box<dyn Provider>> {
-    vec![Box::new(claude::ClaudeProvider), Box::new(codex::CodexProvider)]
+    vec![
+        Box::new(claude::ClaudeProvider),
+        Box::new(codex::CodexProvider),
+    ]
 }
 
 pub fn get(id: &str) -> Option<Box<dyn Provider>> {

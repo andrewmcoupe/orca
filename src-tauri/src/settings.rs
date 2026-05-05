@@ -109,11 +109,10 @@ impl PermissionMode {
     /// payloads. `plan` is unavailable for *every* phase: it deadlocks against our
     /// closed-stdin subprocess (ExitPlanMode waits for an approval that never arrives).
     pub fn is_available_for(self, phase: PhaseType) -> bool {
-        match (phase, self) {
-            (PhaseType::Auditor, PermissionMode::BypassPermissions) => false,
-            (_, PermissionMode::Plan) => false,
-            _ => true,
-        }
+        !matches!(
+            (phase, self),
+            (PhaseType::Auditor, PermissionMode::BypassPermissions) | (_, PermissionMode::Plan)
+        )
     }
 }
 
@@ -328,6 +327,7 @@ impl WorkspaceSettings {
     /// `resolve_phase_settings_with`; this helper is retained for callers that don't
     /// have a provider in hand and for back-compat tests.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn workspace_default_permission_mode(&self, phase: PhaseType) -> PermissionMode {
         let key = phase.as_str();
         let stored = self
@@ -352,6 +352,7 @@ impl WorkspaceSettings {
 /// `bypassPermissions` for the auditor (which can only happen via a stale event payload
 /// or hand-edited settings), it's clamped to `acceptEdits`. Defence-in-depth — the UI
 /// shouldn't let the user pick it, but the runtime guarantees it regardless.
+#[allow(dead_code)]
 pub fn resolve_phase_settings(
     workspace_settings: &WorkspaceSettings,
     task_phase_config: &PhaseConfig,
@@ -460,7 +461,11 @@ mod tests {
     #[test]
     fn round_trip_phase_config() {
         let cfg = PhaseConfig {
-            phases: vec![PhaseType::TestAuthor, PhaseType::Implementer, PhaseType::Auditor],
+            phases: vec![
+                PhaseType::TestAuthor,
+                PhaseType::Implementer,
+                PhaseType::Auditor,
+            ],
             gate_overrides: None,
             models: None,
             permission_modes: None,
@@ -507,7 +512,10 @@ mod tests {
         assert_eq!(s.worktree_init.timeout_seconds, 120);
         assert_eq!(s.phase_timeouts.silence_timeout_seconds, 60);
         assert_eq!(s.phase_timeouts.wall_clock_timeout_seconds, 3600);
-        assert_eq!(s.subprocess.additional_env.get("FOO").map(String::as_str), Some("bar"));
+        assert_eq!(
+            s.subprocess.additional_env.get("FOO").map(String::as_str),
+            Some("bar")
+        );
     }
 
     fn ws_with_phase_settings(
@@ -656,11 +664,8 @@ mod tests {
 
     #[test]
     fn resolve_filters_plan_mode_for_write_phases() {
-        let ws = ws_with_phase_settings(&[(
-            PhaseType::Implementer,
-            None,
-            Some(PermissionMode::Plan),
-        )]);
+        let ws =
+            ws_with_phase_settings(&[(PhaseType::Implementer, None, Some(PermissionMode::Plan))]);
         let cfg = task_cfg_with(&[], &[]);
         let r = resolve_phase_settings(&ws, &cfg, PhaseType::Implementer);
         assert_eq!(r.permission_mode, PermissionMode::AcceptEdits);

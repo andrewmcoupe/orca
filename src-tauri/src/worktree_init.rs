@@ -232,10 +232,7 @@ pub async fn run_init(
     )
     .await;
 
-    let mut output = output_buf
-        .lock()
-        .map(|g| g.clone())
-        .unwrap_or_default();
+    let mut output = output_buf.lock().map(|g| g.clone()).unwrap_or_default();
     if output.len() >= OUTPUT_TRUNCATION_LIMIT {
         // Cut on a UTF-8 boundary to avoid producing invalid output.
         let mut cut = OUTPUT_TRUNCATION_LIMIT;
@@ -349,8 +346,7 @@ pub async fn ensure_initialized(
         "detection_kind": detection_kind,
     })
     .to_string();
-    let started_seq = current_seq(&conn, "task", task_id)
-        .map_err(EnsureInitError::Internal)?;
+    let started_seq = current_seq(&conn, "task", task_id).map_err(EnsureInitError::Internal)?;
     append_task_step(
         &mut conn,
         app,
@@ -395,8 +391,7 @@ pub async fn ensure_initialized(
         "detection_kind": outcome.detection_kind,
     })
     .to_string();
-    let seq = current_seq(&conn, "task", task_id)
-        .map_err(EnsureInitError::Internal)?;
+    let seq = current_seq(&conn, "task", task_id).map_err(EnsureInitError::Internal)?;
     append_task_step(
         &mut conn,
         app,
@@ -467,7 +462,10 @@ pub fn mark_skipped(
 
 #[cfg(unix)]
 fn shell_command(command: &str) -> (String, Vec<String>) {
-    ("sh".to_string(), vec!["-c".to_string(), command.to_string()])
+    (
+        "sh".to_string(),
+        vec!["-c".to_string(), command.to_string()],
+    )
 }
 
 #[cfg(not(unix))]

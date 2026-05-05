@@ -419,7 +419,11 @@ mod tests {
 
         let result = run_streaming(
             if cfg!(windows) { "cmd" } else { "echo" },
-            if cfg!(windows) { &["/C", "echo hello"] } else { &["hello"] },
+            if cfg!(windows) {
+                &["/C", "echo hello"]
+            } else {
+                &["hello"]
+            },
             Path::new("."),
             HashMap::new(),
             None,
@@ -437,7 +441,11 @@ mod tests {
 
         assert_eq!(result.exit_code, 0);
         let out = collected.lock().unwrap().clone();
-        assert!(out.contains("hello"), "expected 'hello' in output, got: {:?}", out);
+        assert!(
+            out.contains("hello"),
+            "expected 'hello' in output, got: {:?}",
+            out
+        );
     }
 
     /// Canary: if anyone wires `Stdio::inherit()` (or pipes a real value when the
@@ -452,7 +460,10 @@ mod tests {
 
         let result = run_streaming(
             "sh",
-            &["-c", "if read line; then echo \"got: $line\"; else echo no_input; fi"],
+            &[
+                "-c",
+                "if read line; then echo \"got: $line\"; else echo no_input; fi",
+            ],
             Path::new("."),
             HashMap::new(),
             None,
@@ -577,10 +588,7 @@ mod tests {
         let tracker = ChildTracker::new();
         let result = run_streaming(
             "sh",
-            &[
-                "-c",
-                "for i in 1 2 3 4 5; do echo tick $i; sleep 0.1; done",
-            ],
+            &["-c", "for i in 1 2 3 4 5; do echo tick $i; sleep 0.1; done"],
             Path::new("."),
             HashMap::new(),
             None,

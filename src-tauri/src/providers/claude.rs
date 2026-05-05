@@ -198,10 +198,7 @@ impl Provider for ClaudeProvider {
                     .and_then(|t| t.as_str())
                     .unwrap_or("");
                 if event_type == "content_block_delta" {
-                    if let Some(text) = v
-                        .pointer("/event/delta/text")
-                        .and_then(|t| t.as_str())
-                    {
+                    if let Some(text) = v.pointer("/event/delta/text").and_then(|t| t.as_str()) {
                         if !text.is_empty() {
                             return vec![ProviderEvent::TextChunk(text.to_string())];
                         }
@@ -211,10 +208,7 @@ impl Provider for ClaudeProvider {
             }
             "assistant" => {
                 let mut out = Vec::new();
-                if let Some(blocks) = v
-                    .pointer("/message/content")
-                    .and_then(|c| c.as_array())
-                {
+                if let Some(blocks) = v.pointer("/message/content").and_then(|c| c.as_array()) {
                     for block in blocks {
                         if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
                             let name = block
@@ -246,7 +240,8 @@ mod tests {
 
     #[test]
     fn auditor_bypass_downgrades_to_accept_edits() {
-        let invocation = ClaudeProvider.build_invocation("hi", &opts("auditor", "bypassPermissions"));
+        let invocation =
+            ClaudeProvider.build_invocation("hi", &opts("auditor", "bypassPermissions"));
         // The downgrade should produce `--permission-mode acceptEdits` rather than the
         // dangerous `--dangerously-skip-permissions` flag.
         let args = invocation.args.join(" ");
@@ -287,8 +282,7 @@ mod tests {
 
     #[test]
     fn accept_edits_passes_through() {
-        let invocation =
-            ClaudeProvider.build_invocation("hi", &opts("implementer", "acceptEdits"));
+        let invocation = ClaudeProvider.build_invocation("hi", &opts("implementer", "acceptEdits"));
         let args = invocation.args.join(" ");
         assert!(
             args.contains("--permission-mode acceptEdits"),

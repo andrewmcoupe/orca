@@ -24,6 +24,7 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 struct TaskNode {
     plan_id: String,
+    #[allow(dead_code)]
     status: String,
     depends_on: Vec<String>,
 }
@@ -78,9 +79,7 @@ impl From<rusqlite::Error> for DependencyError {
 /// `task_id`'s own row is included in the map so callers (including the
 /// cycle check) can read its own `plan_id` without a second query.
 fn load_workspace_graph(conn: &Connection) -> Result<HashMap<String, TaskNode>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT id, plan_id, status, depends_on FROM task_projection",
-    )?;
+    let mut stmt = conn.prepare("SELECT id, plan_id, status, depends_on FROM task_projection")?;
     let rows = stmt.query_map([], |r| {
         let id: String = r.get(0)?;
         let plan_id: String = r.get(1)?;
@@ -113,10 +112,7 @@ fn load_workspace_graph(conn: &Connection) -> Result<HashMap<String, TaskNode>, 
 ///
 /// Returns the path [start, …, start] when a cycle is found. Returns
 /// `None` when none reachable cycle exists.
-fn find_cycle(
-    graph: &HashMap<String, Vec<String>>,
-    start: &str,
-) -> Option<Vec<String>> {
+fn find_cycle(graph: &HashMap<String, Vec<String>>, start: &str) -> Option<Vec<String>> {
     let mut stack: Vec<(String, usize)> = vec![(start.to_string(), 0)];
     let mut path: Vec<String> = vec![start.to_string()];
     let mut on_path: HashSet<String> = HashSet::new();
@@ -253,8 +249,7 @@ pub fn compute_is_blocked(
     }
     // Build a `?,?,?` placeholder list. `IN (?)` won't accept a slice in
     // rusqlite without `array` bundle; we'd rather not depend on that.
-    let placeholders = std::iter::repeat("?")
-        .take(depends_on.len())
+    let placeholders = std::iter::repeat_n("?", depends_on.len())
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
@@ -262,8 +257,10 @@ pub fn compute_is_blocked(
          WHERE id IN ({placeholders}) AND status = 'merged'"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let params_vec: Vec<&dyn rusqlite::ToSql> =
-        depends_on.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let params_vec: Vec<&dyn rusqlite::ToSql> = depends_on
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
     let merged_count: i64 = stmt.query_row(params_vec.as_slice(), |r| r.get(0))?;
     Ok((merged_count as usize) < depends_on.len())
 }
@@ -503,12 +500,7 @@ mod tests {
     #[test]
     fn diamond_dag_is_not_a_cycle() {
         // a -> b, a -> c, b -> d, c -> d  — classic diamond, no cycle
-        let g = graph_from(&[
-            ("a", &["b", "c"]),
-            ("b", &["d"]),
-            ("c", &["d"]),
-            ("d", &[]),
-        ]);
+        let g = graph_from(&[("a", &["b", "c"]), ("b", &["d"]), ("c", &["d"]), ("d", &[])]);
         assert!(find_cycle(&g, "a").is_none());
     }
 
@@ -535,13 +527,7 @@ mod tests {
         conn
     }
 
-    fn insert_task(
-        conn: &Connection,
-        id: &str,
-        plan_id: &str,
-        status: &str,
-        deps: &[&str],
-    ) {
+    fn insert_task(conn: &Connection, id: &str, plan_id: &str, status: &str, deps: &[&str]) {
         let deps_json = serde_json::to_string(&deps).unwrap();
         conn.execute(
             "INSERT INTO task_projection (id, workspace_id, plan_id, status, depends_on)
@@ -564,13 +550,8 @@ mod tests {
         let conn = setup_db();
         insert_task(&conn, "t1", "p1", "created", &[]);
         insert_task(&conn, "t2", "p1", "created", &[]);
-        let err = validate_dependencies(
-            &conn,
-            "t1",
-            "p1",
-            &["t2".into(), "t2".into()],
-        )
-        .unwrap_err();
+        let err =
+            validate_dependencies(&conn, "t1", "p1", &["t2".into(), "t2".into()]).unwrap_err();
         assert!(matches!(err, DependencyError::Duplicate(_)));
     }
 
@@ -578,8 +559,7 @@ mod tests {
     fn validate_rejects_missing_dep() {
         let conn = setup_db();
         insert_task(&conn, "t1", "p1", "created", &[]);
-        let err =
-            validate_dependencies(&conn, "t1", "p1", &["ghost".into()]).unwrap_err();
+        let err = validate_dependencies(&conn, "t1", "p1", &["ghost".into()]).unwrap_err();
         match err {
             DependencyError::NotFound(missing) => assert_eq!(missing, vec!["ghost"]),
             other => panic!("expected NotFound, got {:?}", other),
@@ -591,8 +571,7 @@ mod tests {
         let conn = setup_db();
         insert_task(&conn, "t1", "p1", "created", &[]);
         insert_task(&conn, "t2", "p2", "created", &[]);
-        let err =
-            validate_dependencies(&conn, "t1", "p1", &["t2".into()]).unwrap_err();
+        let err = validate_dependencies(&conn, "t1", "p1", &["t2".into()]).unwrap_err();
         assert!(matches!(err, DependencyError::CrossPlan { .. }));
     }
 
@@ -605,8 +584,7 @@ mod tests {
         insert_task(&conn, "t2", "p1", "created", &["t3"]);
         insert_task(&conn, "t3", "p1", "created", &["t1"]);
 
-        let err =
-            validate_dependencies(&conn, "t1", "p1", &["t2".into()]).unwrap_err();
+        let err = validate_dependencies(&conn, "t1", "p1", &["t2".into()]).unwrap_err();
         match err {
             DependencyError::Cycle { path } => {
                 assert_eq!(path.first().unwrap(), "t1");
