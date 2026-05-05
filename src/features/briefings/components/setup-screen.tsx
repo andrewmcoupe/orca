@@ -58,47 +58,34 @@ export function BriefingSetupScreen({
 
   const start = useStartBriefing();
   const generate = useGenerateBriefingDraft();
-  const [phase, setPhase] = useState<"idle" | "starting" | "generating">("idle");
-  const [elapsed, setElapsed] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Live elapsed counter while the model is reading the codebase. Shown so the
-  // user knows the 30-90s wait isn't a hang.
-  useEffect(() => {
-    if (phase !== "generating") return;
-    setElapsed(0);
-    const started = Date.now();
-    const t = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - started) / 1000));
-    }, 1000);
-    return () => clearInterval(t);
-  }, [phase]);
-
+  // Both mutations are fast — start commits a single event, generate spawns
+  // the worker and returns immediately. We still disable the form during
+  // them so a double-submit can't double-create. The 30–90s "reading your
+  // codebase" wait now happens on the next page (driven by
+  // `briefing.is_generating`), not here.
+  const submitting = start.isPending || generate.isPending;
   const canSubmit =
-    description.trim().length > 10 &&
-    !!providerId &&
-    !!model &&
-    phase === "idle";
+    description.trim().length > 10 && !!providerId && !!model && !submitting;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
     setErrorMsg(null);
     try {
-      setPhase("starting");
       const briefing = await start.mutateAsync({
         initial_description: description.trim(),
         provider: providerId,
         model,
       });
-      // Kick off the first generation immediately. The review screen is gated
-      // on the briefing having a draft, so we await this before navigating.
-      setPhase("generating");
-      await generate.mutateAsync(briefing.id);
-      onStarted(briefing);
+      // Fire the initial generation. The mutation resolves once the backend
+      // has spawned the worker — the actual draft lands asynchronously and
+      // the review screen picks it up via the global live-updates listener.
+      const generating = await generate.mutateAsync(briefing.id);
+      onStarted(generating);
     } catch (e) {
       setErrorMsg(String(e));
-      setPhase("idle");
     }
   };
 
@@ -123,7 +110,7 @@ export function BriefingSetupScreen({
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Describe the feature you want to build. Be as vague or detailed as you like — the model will ask itself the right questions."
             rows={10}
-            disabled={phase !== "idle"}
+            disabled={submitting}
             className="text-sm leading-relaxed"
           />
           <p className="text-muted-foreground text-xs">
@@ -137,7 +124,7 @@ export function BriefingSetupScreen({
             <Select
               value={providerId}
               onValueChange={(v) => setProviderId(v ?? "")}
-              disabled={phase !== "idle" || installed.length === 0}
+              disabled={submitting || installed.length === 0}
             >
               <SelectTrigger>
                 <SelectValue
@@ -164,7 +151,7 @@ export function BriefingSetupScreen({
             <Select
               value={model}
               onValueChange={(v) => setModel(v ?? "")}
-              disabled={phase !== "idle" || !providerId}
+              disabled={submitting || !providerId}
             >
               <SelectTrigger>
                 <SelectValue placeholder="Select model" />
@@ -191,34 +178,17 @@ export function BriefingSetupScreen({
           </div>
         )}
 
-        {phase === "generating" && (
-          <div className="border-border bg-muted/30 flex items-center gap-3 rounded-md border p-3">
-            <span className="border-foreground/20 border-t-foreground inline-block h-3 w-3 animate-spin rounded-full border-2" />
-            <div className="flex-1">
-              <p className="text-sm font-medium">Reading your codebase…</p>
-              <p className="text-muted-foreground text-xs">
-                {elapsed}s elapsed. This typically takes 30–90 seconds for a
-                real codebase.
-              </p>
-            </div>
-          </div>
-        )}
-
         <div className="flex items-center justify-end gap-2">
           <Button
             type="button"
             variant="ghost"
             onClick={onCancel}
-            disabled={phase !== "idle"}
+            disabled={submitting}
           >
             Cancel
           </Button>
           <Button type="submit" disabled={!canSubmit}>
-            {phase === "starting"
-              ? "Starting…"
-              : phase === "generating"
-                ? "Generating…"
-                : "Start briefing"}
+            {submitting ? "Starting…" : "Start briefing"}
           </Button>
         </div>
       </form>

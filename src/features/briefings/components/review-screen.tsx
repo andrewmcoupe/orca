@@ -10,6 +10,7 @@ import {
   useAcceptBriefing,
   useApplyBriefingEdits,
   useCancelBriefing,
+  useCancelBriefingGeneration,
   useRefineBriefing,
 } from "../hooks";
 import {
@@ -101,23 +102,37 @@ export function BriefingReviewScreen({
 
   const applyEdits = useApplyBriefingEdits();
   const refine = useRefineBriefing();
+  const cancelGeneration = useCancelBriefingGeneration();
   const accept = useAcceptBriefing();
   const cancel = useCancelBriefing();
-  const [working, setWorking] = useState<"idle" | "refining" | "accepting" | "cancelling">(
+  // `working` only covers the synchronous-completion mutations (accept and
+  // cancel-briefing). The refine spinner is driven by `briefing.is_generating`
+  // from the projection — that's the only reliable source while the worker
+  // can outlive any one component's lifetime.
+  const [working, setWorking] = useState<"idle" | "accepting" | "cancelling">(
     "idle",
   );
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Live elapsed counter while the projection says we're generating. Anchors
+  // off the briefing's `updated_at` (set by `BriefingGenerationStarted`), so
+  // navigating away and back shows the correct elapsed time.
+  const isRefining = briefing.is_generating;
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
-    if (working !== "refining") return;
-    setElapsed(0);
-    const started = Date.now();
+    if (!isRefining) {
+      setElapsed(0);
+      return;
+    }
+    const started = briefing.updated_at;
+    setElapsed(Math.max(0, Math.floor((Date.now() - started) / 1000)));
     const t = setInterval(
-      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
+      () =>
+        setElapsed(Math.max(0, Math.floor((Date.now() - started) / 1000))),
       1000,
     );
     return () => clearInterval(t);
-  }, [working]);
+  }, [isRefining, briefing.updated_at]);
 
   // ------------------------------------------------------------------ edits
 
@@ -253,14 +268,23 @@ export function BriefingReviewScreen({
 
   const handleRefine = async () => {
     setErrorMsg(null);
-    setWorking("refining");
     try {
       await persistEditsIfAny();
+      // Fire-and-forget: returns once the worker is spawned. The spinner is
+      // driven by `briefing.is_generating`, which the global live-updates
+      // listener keeps fresh.
       await refine.mutateAsync(briefing.id);
     } catch (e) {
       setErrorMsg(String(e));
-    } finally {
-      setWorking("idle");
+    }
+  };
+
+  const handleStopRefine = async () => {
+    setErrorMsg(null);
+    try {
+      await cancelGeneration.mutateAsync(briefing.id);
+    } catch (e) {
+      setErrorMsg(String(e));
     }
   };
 
@@ -289,7 +313,11 @@ export function BriefingReviewScreen({
     }
   };
 
-  const acceptDisabled = merged.tasks.length === 0 || working !== "idle";
+  // Don't let the user accept while a refine is in flight — the post-refine
+  // draft would land on top, silently swapping out the work they're about to
+  // commit. The action bar surfaces this via the disabled state.
+  const acceptDisabled =
+    merged.tasks.length === 0 || working !== "idle" || isRefining;
 
   // ------------------------------------------------------------------ render
 
@@ -360,7 +388,7 @@ export function BriefingReviewScreen({
             variant="outline"
             size="sm"
             onClick={addTask}
-            disabled={working !== "idle"}
+            disabled={working !== "idle" || isRefining}
           >
             + Add task
           </Button>
@@ -376,11 +404,38 @@ export function BriefingReviewScreen({
         </div>
       )}
 
-      {working === "refining" && (
+      {isRefining && (
         <div className="border-border bg-muted/30 flex items-center gap-3 rounded-md border p-3">
           <span className="border-foreground/20 border-t-foreground inline-block h-3 w-3 animate-spin rounded-full border-2" />
-          <p className="text-sm">
-            Refining draft… {elapsed}s elapsed.
+          <div className="flex-1">
+            <p className="text-sm font-medium">Refining draft…</p>
+            <p className="text-muted-foreground text-xs">
+              {elapsed}s elapsed. You can navigate away and come back —
+              generation continues in the background.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleStopRefine}
+            disabled={cancelGeneration.isPending}
+          >
+            {cancelGeneration.isPending ? "Stopping…" : "Stop"}
+          </Button>
+        </div>
+      )}
+
+      {!isRefining && briefing.last_generation_error && (
+        <div
+          role="alert"
+          className="border-destructive/40 bg-destructive/5 rounded-md border p-3"
+        >
+          <p className="text-destructive text-sm font-medium">
+            Refine attempt failed
+          </p>
+          <p className="text-destructive/80 mt-1 whitespace-pre-wrap font-mono text-xs">
+            {briefing.last_generation_error}
           </p>
         </div>
       )}
@@ -389,6 +444,7 @@ export function BriefingReviewScreen({
         canAccept={!acceptDisabled}
         hasEdits={hasEdits}
         working={working}
+        isRefining={isRefining}
         onRefine={handleRefine}
         onAccept={handleAccept}
         onCancel={handleCancel}
@@ -712,17 +768,26 @@ function ActionBar({
   canAccept,
   hasEdits,
   working,
+  isRefining,
   onRefine,
   onAccept,
   onCancel,
 }: {
   canAccept: boolean;
   hasEdits: boolean;
-  working: "idle" | "refining" | "accepting" | "cancelling";
+  working: "idle" | "accepting" | "cancelling";
+  /** Projection-driven: a refine generation is running on the backend. */
+  isRefining: boolean;
   onRefine: () => void;
   onAccept: () => void;
   onCancel: () => void;
 }) {
+  const refineDisabled = !hasEdits || working !== "idle" || isRefining;
+  const refineTitle = isRefining
+    ? "A refine is already running. Wait for it to finish or stop it."
+    : hasEdits
+      ? "Send your edits and pushbacks back to the model for another pass"
+      : "Make at least one edit or pushback to refine";
   return (
     <div className="border-border bg-background/95 fixed inset-x-0 bottom-0 z-10 border-t backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <ContentColumn className="flex items-center justify-between gap-3 px-5 py-3">
@@ -740,14 +805,10 @@ function ActionBar({
             type="button"
             variant="outline"
             onClick={onRefine}
-            disabled={!hasEdits || working !== "idle"}
-            title={
-              hasEdits
-                ? "Send your edits and pushbacks back to the model for another pass"
-                : "Make at least one edit or pushback to refine"
-            }
+            disabled={refineDisabled}
+            title={refineTitle}
           >
-            {working === "refining" ? "Refining…" : "Refine again"}
+            {isRefining ? "Refining…" : "Refine again"}
           </Button>
           <Button
             type="button"
@@ -756,7 +817,9 @@ function ActionBar({
             title={
               canAccept
                 ? "Create a plan with these tasks"
-                : "Need at least one task to accept"
+                : isRefining
+                  ? "Wait for the current refine to finish before accepting"
+                  : "Need at least one task to accept"
             }
           >
             {working === "accepting" ? "Creating plan…" : "Accept and create plan"}

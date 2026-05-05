@@ -1,4 +1,9 @@
-import { createRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import {
+  createRoute,
+  useNavigate,
+  useParams,
+  useSearch,
+} from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { z } from "zod";
 import { workspaceLayoutRoute } from "./layout";
@@ -8,10 +13,11 @@ import { BriefingSetupScreen } from "@/features/briefings/components/setup-scree
 import { BriefingReviewScreen } from "@/features/briefings/components/review-screen";
 import {
   useBriefing,
-  useBriefingLiveUpdates,
   useCancelBriefing,
+  useCancelBriefingGeneration,
   useGenerateBriefingDraft,
 } from "@/features/briefings/hooks";
+import type { Briefing } from "@/features/briefings/types";
 
 const briefingNewSearchSchema = z.object({
   id: z.string().optional(),
@@ -30,7 +36,6 @@ function BriefingNewPage() {
     if (search.id && search.id !== briefingId) setBriefingId(search.id);
   }, [search.id, briefingId]);
 
-  useBriefingLiveUpdates(briefingId ?? undefined);
   const briefingQuery = useBriefing(briefingId ?? undefined);
   const briefing = briefingQuery.data ?? null;
 
@@ -62,16 +67,14 @@ function BriefingNewPage() {
     );
   }
 
-  // Briefing exists but no draft was ever produced (generation failed or the
-  // window closed before it returned). Resumes get stuck here forever otherwise
-  // because nothing is actually running — give the user a way to retry or bail.
+  // No draft yet — three substates the projection cleanly separates:
+  //   1. is_generating   → the worker is running, show a live spinner with cancel.
+  //   2. last_generation_error → the previous attempt failed; surface the reason
+  //      and offer retry / cancel.
+  //   3. neither         → fresh briefing or a cleanly-cancelled attempt; offer
+  //      "Generate first draft".
   if (briefing.status === "active" && !briefing.current_draft) {
-    return (
-      <BriefingResumeNoDraft
-        briefing={briefing}
-        onCancelled={goToPlans}
-      />
-    );
+    return <BriefingPreDraftScreen briefing={briefing} onCancelled={goToPlans} />;
   }
 
   if (briefing.status !== "active") {
@@ -105,27 +108,43 @@ function BriefingNewPage() {
   );
 }
 
-function BriefingResumeNoDraft({
+/**
+ * Renders the pre-first-draft phase: a generating spinner, a failure banner
+ * with retry, or a clean "generate" button. The discriminator is purely the
+ * briefing projection — no local UI state machine is needed because the
+ * backend's `is_generating` / `last_generation_error` fields are the source
+ * of truth, and the global live-updates listener keeps them current.
+ */
+function BriefingPreDraftScreen({
   briefing,
   onCancelled,
 }: {
-  briefing: import("@/features/briefings/types").Briefing;
+  briefing: Briefing;
   onCancelled: () => void;
 }) {
   const generate = useGenerateBriefingDraft();
-  const cancel = useCancelBriefing();
-  const [elapsed, setElapsed] = useState(0);
+  const cancelGeneration = useCancelBriefingGeneration();
+  const cancelBriefing = useCancelBriefing();
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Live elapsed counter while the projection says we're generating. Only
+  // mounts a clock when actually generating; resets on every fresh start.
+  const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
-    if (!generate.isPending) return;
-    setElapsed(0);
-    const started = Date.now();
+    if (!briefing.is_generating) {
+      setElapsed(0);
+      return;
+    }
+    // Use the briefing's `updated_at` (set by `BriefingGenerationStarted`) as
+    // the wall-clock origin. That way the counter is correct even if the user
+    // navigated away and came back ten seconds later.
+    const started = briefing.updated_at;
+    setElapsed(Math.max(0, Math.floor((Date.now() - started) / 1000)));
     const t = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - started) / 1000));
+      setElapsed(Math.max(0, Math.floor((Date.now() - started) / 1000)));
     }, 1000);
     return () => clearInterval(t);
-  }, [generate.isPending]);
+  }, [briefing.is_generating, briefing.updated_at]);
 
   const onGenerate = async () => {
     setErrorMsg(null);
@@ -136,24 +155,47 @@ function BriefingResumeNoDraft({
     }
   };
 
-  const onCancel = async () => {
+  const onCancelInflight = async () => {
+    setErrorMsg(null);
     try {
-      await cancel.mutateAsync(briefing.id);
+      await cancelGeneration.mutateAsync(briefing.id);
+    } catch (e) {
+      setErrorMsg(String(e));
+    }
+  };
+
+  const onCancelBriefing = async () => {
+    setErrorMsg(null);
+    try {
+      await cancelBriefing.mutateAsync(briefing.id);
       onCancelled();
     } catch (e) {
       setErrorMsg(String(e));
     }
   };
 
-  const busy = generate.isPending || cancel.isPending;
+  // Disable terminal actions during in-flight mutations to prevent
+  // double-submits. Note: we don't disable based on `briefing.is_generating`
+  // for the action buttons — the buttons themselves change identity (Generate
+  // vs Cancel) based on that, so each button is only visible in the state
+  // where it makes sense.
+  const mutating =
+    generate.isPending ||
+    cancelGeneration.isPending ||
+    cancelBriefing.isPending;
 
   return (
     <ContentColumn className="space-y-4 px-5 py-8">
       <header className="space-y-1">
-        <h1 className="text-xl font-medium tracking-tight">Resume briefing</h1>
+        <h1 className="text-xl font-medium tracking-tight">
+          {briefing.is_generating ? "Generating draft" : "Resume briefing"}
+        </h1>
         <p className="text-muted-foreground text-sm">
-          This briefing was started but no draft was produced. Generate the
-          first draft now, or cancel and start over.
+          {briefing.is_generating
+            ? "The model is reading your codebase. You can leave this page — generation will continue in the background, and you'll see the result here when it lands."
+            : briefing.last_generation_error
+              ? "The last generation attempt didn't finish. Retry, or cancel to start over."
+              : "Generate the first draft now, or cancel to start over."}
         </p>
       </header>
 
@@ -169,7 +211,7 @@ function BriefingResumeNoDraft({
         </p>
       </div>
 
-      {generate.isPending && (
+      {briefing.is_generating && (
         <div className="border-border bg-muted/30 flex items-center gap-3 rounded-md border p-3">
           <span className="border-foreground/20 border-t-foreground inline-block h-3 w-3 animate-spin rounded-full border-2" />
           <div className="flex-1">
@@ -178,6 +220,20 @@ function BriefingResumeNoDraft({
               {elapsed}s elapsed. This typically takes 30–90 seconds.
             </p>
           </div>
+        </div>
+      )}
+
+      {!briefing.is_generating && briefing.last_generation_error && (
+        <div
+          role="alert"
+          className="border-destructive/40 bg-destructive/5 rounded-md border p-3"
+        >
+          <p className="text-destructive text-sm font-medium">
+            Last generation attempt failed
+          </p>
+          <p className="text-destructive/80 mt-1 whitespace-pre-wrap font-mono text-xs">
+            {briefing.last_generation_error}
+          </p>
         </div>
       )}
 
@@ -191,14 +247,29 @@ function BriefingResumeNoDraft({
         <Button
           type="button"
           variant="ghost"
-          onClick={onCancel}
-          disabled={busy}
+          onClick={onCancelBriefing}
+          disabled={mutating}
         >
           Cancel briefing
         </Button>
-        <Button type="button" onClick={onGenerate} disabled={busy}>
-          {generate.isPending ? "Generating…" : "Generate first draft"}
-        </Button>
+        {briefing.is_generating ? (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onCancelInflight}
+            disabled={cancelGeneration.isPending}
+          >
+            {cancelGeneration.isPending ? "Stopping…" : "Stop generation"}
+          </Button>
+        ) : (
+          <Button type="button" onClick={onGenerate} disabled={mutating}>
+            {generate.isPending
+              ? "Starting…"
+              : briefing.last_generation_error
+                ? "Retry generation"
+                : "Generate first draft"}
+          </Button>
+        )}
       </div>
     </ContentColumn>
   );

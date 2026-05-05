@@ -1,8 +1,10 @@
-import { Link } from "@tanstack/react-router";
-import { Fragment, type ReactNode } from "react";
+import { Link, useRouter } from "@tanstack/react-router";
+import { CSSProperties, Fragment, type ReactNode } from "react";
 import { useWorkspaces } from "@/features/workspaces/hooks";
 import { usePlan } from "@/features/plans/hooks";
 import { useTask } from "@/features/tasks/hooks";
+import { CaretLeft, CaretRight } from "@phosphor-icons/react";
+import { Button } from "../ui/button";
 
 type Crumb = {
   key: string;
@@ -10,6 +12,34 @@ type Crumb = {
   to?: string;
   params?: Record<string, string>;
 };
+
+const noDragStyle = { WebkitAppRegion: "no-drag" } as CSSProperties;
+
+function NavButtons() {
+  const router = useRouter();
+  return (
+    <div className="flex items-center gap-0.5" style={noDragStyle}>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-5 rounded-sm text-muted-foreground border-none"
+        onClick={() => router.history.back()}
+        aria-label="Back"
+      >
+        <CaretLeft size={8} weight="bold" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-5 rounded-sm text-muted-foreground border-none"
+        onClick={() => router.history.forward()}
+        aria-label="Forward"
+      >
+        <CaretRight size={2} weight="bold" />
+      </Button>
+    </div>
+  );
+}
 
 function CrumbLink({ crumb, last }: { crumb: Crumb; last: boolean }) {
   if (last || !crumb.to) {
@@ -75,6 +105,7 @@ export function WorkspaceBreadcrumbs({
       aria-label="Breadcrumb"
       className="text-muted-foreground flex items-center gap-1.5 font-body text-[11px]"
     >
+      <NavButtons />
       {crumbs.map((c, i) => (
         <Fragment key={c.key}>
           {i > 0 && (

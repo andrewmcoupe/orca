@@ -318,6 +318,17 @@ CREATE TABLE IF NOT EXISTS briefing_projection (
     pending_edits_json      TEXT,                     -- BriefingEdits JSON, NULL when no edits pending
     validation_results_json TEXT,                     -- PathValidationResult[] JSON, NULL until first draft
     generation_count        INTEGER NOT NULL DEFAULT 0,
+    -- Background-generation flags:
+    --   is_generating: 1 while a BriefingGenerationStarted has not yet been
+    --   matched by a terminal event (DraftProduced, GenerationFailed,
+    --   GenerationCancelled, Cancelled). Drives the UI's "still working"
+    --   spinner and gates double-start at the command layer.
+    --   generation_kind: 'initial' | 'refine' when is_generating, else NULL.
+    --   last_generation_error: human-readable reason for the most recent
+    --   GenerationFailed; cleared on the next Started/DraftProduced.
+    is_generating           INTEGER NOT NULL DEFAULT 0,
+    generation_kind         TEXT,
+    last_generation_error   TEXT,
     final_plan_id           TEXT,
     cancel_reason           TEXT,
     created_at              INTEGER NOT NULL,
@@ -367,6 +378,12 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
         "ALTER TABLE task_projection ADD COLUMN is_queued INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE task_projection ADD COLUMN unblocked_at INTEGER",
         "ALTER TABLE task_projection ADD COLUMN last_unblocking_task_id TEXT",
+        // Briefing background-generation flags. See briefing_projection DDL above
+        // for semantics. Additive — pre-existing rows default to not-generating
+        // with NULL kind/error, which is the correct historical state.
+        "ALTER TABLE briefing_projection ADD COLUMN is_generating INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE briefing_projection ADD COLUMN generation_kind TEXT",
+        "ALTER TABLE briefing_projection ADD COLUMN last_generation_error TEXT",
     ];
     for sql in migrations {
         match conn.execute(sql, []) {
@@ -381,6 +398,13 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
             }
         }
     }
+    // Index over `is_generating` lives here rather than in the CREATE TABLE block
+    // because pre-existing workspace DBs need the column migration to run first.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_briefing_projection_generating
+         ON briefing_projection (workspace_id, is_generating)",
+        [],
+    )?;
     // One-time backfill: rows that pre-date the `current_phase_config` column landed
     // with the default '{}'. Copy the original `phase_config` over so the resolver
     // sees something useful. New rows go through the `TaskCreated` applier which
@@ -1791,6 +1815,19 @@ pub struct BriefingProjection {
     pub pending_edits: Option<serde_json::Value>,
     pub validation_results: Option<serde_json::Value>,
     pub generation_count: i64,
+    /// True between a `BriefingGenerationStarted` event and its matching terminal
+    /// event (`BriefingDraftProduced`, `BriefingGenerationFailed`,
+    /// `BriefingGenerationCancelled`, or `BriefingCancelled`). The UI uses this to
+    /// drive the spinner and the in-flight chrome indicator; the command layer
+    /// uses it to refuse a second concurrent start.
+    pub is_generating: bool,
+    /// `"initial"` for the first draft, `"refine"` for subsequent regenerations.
+    /// `None` when not generating.
+    pub generation_kind: Option<String>,
+    /// Reason from the most recent `BriefingGenerationFailed`. Cleared when a new
+    /// generation starts or a draft is produced. Surfaced as a banner on the
+    /// briefing detail page.
+    pub last_generation_error: Option<String>,
     pub final_plan_id: Option<String>,
     pub cancel_reason: Option<String>,
     pub created_at: i64,
@@ -1844,6 +1881,17 @@ struct BriefingCancelledPayload {
     reason: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct BriefingGenerationStartedPayload {
+    /// `"initial"` (first draft) or `"refine"` (subsequent regeneration).
+    kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BriefingGenerationFailedPayload {
+    reason: String,
+}
+
 pub fn apply_briefing_event(
     tx: &Transaction,
     event: &AppendedEvent,
@@ -1868,12 +1916,17 @@ pub fn apply_briefing_event(
         }
         "BriefingDraftProduced" => {
             let p: BriefingDraftProducedPayload = serde_json::from_str(&event.payload)?;
+            // Terminal-success transition: clear the in-flight flags and any prior
+            // failure reason so the UI shows a clean "draft is ready" state.
             tx.execute(
                 "UPDATE briefing_projection
                  SET current_draft_json = ?1,
                      validation_results_json = ?2,
                      pending_edits_json = NULL,
                      generation_count = ?3,
+                     is_generating = 0,
+                     generation_kind = NULL,
+                     last_generation_error = NULL,
                      updated_at = ?4
                  WHERE id = ?5",
                 params![
@@ -1883,6 +1936,49 @@ pub fn apply_briefing_event(
                     event.created_at,
                     event.aggregate_id,
                 ],
+            )?;
+        }
+        "BriefingGenerationStarted" => {
+            let p: BriefingGenerationStartedPayload = serde_json::from_str(&event.payload)?;
+            // Set in-flight flags and clear any prior failure so the UI shows
+            // "generating" cleanly. The command layer enforces no-double-start;
+            // the projection trusts the event log.
+            tx.execute(
+                "UPDATE briefing_projection
+                 SET is_generating = 1,
+                     generation_kind = ?1,
+                     last_generation_error = NULL,
+                     updated_at = ?2
+                 WHERE id = ?3",
+                params![p.kind, event.created_at, event.aggregate_id],
+            )?;
+        }
+        "BriefingGenerationFailed" => {
+            let p: BriefingGenerationFailedPayload = serde_json::from_str(&event.payload)?;
+            // Terminal-failure transition: drop the in-flight flag and stash the
+            // reason so the briefing page can surface a banner with retry.
+            tx.execute(
+                "UPDATE briefing_projection
+                 SET is_generating = 0,
+                     generation_kind = NULL,
+                     last_generation_error = ?1,
+                     updated_at = ?2
+                 WHERE id = ?3",
+                params![p.reason, event.created_at, event.aggregate_id],
+            )?;
+        }
+        "BriefingGenerationCancelled" => {
+            // Distinct from `BriefingCancelled` (which terminates the whole
+            // briefing): this only ends the current attempt. The briefing
+            // remains `active`, ready for another start.
+            tx.execute(
+                "UPDATE briefing_projection
+                 SET is_generating = 0,
+                     generation_kind = NULL,
+                     last_generation_error = NULL,
+                     updated_at = ?1
+                 WHERE id = ?2",
+                params![event.created_at, event.aggregate_id],
             )?;
         }
         "BriefingDraftEdited" => {
@@ -1924,9 +2020,16 @@ pub fn apply_briefing_event(
         }
         "BriefingCancelled" => {
             let p: BriefingCancelledPayload = serde_json::from_str(&event.payload)?;
+            // Hard terminal: also drop in-flight flags so the chrome indicator
+            // doesn't keep counting a generation that's been killed alongside
+            // the briefing itself.
             tx.execute(
                 "UPDATE briefing_projection
-                 SET status = 'cancelled', cancel_reason = ?1, updated_at = ?2
+                 SET status = 'cancelled',
+                     cancel_reason = ?1,
+                     is_generating = 0,
+                     generation_kind = NULL,
+                     updated_at = ?2
                  WHERE id = ?3",
                 params![p.reason, event.created_at, event.aggregate_id],
             )?;
@@ -1936,12 +2039,13 @@ pub fn apply_briefing_event(
     Ok(())
 }
 
-const BRIEFING_COLUMNS: &str = "id, workspace_id, status, initial_description, provider, model, current_draft_json, pending_edits_json, validation_results_json, generation_count, final_plan_id, cancel_reason, created_at, updated_at";
+const BRIEFING_COLUMNS: &str = "id, workspace_id, status, initial_description, provider, model, current_draft_json, pending_edits_json, validation_results_json, generation_count, is_generating, generation_kind, last_generation_error, final_plan_id, cancel_reason, created_at, updated_at";
 
 fn read_briefing(r: &rusqlite::Row) -> rusqlite::Result<BriefingProjection> {
     let current_draft_str: Option<String> = r.get(6)?;
     let pending_edits_str: Option<String> = r.get(7)?;
     let validation_results_str: Option<String> = r.get(8)?;
+    let is_generating_int: i64 = r.get(10)?;
     Ok(BriefingProjection {
         id: r.get(0)?,
         workspace_id: r.get(1)?,
@@ -1959,10 +2063,13 @@ fn read_briefing(r: &rusqlite::Row) -> rusqlite::Result<BriefingProjection> {
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok()),
         generation_count: r.get(9)?,
-        final_plan_id: r.get(10)?,
-        cancel_reason: r.get(11)?,
-        created_at: r.get(12)?,
-        updated_at: r.get(13)?,
+        is_generating: is_generating_int != 0,
+        generation_kind: r.get(11)?,
+        last_generation_error: r.get(12)?,
+        final_plan_id: r.get(13)?,
+        cancel_reason: r.get(14)?,
+        created_at: r.get(15)?,
+        updated_at: r.get(16)?,
     })
 }
 
@@ -1995,12 +2102,36 @@ pub fn list_active_briefings(
     Ok(out)
 }
 
+/// All briefings currently flagged `is_generating = 1` for this workspace.
+/// Used by the restart-recovery sweep on workspace activation: any row in
+/// this list with no matching live in-memory entry is stale (the previous
+/// process died mid-generation) and gets a synthetic
+/// `BriefingGenerationFailed` so the UI clears the spinner.
+pub fn list_generating_briefings(
+    conn: &Connection,
+    workspace_id: &str,
+) -> rusqlite::Result<Vec<BriefingProjection>> {
+    let sql = format!(
+        "SELECT {BRIEFING_COLUMNS} FROM briefing_projection
+         WHERE workspace_id = ?1 AND is_generating = 1
+         ORDER BY updated_at ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![workspace_id], read_briefing)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::events::schema::apply_events_ddl;
     use crate::events::types::AppendedEvent;
     use rusqlite::Connection;
+    use serde_json::json;
 
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -2290,5 +2421,215 @@ mod tests {
         assert_eq!(task.status, "merged");
         assert_eq!(task.merge_target_branch, None);
         assert_eq!(task.merged_at, Some(50));
+    }
+
+    // ------------------------------------------------------------------------
+    // Briefing background-generation projection tests.
+    // ------------------------------------------------------------------------
+
+    fn briefing_event(seq: i64, event_type: &str, payload: serde_json::Value) -> AppendedEvent {
+        AppendedEvent {
+            id: format!("bev_{seq}"),
+            aggregate_type: "briefing".into(),
+            aggregate_id: "brf1".into(),
+            seq,
+            event_type: event_type.into(),
+            version: 1,
+            payload: payload.to_string(),
+            metadata: "{}".into(),
+            created_at: 100 * seq,
+        }
+    }
+
+    fn apply_briefing_in_tx(conn: &mut Connection, ev: &AppendedEvent) {
+        let tx = conn.transaction().unwrap();
+        apply_briefing_event(&tx, ev).unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn seed_briefing(conn: &mut Connection) {
+        apply_briefing_in_tx(
+            conn,
+            &briefing_event(
+                1,
+                "BriefingStarted",
+                json!({
+                    "workspace_id": "ws",
+                    "initial_description": "ship it",
+                    "provider": "claude",
+                    "model": "sonnet",
+                }),
+            ),
+        );
+    }
+
+    #[test]
+    fn generation_started_flips_in_flight_flags() {
+        let mut conn = db();
+        seed_briefing(&mut conn);
+
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(2, "BriefingGenerationStarted", json!({"kind": "initial"})),
+        );
+
+        let b = get_briefing(&conn, "brf1").unwrap().unwrap();
+        assert!(b.is_generating);
+        assert_eq!(b.generation_kind.as_deref(), Some("initial"));
+        assert_eq!(b.last_generation_error, None);
+        assert_eq!(b.generation_count, 0); // not incremented until DraftProduced
+    }
+
+    #[test]
+    fn generation_started_clears_prior_failure() {
+        let mut conn = db();
+        seed_briefing(&mut conn);
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(
+                2,
+                "BriefingGenerationFailed",
+                json!({"reason": "subprocess died"}),
+            ),
+        );
+        let b = get_briefing(&conn, "brf1").unwrap().unwrap();
+        assert_eq!(b.last_generation_error.as_deref(), Some("subprocess died"));
+
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(3, "BriefingGenerationStarted", json!({"kind": "refine"})),
+        );
+
+        let b = get_briefing(&conn, "brf1").unwrap().unwrap();
+        assert!(b.is_generating);
+        assert_eq!(b.generation_kind.as_deref(), Some("refine"));
+        assert_eq!(b.last_generation_error, None);
+    }
+
+    #[test]
+    fn draft_produced_clears_in_flight_and_increments_count() {
+        let mut conn = db();
+        seed_briefing(&mut conn);
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(2, "BriefingGenerationStarted", json!({"kind": "initial"})),
+        );
+
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(
+                3,
+                "BriefingDraftProduced",
+                json!({
+                    "draft": {"title": "x", "description": "y", "tasks": []},
+                    "generation_index": 1,
+                    "validation_results": [],
+                }),
+            ),
+        );
+
+        let b = get_briefing(&conn, "brf1").unwrap().unwrap();
+        assert!(!b.is_generating);
+        assert_eq!(b.generation_kind, None);
+        assert_eq!(b.last_generation_error, None);
+        assert_eq!(b.generation_count, 1);
+    }
+
+    #[test]
+    fn generation_failed_sets_error_and_clears_in_flight() {
+        let mut conn = db();
+        seed_briefing(&mut conn);
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(2, "BriefingGenerationStarted", json!({"kind": "initial"})),
+        );
+
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(
+                3,
+                "BriefingGenerationFailed",
+                json!({"reason": "model parse error"}),
+            ),
+        );
+
+        let b = get_briefing(&conn, "brf1").unwrap().unwrap();
+        assert!(!b.is_generating);
+        assert_eq!(b.generation_kind, None);
+        assert_eq!(
+            b.last_generation_error.as_deref(),
+            Some("model parse error")
+        );
+        assert_eq!(b.status, "active"); // briefing remains usable
+    }
+
+    #[test]
+    fn generation_cancelled_clears_in_flight_without_error() {
+        let mut conn = db();
+        seed_briefing(&mut conn);
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(2, "BriefingGenerationStarted", json!({"kind": "refine"})),
+        );
+
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(3, "BriefingGenerationCancelled", json!({})),
+        );
+
+        let b = get_briefing(&conn, "brf1").unwrap().unwrap();
+        assert!(!b.is_generating);
+        assert_eq!(b.generation_kind, None);
+        // Cancelled is not a failure — no error banner.
+        assert_eq!(b.last_generation_error, None);
+        assert_eq!(b.status, "active");
+    }
+
+    #[test]
+    fn briefing_cancelled_also_clears_in_flight() {
+        let mut conn = db();
+        seed_briefing(&mut conn);
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(2, "BriefingGenerationStarted", json!({"kind": "initial"})),
+        );
+
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(3, "BriefingCancelled", json!({"reason": "user_cancelled"})),
+        );
+
+        let b = get_briefing(&conn, "brf1").unwrap().unwrap();
+        assert!(!b.is_generating);
+        assert_eq!(b.generation_kind, None);
+        assert_eq!(b.status, "cancelled");
+    }
+
+    #[test]
+    fn list_generating_briefings_filters_by_flag() {
+        let mut conn = db();
+        // Briefing 1: generating.
+        seed_briefing(&mut conn);
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(2, "BriefingGenerationStarted", json!({"kind": "initial"})),
+        );
+        // Briefing 2: never generating.
+        let mut ev2 = briefing_event(
+            1,
+            "BriefingStarted",
+            json!({
+                "workspace_id": "ws",
+                "initial_description": "other",
+                "provider": "claude",
+                "model": "sonnet",
+            }),
+        );
+        ev2.aggregate_id = "brf2".into();
+        apply_briefing_in_tx(&mut conn, &ev2);
+
+        let generating = list_generating_briefings(&conn, "ws").unwrap();
+        assert_eq!(generating.len(), 1);
+        assert_eq!(generating[0].id, "brf1");
     }
 }

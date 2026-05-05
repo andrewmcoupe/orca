@@ -1,40 +1,22 @@
-import { useEffect } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { useQueryClient } from "@tanstack/react-query";
 import { Sparkle } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { briefingKeys, useActiveBriefings } from "../hooks";
+import { useActiveBriefings } from "../hooks";
 
 /**
  * Shown above the plans list. Lists briefings whose status is still `active` so
  * the user can resume an in-progress flow they navigated away from. Hidden
  * entirely when there are none — no header, no empty state.
+ *
+ * Live updates are handled by the workspace-level
+ * `BriefingsLiveUpdatesProvider` — no per-component listener needed.
  */
 export function InProgressBriefings({
   onContinue,
 }: {
   onContinue: (briefingId: string) => void;
 }) {
-  const qc = useQueryClient();
   const { data } = useActiveBriefings();
-
-  // Refresh when any briefing aggregate emits a projection update — covers new
-  // briefings being started, drafts being produced, and briefings completing
-  // (which removes them from this list).
-  useEffect(() => {
-    let cancelled = false;
-    const u = listen<{ aggregate_type: string }>("projection_updated", (e) => {
-      if (cancelled) return;
-      if (e.payload.aggregate_type === "briefing") {
-        qc.invalidateQueries({ queryKey: briefingKeys.listActive() });
-      }
-    });
-    return () => {
-      cancelled = true;
-      void u.then((fn) => fn());
-    };
-  }, [qc]);
 
   if (!data || data.length === 0) return null;
 

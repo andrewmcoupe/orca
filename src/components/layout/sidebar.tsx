@@ -12,14 +12,7 @@ import { cn } from "@/lib/utils";
 import { Plus } from "@phosphor-icons/react";
 import { Link, useMatches } from "@tanstack/react-router";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  type ComponentProps,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "../ui/button";
 
 const EXPANSION_KEY = "orca:sidebar:expanded-workspaces";
@@ -117,29 +110,7 @@ export function WorkspacesSidebar() {
           </Accordion>
         )}
       </div>
-      <nav className="flex flex-col p-2 bg-background border-t">
-        <SidebarGlobalLink to="/settings">Settings</SidebarGlobalLink>
-        <SidebarGlobalLink to="/">About</SidebarGlobalLink>
-      </nav>
     </aside>
-  );
-}
-
-function SidebarGlobalLink({
-  to,
-  children,
-}: {
-  to: ComponentProps<typeof Link>["to"];
-  children: ReactNode;
-}) {
-  return (
-    <Link
-      to={to}
-      className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-[20px] items-center gap-2 px-2 text-xs font-body no-underline transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
-      activeOptions={{ exact: true }}
-    >
-      {children}
-    </Link>
   );
 }
 
