@@ -2,6 +2,7 @@ import { Outlet, createRoute, useParams } from "@tanstack/react-router";
 import { rootRoute } from "../root";
 import { useActivateWorkspace } from "@/features/workspaces/hooks";
 import { WorkspaceBreadcrumbs } from "@/components/layout/breadcrumbs";
+import { BriefingsLiveUpdatesProvider } from "@/features/briefings/live-updates-provider";
 
 function WorkspaceLayout() {
   const { workspaceId } = useParams({ from: workspaceLayoutRoute.id });
@@ -18,6 +19,12 @@ function WorkspaceLayout() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {/* Listens for `projection_updated` while the user is anywhere inside
+          the workspace, not just on briefing pages. This is what lets a
+          briefing keep generating after the user navigates away — events
+          continue to invalidate caches so the in-flight indicator and the
+          briefing page stay accurate. */}
+      <BriefingsLiveUpdatesProvider />
       <header className="border-border bg-background sticky top-0 z-10 flex h-7 items-center border-b px-3">
         <WorkspaceBreadcrumbs
           workspaceId={workspaceId}

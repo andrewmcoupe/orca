@@ -3,12 +3,9 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { briefingsApi } from "./api";
 import type {
   Briefing,
-  BriefingDraft,
   BriefingEdits,
   BriefingHistoryEntry,
 } from "./types";
@@ -58,12 +55,23 @@ export function useStartBriefing() {
   });
 }
 
+/**
+ * Kick off the initial draft generation. Fire-and-forget: the mutation
+ * resolves once the backend has appended `BriefingGenerationStarted` and
+ * spawned the worker. The completion event lands asynchronously via the
+ * global live-updates provider — so callers should drive their UI from
+ * `briefing.is_generating` rather than `mutation.isPending`.
+ *
+ * The returned briefing has `is_generating: true` set; we seed it directly
+ * into the cache so the spinner appears without a query round-trip.
+ */
 export function useGenerateBriefingDraft() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (briefingId: string) => briefingsApi.generate(briefingId),
-    onSuccess: (_draft, briefingId) => {
-      qc.invalidateQueries({ queryKey: briefingKeys.detail(briefingId) });
+    onSuccess: (briefing) => {
+      qc.setQueryData(briefingKeys.detail(briefing.id), briefing);
+      qc.invalidateQueries({ queryKey: briefingKeys.listActive() });
     },
   });
 }
@@ -80,12 +88,16 @@ export function useApplyBriefingEdits() {
   });
 }
 
+/**
+ * Same contract as {@link useGenerateBriefingDraft} but for refines.
+ */
 export function useRefineBriefing() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (briefingId: string) => briefingsApi.refine(briefingId),
-    onSuccess: (_draft: BriefingDraft, briefingId) => {
-      qc.invalidateQueries({ queryKey: briefingKeys.detail(briefingId) });
+    onSuccess: (briefing) => {
+      qc.setQueryData(briefingKeys.detail(briefing.id), briefing);
+      qc.invalidateQueries({ queryKey: briefingKeys.listActive() });
     },
   });
 }
@@ -102,6 +114,24 @@ export function useAcceptBriefing() {
   });
 }
 
+/**
+ * Cancel only the current generation attempt. The briefing remains active
+ * — the user can immediately start another generation. Idempotent on the
+ * backend; safe to fire even if no generation is running.
+ */
+export function useCancelBriefingGeneration() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (briefingId: string) =>
+      briefingsApi.cancelGeneration(briefingId),
+    onSuccess: (_v, briefingId) => {
+      qc.invalidateQueries({ queryKey: briefingKeys.detail(briefingId) });
+      qc.invalidateQueries({ queryKey: briefingKeys.listActive() });
+    },
+  });
+}
+
+/** Hard-cancel the briefing as a whole (status -> `cancelled`). */
 export function useCancelBriefing() {
   const qc = useQueryClient();
   return useMutation({
@@ -111,33 +141,4 @@ export function useCancelBriefing() {
       qc.invalidateQueries({ queryKey: briefingKeys.listActive() });
     },
   });
-}
-
-/**
- * Subscribe to `projection_updated` events for a briefing aggregate and
- * invalidate its detail query so the UI refreshes after backend mutations
- * (drafts produced, edits applied, etc.).
- */
-export function useBriefingLiveUpdates(briefingId: string | undefined) {
-  const qc = useQueryClient();
-  useEffect(() => {
-    if (!briefingId) return;
-    let cancelled = false;
-    const unlistenPromise = listen<{
-      aggregate_type: string;
-      aggregate_id: string;
-    }>("projection_updated", (e) => {
-      if (cancelled) return;
-      if (
-        e.payload.aggregate_type === "briefing" &&
-        e.payload.aggregate_id === briefingId
-      ) {
-        qc.invalidateQueries({ queryKey: briefingKeys.detail(briefingId) });
-      }
-    });
-    return () => {
-      cancelled = true;
-      void unlistenPromise.then((u) => u());
-    };
-  }, [briefingId, qc]);
 }

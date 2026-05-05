@@ -4,11 +4,7 @@ import { workspaceLayoutRoute } from "./layout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ContentColumn } from "@/components/layout/content-column";
-import {
-  useBriefing,
-  useBriefingHistory,
-  useBriefingLiveUpdates,
-} from "@/features/briefings/hooks";
+import { useBriefing, useBriefingHistory } from "@/features/briefings/hooks";
 import { BriefingTranscriptView } from "@/features/briefings/components/transcript-view";
 
 function BriefingDetailPage() {
@@ -16,7 +12,6 @@ function BriefingDetailPage() {
     from: briefingDetailRoute.id,
   });
   const navigate = useNavigate();
-  useBriefingLiveUpdates(briefingId);
   const briefingQ = useBriefing(briefingId);
   const historyQ = useBriefingHistory(briefingId);
 
