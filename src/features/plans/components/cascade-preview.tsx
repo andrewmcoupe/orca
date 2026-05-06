@@ -37,7 +37,7 @@ export function CascadePreview({
       </div>
       <ul className="scrollbar-styled bg-muted/30 max-h-44 space-y-1 overflow-auto rounded-md border p-2 text-xs">
         {tasks.map((t) => (
-          <li key={t.task_id} className="flex items-center gap-2">
+          <li key={t.task_id} className="flex min-w-0 items-center gap-2">
             <span
               className={
                 t.has_running_phase_run
@@ -46,8 +46,8 @@ export function CascadePreview({
               }
               aria-hidden
             />
-            <span className="truncate">{t.title}</span>
-            <span className="text-muted-foreground ml-auto font-mono text-[10px]">
+            <span className="min-w-0 flex-1 truncate">{t.title}</span>
+            <span className="text-muted-foreground shrink-0 font-mono text-[10px]">
               {t.status}
             </span>
           </li>

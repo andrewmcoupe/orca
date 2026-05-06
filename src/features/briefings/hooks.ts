@@ -1,8 +1,10 @@
+import { useEffect, useState } from "react";
 import {
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { listen } from "@tauri-apps/api/event";
 import { briefingsApi } from "./api";
 import type {
   Briefing,
@@ -129,6 +131,39 @@ export function useCancelBriefingGeneration() {
       qc.invalidateQueries({ queryKey: briefingKeys.listActive() });
     },
   });
+}
+
+/**
+ * Subscribe to live LLM text chunks for a briefing while it's generating.
+ * Backed by the `briefing_chunk` Tauri event emitted from `briefing.rs`.
+ *
+ * Ephemeral by design (option 2 of the planned rollout): the buffer lives in
+ * component state, not the DB — refreshing the page or unmounting clears it.
+ * `reset` lets callers wipe the buffer when a new generation starts.
+ */
+type BriefingChunkPayload = { briefing_id: string; text: string };
+
+export function useBriefingLiveOutput(
+  briefingId: string | undefined,
+  active: boolean,
+) {
+  const [text, setText] = useState("");
+  useEffect(() => {
+    if (!briefingId || !active) return;
+    let cancelled = false;
+    const unlisten = listen<BriefingChunkPayload>("briefing_chunk", (e) => {
+      if (cancelled) return;
+      if (e.payload.briefing_id !== briefingId) return;
+      setText((prev) => prev + e.payload.text);
+    });
+    return () => {
+      cancelled = true;
+      unlisten.then((fn) => fn());
+    };
+  }, [briefingId, active]);
+  // When generation flips off (success/cancel/fail) we keep the text on screen
+  // until the briefing record changes — the parent component decides to clear.
+  return { text, reset: () => setText("") };
 }
 
 /** Hard-cancel the briefing as a whole (status -> `cancelled`). */

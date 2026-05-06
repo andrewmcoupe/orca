@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { PixelRain } from "@/components/ui/mini-loaders";
 import type { Briefing } from "../types";
 
 /**
@@ -157,12 +158,11 @@ function BriefingRow({
   );
 }
 
-/** Animated pulse to signal "live activity." Pure CSS, no JS animation. */
+/** Live activity indicator — blinking pixel grid. */
 function PulseDot() {
   return (
-    <span className="relative inline-flex h-2 w-2 items-center justify-center">
-      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500/60" />
-      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+    <span className="text-emerald-500 inline-flex">
+      <PixelRain />
     </span>
   );
 }

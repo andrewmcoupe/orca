@@ -29,6 +29,7 @@ const PERMISSION_MODE_SHORT: Record<PermissionMode, string> = {
   bypassPermissions: "bypassPermissions",
 };
 import { useWorkspaceSettings } from "@/features/workspaces/hooks";
+import { CrossfadeBar, PixelRain } from "@/components/ui/mini-loaders";
 import type { PhaseRun } from "../types";
 
 type PhaseStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -289,15 +290,27 @@ function PhaseCardRow({
                 }
               />
             )}
-            {!isPending && (
+            {status === "running" ? (
               <span
                 className={cn(
-                  "text-[9px] uppercase tracking-[0.08em]",
-                  STATUS_BADGE_STYLES[status as Exclude<PhaseStatus, "pending">],
+                  "inline-flex items-center",
+                  STATUS_BADGE_STYLES.running,
                 )}
+                aria-label={`${phase} running`}
               >
-                {status}
+                {phase === "auditor" ? <CrossfadeBar /> : <PixelRain />}
               </span>
+            ) : (
+              !isPending && (
+                <span
+                  className={cn(
+                    "text-[9px] uppercase tracking-[0.08em]",
+                    STATUS_BADGE_STYLES[status as Exclude<PhaseStatus, "pending">],
+                  )}
+                >
+                  {status}
+                </span>
+              )
             )}
             {showEditor && taskId && (
               <PhaseConfigEditor

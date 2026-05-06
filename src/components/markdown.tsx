@@ -86,7 +86,7 @@ export function Markdown({
   className?: string;
 }) {
   return (
-    <div className={cn("text-foreground", className)}>
+    <div className={cn("text-muted-foreground", className)}>
       <ReactMarkdown components={components}>{children}</ReactMarkdown>
     </div>
   );

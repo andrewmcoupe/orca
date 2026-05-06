@@ -45,6 +45,8 @@ export type BriefingEdits = {
   task_additions: DraftTask[];
   task_removals: string[];
   assumption_pushbacks: AssumptionPushback[];
+  /** Freeform "anything else" notes for the next refinement. Optional. */
+  general_notes?: string | null;
 };
 
 export type PathValidationResult = {
@@ -126,4 +128,5 @@ export const emptyEdits = (): BriefingEdits => ({
   task_additions: [],
   task_removals: [],
   assumption_pushbacks: [],
+  general_notes: null,
 });

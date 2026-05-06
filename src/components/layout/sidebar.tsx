@@ -14,6 +14,7 @@ import { Link, useMatches } from "@tanstack/react-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "../ui/button";
+import { EqualizerLoader } from "../ui/mini-loaders";
 
 const EXPANSION_KEY = "orca:sidebar:expanded-workspaces";
 
@@ -159,8 +160,10 @@ function WorkspaceItem({
         <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate pr-1.5">
           <span className="truncate">{workspace.name}</span>
           {isActive && runningCount > 0 && (
-            <span className="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-[10px] tabular-nums">
-              <span className="bg-emerald-500 inline-block size-1.5 rounded-full animate-pulse" />
+            <span className="text-muted-foreground inline-flex shrink-0 items-center gap-1.5 text-[10px] tabular-nums">
+              <span className="text-emerald-500 inline-flex">
+                <EqualizerLoader />
+              </span>
               {runningCount}
             </span>
           )}
