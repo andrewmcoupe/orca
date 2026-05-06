@@ -725,7 +725,9 @@ struct SyntectAssets {
 fn assets() -> &'static SyntectAssets {
     static ASSETS: OnceLock<SyntectAssets> = OnceLock::new();
     ASSETS.get_or_init(|| {
-        let syntaxes = SyntaxSet::load_defaults_newlines();
+        // `two-face` ships a curated extended syntax set built on top of syntect's
+        // defaults — covers TypeScript/TSX, Vue, Svelte, etc. that upstream omits.
+        let syntaxes = two_face::syntax::extra_newlines();
         let themes = ThemeSet::load_defaults();
         // `base16-ocean.dark` ships with syntect and reads well against the app's
         // zinc-tinted dark palette.
