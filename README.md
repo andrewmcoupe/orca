@@ -1,5 +1,3 @@
-# Orca
-
 <p align="center">
   <img src="orca-logo.png" alt="Orca logo" width="240">
 </p>
@@ -16,11 +14,9 @@
   <img alt="React" src="https://img.shields.io/badge/React-19-61dafb">
 </p>
 
-<!-- Add the hero asset here when ready:
 <p align="center">
-  <img src="docs/assets/readme-hero.svg" alt="Orca desktop workflow" width="920">
+  <img src="task-screenshot.png" alt="Orca task workspace showing phase output and task context" width="920">
 </p>
--->
 
 Orca is a local-first desktop app for managing AI-assisted software delivery. It helps you capture a brief, shape it into a plan, run task phases through CLI providers, inspect outputs and diffs, and merge only once the work has passed review.
 
@@ -71,19 +67,22 @@ flowchart LR
 | Review | Inspect phase output, diffs, unchanged concerns, auditor verdicts, and merge readiness. |
 | Events | Maintain a workspace event trail for projections, debugging, and workflow history. |
 
-## Screenshot
+## Screenshots
 
-<!-- Replace this section with the final screenshot when ready.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshot-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/screenshot-light.png">
-  <img alt="Orca workspace showing plans, tasks, phase output, and diff review" src="docs/assets/screenshot-light.png">
-</picture>
-
--->
-
-Screenshot coming soon.
+<table>
+  <tr>
+    <td width="50%">
+      <img src="review-screenshot.png" alt="Orca review view showing diff review and auditor output">
+    </td>
+    <td width="50%">
+      <img src="settings-screenshot.png" alt="Orca workspace settings showing phase and provider configuration">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Review work before merge</strong></td>
+    <td align="center"><strong>Tune workspace defaults</strong></td>
+  </tr>
+</table>
 
 ## Quick Start
 
