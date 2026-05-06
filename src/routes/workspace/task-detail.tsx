@@ -28,7 +28,6 @@ import { useActiveWorkspace } from "@/features/workspaces/hooks";
 import { usePhaseRuns } from "@/features/phase-runs/hooks";
 import { TaskEventList } from "@/features/events/components/task-event-list";
 import { PhaseRunsTrail } from "@/features/phase-runs/components/phase-runs-trail";
-import { DiffPanel } from "@/features/diff/components/diff-panel";
 import { DiffModal } from "@/features/diff/components/diff-modal";
 import { diffModalController } from "@/features/diff/modal-controller";
 import { formatRelativeTime } from "@/lib/format";
@@ -55,7 +54,7 @@ function TaskDetailPage() {
 
 /**
  * Task detail layout: scrolling main column on the left, fixed-width
- * reference sidebar on the right, optional diff panel as a fourth column.
+ * reference sidebar on the right, and the review diff available as a modal.
  *
  * Reading order top-to-bottom: action toolbar → title + status → auditor
  * verdict (the thing the user came to read) → spec / audit trail as
@@ -185,14 +184,6 @@ function TaskDetailView({
 
       <DetailSidebar sections={sidebarSections} />
 
-      <DiffPanel
-        workspaceId={workspaceId}
-        taskId={task.id}
-        onOpenModal={() => {
-          setModalConcernIdx(undefined);
-          setModalOpen(true);
-        }}
-      />
       <DiffModal
         workspaceId={workspaceId}
         taskId={task.id}

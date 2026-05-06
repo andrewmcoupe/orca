@@ -178,8 +178,8 @@ export function DependencyEditDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
+      <DialogContent className="min-w-0 sm:max-w-md">
+        <DialogHeader className="min-w-0 pr-8">
           <DialogTitle>Edit dependencies</DialogTitle>
           <DialogDescription>
             The pipeline won't start this task until every selected task has
@@ -259,7 +259,7 @@ function DependencyEditor({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="min-w-0 space-y-3">
       <input
         type="text"
         value={filter}
@@ -267,7 +267,7 @@ function DependencyEditor({
         placeholder="Filter…"
         className="w-full border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-foreground/20"
       />
-      <div className="scrollbar-styled max-h-72 overflow-y-auto border divide-y">
+      <div className="scrollbar-styled min-w-0 max-h-72 overflow-y-auto overflow-x-hidden border divide-y">
         {eligible.length === 0 ? (
           <p className="px-2 py-3 text-center text-[11px] text-muted-foreground italic">
             {filter
@@ -320,15 +320,17 @@ function DependencyCheckbox({
   onToggle: () => void;
 }) {
   return (
-    <label className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted/30 cursor-pointer">
+    <label className="flex min-w-0 items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted/30 cursor-pointer">
       <input
         type="checkbox"
         checked={checked}
         onChange={onToggle}
-        className="size-3 cursor-pointer accent-foreground"
+        className="size-3 shrink-0 cursor-pointer accent-foreground"
       />
       <span className="min-w-0 flex-1 truncate">{task.title}</span>
-      <TaskStatusBadge status={task.status} />
+      <span className="shrink-0">
+        <TaskStatusBadge status={task.status} />
+      </span>
     </label>
   );
 }

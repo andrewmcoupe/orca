@@ -341,52 +341,62 @@ export function TaskActionToolbar({
     ? "No diff available yet."
     : "Open the diff in side-by-side view.";
 
+  const approveAction = {
+    icon: <CheckCircle weight={primary === "approve" ? "fill" : "regular"} />,
+    label: "Approve",
+    isPrimary: primary === "approve",
+    disabled: approveDisabled,
+    tooltip: approveTooltip,
+    onClick: () => approve.mutate(task.id),
+  };
+  const passBackAction = {
+    icon: <ArrowUUpLeft />,
+    label: "Pass back",
+    isPrimary: primary === "pass_back",
+    disabled: passBackDisabled,
+    tooltip: passBackTooltip,
+    onClick: () => setPassBackOpen(true),
+  };
+  const mergeAction = {
+    icon: <GitMerge weight={primary === "merge" ? "fill" : "regular"} />,
+    label: "Merge",
+    isPrimary: primary === "merge",
+    disabled: mergeDisabled,
+    tooltip: mergeTooltip,
+    onClick: () => setMergeOpen(true),
+  };
+  const primaryAction =
+    primary === "approve"
+      ? approveAction
+      : primary === "pass_back"
+        ? passBackAction
+        : primary === "merge"
+          ? mergeAction
+          : null;
+  const secondaryInlineActions = [approveAction, passBackAction, mergeAction].filter(
+    (action) => !action.isPrimary && !action.disabled,
+  );
+  const overflowActions = [approveAction, passBackAction, mergeAction].filter(
+    (action) => !action.isPrimary && action.disabled,
+  );
+
   return (
     <TooltipProvider delay={200}>
       <div className="flex flex-wrap items-center gap-1">
         <ToolbarButton
           icon={runIcon}
           label={runLabel}
-          // Don't lift the queued state into the primary slot — it's a
-          // recovery action, not the obvious next step in the flow.
-          isPrimary={primary === "run" && !task.is_queued && !task.is_blocked}
+          // Don't lift the queued state into the primary slot — "Cancel
+          // queue" is a recovery action, not the obvious next step.
+          isPrimary={primary === "run" && !task.is_queued}
           disabled={runDisabled}
           tooltip={runTooltip}
           onClick={() => void tryStartTask(false)}
         />
-        <ToolbarButton
-          icon={<CheckCircle weight={primary === "approve" ? "fill" : "regular"} />}
-          label="Approve"
-          isPrimary={primary === "approve"}
-          disabled={approveDisabled}
-          tooltip={approveTooltip}
-          onClick={() => approve.mutate(task.id)}
-        />
-        <ToolbarButton
-          icon={<ArrowUUpLeft />}
-          label="Pass back"
-          isPrimary={primary === "pass_back"}
-          disabled={passBackDisabled}
-          tooltip={passBackTooltip}
-          onClick={() => setPassBackOpen(true)}
-        />
-        <ToolbarButton
-          icon={<XCircle />}
-          label="Reject"
-          isPrimary={false}
-          disabled={rejectDisabled}
-          tooltip={rejectTooltip}
-          variant="reject"
-          onClick={() => reject.mutate(task.id)}
-        />
-        <ToolbarButton
-          icon={<GitMerge weight={primary === "merge" ? "fill" : "regular"} />}
-          label="Merge"
-          isPrimary={primary === "merge"}
-          disabled={mergeDisabled}
-          tooltip={mergeTooltip}
-          onClick={() => setMergeOpen(true)}
-        />
+        {primaryAction && <ToolbarButton {...primaryAction} />}
+        {secondaryInlineActions.map((action) => (
+          <ToolbarButton key={action.label} {...action} />
+        ))}
         <ToolbarButton
           icon={<GitDiff />}
           label="Review diff"
@@ -402,6 +412,10 @@ export function TaskActionToolbar({
           phaseRunning={phaseRunning}
           implementerCompleted={implementerCompleted}
           worktreeActive={worktreeActive}
+          overflowActions={overflowActions}
+          rejectDisabled={rejectDisabled}
+          rejectTooltip={rejectTooltip}
+          onReject={() => reject.mutate(task.id)}
           onCancelPhase={(phaseRunId) => cancelPhaseRun.mutate(phaseRunId)}
           onRerunAuditor={() =>
             startTaskPhase.mutate({ taskId: task.id, phase: "auditor" })
@@ -502,6 +516,10 @@ function OverflowMenu({
   phaseRunning,
   implementerCompleted,
   worktreeActive,
+  overflowActions,
+  rejectDisabled,
+  rejectTooltip,
+  onReject,
   onCancelPhase,
   onRerunAuditor,
   onRunAnyway,
@@ -513,6 +531,16 @@ function OverflowMenu({
   phaseRunning: PhaseRun | undefined;
   implementerCompleted: boolean;
   worktreeActive: boolean;
+  overflowActions: Array<{
+    icon: React.ReactNode;
+    label: string;
+    disabled: boolean;
+    tooltip: string;
+    onClick: () => void;
+  }>;
+  rejectDisabled: boolean;
+  rejectTooltip: string;
+  onReject: () => void;
   onCancelPhase: (phaseRunId: string) => void;
   onRerunAuditor: () => void;
   onRunAnyway: () => void;
@@ -549,6 +577,31 @@ function OverflowMenu({
         <TooltipContent>More actions</TooltipContent>
       </Tooltip>
       <DropdownMenuContent align="start" className="min-w-[240px]">
+        {overflowActions.map((action) => (
+          <DropdownMenuItem
+            key={action.label}
+            disabled={action.disabled}
+            onClick={action.onClick}
+            title={action.tooltip}
+          >
+            {action.icon}
+            <span className="flex-1">{action.label}</span>
+          </DropdownMenuItem>
+        ))}
+        {overflowActions.length > 0 && <DropdownMenuSeparator />}
+
+        <DropdownMenuItem
+          disabled={rejectDisabled}
+          onClick={onReject}
+          title={rejectTooltip}
+          variant="destructive"
+        >
+          <XCircle />
+          <span className="flex-1">Reject</span>
+        </DropdownMenuItem>
+
+        <DropdownMenuSeparator />
+
         {/* Phase actions */}
         <DropdownMenuItem
           disabled={!phaseRunning}

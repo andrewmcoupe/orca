@@ -9,8 +9,8 @@ import { cn } from "@/lib/utils";
  * Use for: titles + subtitle metadata, markdown bodies, verdict/concern
  * cards, audit trail rows, banner messages.
  *
- * Don't use for: pipeline phase card rows, structured/tabular data,
- * full-width chrome (sidebar, breadcrumbs, status bar), or the diff panel.
+ * Don't use for: pipeline phase card rows, structured/tabular data, or
+ * full-width chrome (sidebar, breadcrumbs, status bar).
  */
 export function ContentColumn({
   className,
