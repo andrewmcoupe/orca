@@ -115,7 +115,6 @@ export function PhaseConfigPanel({ workspaceId }: { workspaceId: string }) {
               description={slot.description}
               checked={slot.checked}
               disabled={slot.required}
-              required={slot.required}
               stepIndex={idx + 1}
               onChange={slot.onChange}
             />
