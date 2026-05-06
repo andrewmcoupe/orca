@@ -1,0 +1,76 @@
+name: Bug report
+description: Report a reproducible problem in Orca.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please include enough detail for someone else to reproduce it.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: I can reproduce this on the latest release or a recent commit on main.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Orca version or commit
+      description: Use the app version, release tag, or commit SHA.
+      placeholder: "0.1.5 or abc1234"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: architecture
+    attributes:
+      label: Architecture
+      placeholder: "Apple Silicon, Intel, x64, arm64"
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Be specific and include setup, workspace state, and inputs.
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. Run ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or recordings
+      description: Attach anything that helps diagnose the issue. Remove secrets before posting.
+      render: shell
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
