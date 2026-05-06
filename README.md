@@ -15,6 +15,10 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/andrewmcoupe/orca/releases/latest"><strong>Download the latest release</strong></a>
+</p>
+
+<p align="center">
   <img src="task-screenshot.png" alt="Orca task workspace showing phase output and task context" width="920">
 </p>
 
