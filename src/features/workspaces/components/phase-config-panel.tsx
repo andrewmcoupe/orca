@@ -150,7 +150,6 @@ function PhaseToggle({
   description,
   checked,
   disabled,
-  required,
   stepIndex,
   onChange,
 }: {
@@ -159,7 +158,6 @@ function PhaseToggle({
   description: string;
   checked: boolean;
   disabled?: boolean;
-  required?: boolean;
   stepIndex: number;
   onChange?: (next: boolean) => void;
 }) {
