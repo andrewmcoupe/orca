@@ -76,88 +76,86 @@ function TaskDetailView({
   return (
     <div className="flex h-full min-h-0">
       <div className="scrollbar-styled min-w-0 flex-1 overflow-auto">
-        <div className="bg-background/95 sticky top-0 z-10 border-b px-5 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-          <ContentColumn>
-            <TaskActionToolbar
-              task={task}
-              workspaceId={workspaceId}
-              onOpenDiff={() => openDiffModal()}
-            />
-          </ContentColumn>
+        <div className="bg-card sticky top-0 z-10 border-b p-2">
+          <TaskActionToolbar
+            task={task}
+            workspaceId={workspaceId}
+            onOpenDiff={() => openDiffModal()}
+          />
         </div>
         <div className="space-y-7 px-5 py-4">
-        <header className="space-y-3">
-          <ContentColumn className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate text-[20px] font-medium font-body">
-                {task.title}
-              </h1>
-              <TaskStatusBadge status={task.status} />
-              {task.is_blocked && (
-                <BlockedByBadge count={task.depends_on.length} />
-              )}
-              {task.is_queued && (
-                <span className="inline-flex items-center gap-1 rounded-sm border border-blue-500/30 bg-blue-500/10 px-1.5 py-px text-[10px] font-medium text-blue-900 dark:text-blue-200">
-                  Queued
-                </span>
-              )}
-            </div>
-            <TaskHeaderMeta task={task} />
-          </ContentColumn>
-          {task.cancel_reason && (
-            <ContentColumn>
-              <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-[11px]">
-                <span className="font-medium">Cancelled:</span>{" "}
-                {task.cancel_reason}
-              </p>
+          <header className="space-y-3">
+            <ContentColumn className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="truncate text-[20px] font-medium font-body">
+                  {task.title}
+                </h1>
+                <TaskStatusBadge status={task.status} />
+                {task.is_blocked && (
+                  <BlockedByBadge count={task.depends_on.length} />
+                )}
+                {task.is_queued && (
+                  <span className="inline-flex items-center gap-1 rounded-sm border border-blue-500/30 bg-blue-500/10 px-1.5 py-px text-[10px] font-medium text-blue-900 dark:text-blue-200">
+                    Queued
+                  </span>
+                )}
+              </div>
+              <TaskHeaderMeta task={task} />
             </ContentColumn>
-          )}
-          <MergeAttemptInline taskId={task.id} task={task} />
-        </header>
+            {task.cancel_reason && (
+              <ContentColumn>
+                <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-[11px]">
+                  <span className="font-medium">Cancelled:</span>{" "}
+                  {task.cancel_reason}
+                </p>
+              </ContentColumn>
+            )}
+            <MergeAttemptInline taskId={task.id} task={task} />
+          </header>
 
-        {task.spec_markdown.trim() ? (
-          <section className="space-y-2">
-            <SectionLabel>Spec</SectionLabel>
-            <ContentColumn className="bg-card rounded-sm border p-1">
-              <Markdown className="text-xs">{task.spec_markdown}</Markdown>
+          {task.spec_markdown.trim() ? (
+            <section className="space-y-2">
+              <SectionLabel>Spec</SectionLabel>
+              <ContentColumn className="bg-card rounded-sm border p-1">
+                <Markdown className="text-xs">{task.spec_markdown}</Markdown>
+              </ContentColumn>
+            </section>
+          ) : null}
+
+          <ContentColumn>
+            <DependenciesSection workspaceId={workspaceId} task={task} />
+          </ContentColumn>
+
+          <AuditorVerdictSection taskId={task.id} />
+
+          <WorktreeInitSection task={task} />
+
+          <section className="space-y-2.5">
+            <SectionLabel>Pipeline</SectionLabel>
+            <PipelineCards
+              workspaceId={workspaceId}
+              taskId={task.id}
+              phaseConfig={task.current_phase_config}
+              phaseRuns={runs}
+            />
+          </section>
+
+          <section className="space-y-2.5">
+            <SectionLabel>Audit trail</SectionLabel>
+            <ContentColumn className="space-y-2.5">
+              <TaskEventList workspaceId={workspaceId} taskId={task.id} />
+              {phaseRuns.isLoading ? (
+                <p className="text-muted-foreground text-[11px]">Loading…</p>
+              ) : (
+                <PhaseRunsTrail phaseRuns={runs} />
+              )}
             </ContentColumn>
           </section>
-        ) : null}
 
-        <ContentColumn>
-          <DependenciesSection workspaceId={workspaceId} task={task} />
-        </ContentColumn>
-
-        <AuditorVerdictSection taskId={task.id} />
-
-        <WorktreeInitSection task={task} />
-
-        <section className="space-y-2.5">
-          <SectionLabel>Pipeline</SectionLabel>
-          <PipelineCards
-            workspaceId={workspaceId}
-            taskId={task.id}
-            phaseConfig={task.current_phase_config}
-            phaseRuns={runs}
-          />
-        </section>
-
-        <section className="space-y-2.5">
-          <SectionLabel>Audit trail</SectionLabel>
-          <ContentColumn className="space-y-2.5">
-            <TaskEventList workspaceId={workspaceId} taskId={task.id} />
-            {phaseRuns.isLoading ? (
-              <p className="text-muted-foreground text-[11px]">Loading…</p>
-            ) : (
-              <PhaseRunsTrail phaseRuns={runs} />
-            )}
-          </ContentColumn>
-        </section>
-
-        <section className="space-y-2.5">
-          <SectionLabel>Worktree</SectionLabel>
-          <WorktreeSection task={task} />
-        </section>
+          <section className="space-y-2.5">
+            <SectionLabel>Worktree</SectionLabel>
+            <WorktreeSection task={task} />
+          </section>
         </div>
       </div>
       <DiffPanel

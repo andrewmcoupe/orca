@@ -81,7 +81,7 @@ export function StatusBar() {
 
   return (
     <>
-      <div className="border-border bg-background flex h-[22px] flex-shrink-0 items-center gap-4 border-t px-2 font-mono text-[10px]">
+      <div className="border-border bg-card flex flex-shrink-0 items-center gap-4 border-t px-2 py-1 font-mono">
         <LatestEvent activeWorkspaceId={activeId} />
         <ProviderChips />
         <WorkspaceState
@@ -111,7 +111,7 @@ function LatestEvent({
   const latest: RecentEvent | undefined = data?.[0];
 
   return (
-    <div className="flex min-w-0 max-w-[480px] flex-1 items-center gap-2">
+    <div className="flex min-w-0 max-w-[480px] flex-1 items-center gap-2 text-xs">
       <span
         className={cn(
           "inline-block size-[6px] flex-shrink-0 rounded-full",
@@ -157,7 +157,7 @@ function ProviderChips() {
           <span
             key={p.id}
             title={`${p.display_name} — ${PROVIDER_TITLE[tone]}${p.error ? `: ${p.error}` : ""}`}
-            className="text-muted-foreground/80 inline-flex items-center gap-1.5"
+            className="text-muted-foreground/80 inline-flex items-center gap-1.5 text-xs"
           >
             <span
               className={cn(
@@ -198,7 +198,7 @@ function WorkspaceState({
   return (
     <div className="text-muted-foreground/80 ml-auto flex items-center gap-3 tabular-nums">
       {branchQ.data && (
-        <span className="inline-flex items-center gap-1">
+        <span className="inline-flex items-center gap-1 text-xs">
           <GitBranch className="size-3" aria-hidden="true" />
           <span className="max-w-[140px] truncate" title={branchQ.data}>
             {branchQ.data}
@@ -208,7 +208,7 @@ function WorkspaceState({
       {activeWorkspaceId && (
         <span
           className={cn(
-            "inline-flex items-center gap-1 font-body",
+            "inline-flex items-center gap-1 font-body text-xs font-mono",
             inFlight > 0 && "text-foreground",
           )}
         >
@@ -226,7 +226,7 @@ function WorkspaceState({
         size={"xs"}
         type="button"
         onClick={onOpenEvents}
-        className={"border-none text-[10px] font-mono"}
+        className={"border-none text-xs font-mono"}
         title="Open recent events"
       >
         events
