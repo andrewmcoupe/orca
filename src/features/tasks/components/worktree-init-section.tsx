@@ -75,7 +75,7 @@ function InitializedRow({ task }: { task: Task }) {
         ) : (
           <CaretRight className="size-3 shrink-0" />
         )}
-        <CheckCircle className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+        <CheckCircle className="size-3.5 shrink-0 text-success" />
         <span className="text-muted-foreground">Initialized</span>
         <span className="text-muted-foreground">·</span>
         <code className="truncate font-mono">{cmd}</code>

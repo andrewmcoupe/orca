@@ -45,16 +45,11 @@ export function PlanSourceIcon({
 }
 
 const STATUS_STYLES: Record<PlanStatus, string> = {
-  active:
-    "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
-  paused:
-    "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30",
-  completed:
-    "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30",
-  cancelled:
-    "bg-zinc-500/15 text-zinc-700 dark:text-zinc-300 border-zinc-500/30",
-  archived:
-    "bg-zinc-500/10 text-muted-foreground border-zinc-500/20",
+  active: "bg-success/15 text-success border-success/40",
+  paused: "bg-warning/15 text-warning border-warning/40",
+  completed: "bg-primary/10 text-primary border-primary/30",
+  cancelled: "bg-muted text-muted-foreground border-border",
+  archived: "bg-muted/60 text-muted-foreground border-border",
 };
 
 export function PlanStatusBadge({ status }: { status: PlanStatus | string }) {

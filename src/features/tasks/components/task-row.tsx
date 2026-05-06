@@ -88,9 +88,7 @@ export function TaskRow({
             <span
               className={
                 "inline-flex items-center gap-1 text-[10px] " +
-                (task.is_blocked
-                  ? "text-amber-700 dark:text-amber-400"
-                  : "text-muted-foreground")
+                (task.is_blocked ? "text-warning" : "text-muted-foreground")
               }
               title={
                 (task.is_blocked ? "Blocked by: " : "Depends on: ") +
@@ -108,7 +106,7 @@ export function TaskRow({
           )}
           {awaitingReview && (
             <span
-              className="inline-flex items-center gap-1 text-[10px] text-amber-700 dark:text-amber-400"
+              className="inline-flex items-center gap-1 text-[10px] text-warning"
               title="Auditor finished — awaiting your review"
             >
               <Eye className="size-3" />

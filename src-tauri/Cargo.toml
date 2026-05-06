@@ -1,6 +1,6 @@
 [package]
 name = "orca"
-version = "0.1.4"
+version = "0.1.5"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -37,6 +37,10 @@ sha2 = "0.10"
 # `default-fancy` skips the C-based onig regex (heavy to build) and ships the
 # bundled syntaxes/themes — no external files at runtime.
 syntect = { version = "5", default-features = false, features = ["default-fancy", "html"] }
+# `two-face` bundles a curated extended SyntaxSet on top of syntect's defaults —
+# adds TypeScript/TSX, Vue, Svelte, and many others that the upstream defaults
+# don't ship. We use it instead of `SyntaxSet::load_defaults_newlines()`.
+two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 

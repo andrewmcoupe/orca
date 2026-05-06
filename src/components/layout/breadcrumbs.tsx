@@ -5,6 +5,7 @@ import { usePlan } from "@/features/plans/hooks";
 import { useTask } from "@/features/tasks/hooks";
 import { CaretLeft, CaretRight } from "@phosphor-icons/react";
 import { Button } from "../ui/button";
+import { cn } from "@/lib/utils";
 
 type Crumb = {
   key: string;
@@ -18,7 +19,7 @@ const noDragStyle = { WebkitAppRegion: "no-drag" } as CSSProperties;
 function NavButtons() {
   const router = useRouter();
   return (
-    <div className="flex items-center gap-0.5" style={noDragStyle}>
+    <div className="flex shrink-0 items-center gap-0.5" style={noDragStyle}>
       <Button
         variant="ghost"
         size="icon"
@@ -42,9 +43,13 @@ function NavButtons() {
 }
 
 function CrumbLink({ crumb, last }: { crumb: Crumb; last: boolean }) {
+  // `block truncate` on the leaf element + `min-w-0` on the wrapping flex
+  // child is what lets the breadcrumb shrink instead of forcing the header
+  // wider than the available width — without `block`, the inline anchor has
+  // no width to truncate against in the flex context.
   if (last || !crumb.to) {
     return (
-      <span className="text-foreground truncate font-medium">
+      <span className="text-foreground block truncate font-medium">
         {crumb.label}
       </span>
     );
@@ -53,7 +58,7 @@ function CrumbLink({ crumb, last }: { crumb: Crumb; last: boolean }) {
     <Link
       to={crumb.to}
       params={crumb.params}
-      className="text-muted-foreground hover:text-foreground truncate transition-colors"
+      className="text-muted-foreground hover:text-foreground block truncate transition-colors"
     >
       {crumb.label}
     </Link>
@@ -103,19 +108,36 @@ export function WorkspaceBreadcrumbs({
   return (
     <nav
       aria-label="Breadcrumb"
-      className="text-muted-foreground flex items-center gap-1.5 font-body text-[11px]"
+      className="text-muted-foreground flex min-w-0 flex-1 items-center gap-1.5 font-body text-[11px]"
     >
       <NavButtons />
-      {crumbs.map((c, i) => (
-        <Fragment key={c.key}>
-          {i > 0 && (
-            <span className="text-muted-foreground/50" aria-hidden="true">
-              ›
+      {crumbs.map((c, i) => {
+        const last = i === crumbs.length - 1;
+        return (
+          <Fragment key={c.key}>
+            {i > 0 && (
+              <span
+                className="text-muted-foreground/50 shrink-0"
+                aria-hidden="true"
+              >
+                ›
+              </span>
+            )}
+            {/* Each crumb is its own min-w-0 flex item so they share the
+             * available width and truncate together; the leaf takes priority
+             * via `flex-1` so the most-specific label gets whatever room is
+             * left after earlier crumbs collapse. */}
+            <span
+              className={cn(
+                "min-w-0",
+                last ? "flex-1" : "max-w-[28%] shrink",
+              )}
+            >
+              <CrumbLink crumb={c} last={last} />
             </span>
-          )}
-          <CrumbLink crumb={c} last={i === crumbs.length - 1} />
-        </Fragment>
-      ))}
+          </Fragment>
+        );
+      })}
     </nav>
   );
 }

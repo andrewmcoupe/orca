@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::diff::{
-    self, AuditorConcern, DiffSource, HighlightedTaskDiff, MappedConcern, TaskDiff, TaskDiffInputs,
+    self, AuditorConcern, DiffSource, HighlightTheme, HighlightedTaskDiff, MappedConcern, TaskDiff,
+    TaskDiffInputs,
 };
 use crate::events::projections;
 use crate::ActiveWorkspaceState;
@@ -32,6 +33,9 @@ struct CacheEntry {
     /// The head commit the cached highlight was produced from. We re-derive the
     /// current head commit on every read and only reuse the cache if it matches.
     head_commit: String,
+    /// The theme the cached html was rendered for. Re-highlight on theme flip
+    /// — html is theme-specific because syntect inlines colours into spans.
+    theme: HighlightTheme,
     highlighted: HighlightedTaskDiff,
 }
 
@@ -133,6 +137,7 @@ fn produce(
     task_id: &str,
     conn: &rusqlite::Connection,
     force_refresh: bool,
+    theme: HighlightTheme,
 ) -> Result<TaskDiffWithMappings, String> {
     let task = projections::get_task(conn, task_id)
         .map_err(|e| e.to_string())?
@@ -154,19 +159,26 @@ fn produce(
         cache.invalidate(task_id);
     }
 
-    // Reuse cached highlight when the head commit hasn't moved. `Unavailable` and
-    // missing-base diffs have empty head_commit; we still cache them so we don't
-    // re-do the (cheap, but pointless) work.
+    // Reuse cached highlight when the head commit hasn't moved AND the theme is
+    // the same (syntect inlines theme-specific colours into the HTML, so a flip
+    // means the cache is no longer valid). `Unavailable` and missing-base diffs
+    // have empty head_commit; we still cache them so we don't re-do the (cheap,
+    // but pointless) work.
     let highlighted: HighlightedTaskDiff = match cache.get(task_id) {
-        Some(entry) if entry.head_commit == diff.head_commit && !entry.head_commit.is_empty() => {
+        Some(entry)
+            if entry.head_commit == diff.head_commit
+                && !entry.head_commit.is_empty()
+                && entry.theme == theme =>
+        {
             entry.highlighted
         }
         _ => {
-            let h = diff::highlight_diff(&diff);
+            let h = diff::highlight_diff(&diff, theme);
             cache.put(
                 task_id,
                 CacheEntry {
                     head_commit: diff.head_commit.clone(),
+                    theme,
                     highlighted: h.clone(),
                 },
             );
@@ -215,6 +227,7 @@ fn produce(
 #[tauri::command]
 pub fn get_task_diff(
     task_id: String,
+    theme: String,
     active: State<'_, ActiveWorkspaceState>,
     cache: State<'_, DiffCache>,
 ) -> Result<TaskDiffWithMappings, String> {
@@ -223,12 +236,20 @@ pub fn get_task_diff(
         .as_mut()
         .ok_or_else(|| "no active workspace".to_string())?;
     let workspace_path = PathBuf::from(&aw.path);
-    produce(&cache, &workspace_path, &task_id, &aw.conn, false)
+    produce(
+        &cache,
+        &workspace_path,
+        &task_id,
+        &aw.conn,
+        false,
+        HighlightTheme::from_str(&theme),
+    )
 }
 
 #[tauri::command]
 pub fn refresh_task_diff(
     task_id: String,
+    theme: String,
     active: State<'_, ActiveWorkspaceState>,
     cache: State<'_, DiffCache>,
 ) -> Result<TaskDiffWithMappings, String> {
@@ -237,7 +258,14 @@ pub fn refresh_task_diff(
         .as_mut()
         .ok_or_else(|| "no active workspace".to_string())?;
     let workspace_path = PathBuf::from(&aw.path);
-    produce(&cache, &workspace_path, &task_id, &aw.conn, true)
+    produce(
+        &cache,
+        &workspace_path,
+        &task_id,
+        &aw.conn,
+        true,
+        HighlightTheme::from_str(&theme),
+    )
 }
 
 #[tauri::command]

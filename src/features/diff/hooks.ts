@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { diffApi } from "./api";
+import { useThemeMode, type ThemeMode } from "@/lib/theme";
 import type { TaskDiffWithMappings, UnchangedFileContent } from "./types";
 
 type ProjectionUpdated = {
@@ -11,7 +12,13 @@ type ProjectionUpdated = {
 };
 
 export const diffKeys = {
-  byTask: (taskId: string) => ["task-diff", taskId] as const,
+  /**
+   * Theme is part of the cache key because the highlighted HTML is theme-specific
+   * (syntect inlines colours into spans). Flipping themes invalidates the prior
+   * highlight; the Rust cache also keys on theme so the recompute lands quickly.
+   */
+  byTask: (taskId: string, theme: ThemeMode) =>
+    ["task-diff", taskId, theme] as const,
   unchangedFile: (taskId: string, path: string) =>
     ["task-diff", taskId, "file", path] as const,
 };
@@ -23,11 +30,12 @@ export const diffKeys = {
  * invalidation. The live-update polling below adds a safety net.
  */
 export function useTaskDiff(taskId: string | undefined) {
+  const theme = useThemeMode();
   return useQuery<TaskDiffWithMappings>({
     queryKey: taskId
-      ? diffKeys.byTask(taskId)
+      ? diffKeys.byTask(taskId, theme)
       : ["task-diff", "__pending__"],
-    queryFn: () => diffApi.getTaskDiff(taskId!),
+    queryFn: () => diffApi.getTaskDiff(taskId!, theme),
     enabled: !!taskId,
     staleTime: Infinity,
   });
@@ -35,10 +43,11 @@ export function useTaskDiff(taskId: string | undefined) {
 
 export function useRefreshTaskDiff() {
   const qc = useQueryClient();
+  const theme = useThemeMode();
   return useMutation({
-    mutationFn: (taskId: string) => diffApi.refreshTaskDiff(taskId),
+    mutationFn: (taskId: string) => diffApi.refreshTaskDiff(taskId, theme),
     onSuccess: (data, taskId) => {
-      qc.setQueryData(diffKeys.byTask(taskId), data);
+      qc.setQueryData(diffKeys.byTask(taskId, theme), data);
     },
   });
 }
@@ -103,7 +112,9 @@ export function useTaskDiffLiveUpdates(
           window.clearTimeout(debouncedRef.current);
         }
         debouncedRef.current = window.setTimeout(() => {
-          qc.invalidateQueries({ queryKey: diffKeys.byTask(taskId) });
+          // Invalidate across both themes' keys with the prefix — keeps the
+          // hook agnostic about which theme(s) are mounted right now.
+          qc.invalidateQueries({ queryKey: ["task-diff", taskId] });
           debouncedRef.current = null;
         }, 500);
       },
@@ -122,7 +133,7 @@ export function useTaskDiffLiveUpdates(
   useEffect(() => {
     if (!taskId || !isLive) return;
     const id = window.setInterval(() => {
-      qc.invalidateQueries({ queryKey: diffKeys.byTask(taskId) });
+      qc.invalidateQueries({ queryKey: ["task-diff", taskId] });
     }, 3_000);
     pollRef.current = id;
     return () => {

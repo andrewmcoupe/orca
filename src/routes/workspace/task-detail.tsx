@@ -1,24 +1,33 @@
 import { useEffect, useState } from "react";
 import { createRoute, useParams } from "@tanstack/react-router";
 import { ContentColumn } from "@/components/layout/content-column";
+import {
+  DetailSidebar,
+  type DetailSidebarSection,
+} from "@/components/layout/detail-sidebar";
+import { Disclosure } from "@/components/layout/disclosure";
+import { HeaderSlot } from "@/components/layout/header-slot";
 import { Markdown } from "@/components/markdown";
 import { workspaceLayoutRoute } from "./layout";
 import { useTask } from "@/features/tasks/hooks";
 import { TaskStatusBadge } from "@/features/tasks/presentation";
-import { WorktreeSection } from "@/features/tasks/components/worktree-section";
 import { WorktreeInitSection } from "@/features/tasks/components/worktree-init-section";
 import { AuditorVerdictSection } from "@/features/tasks/components/auditor-verdict-section";
 import { TaskActionToolbar } from "@/features/tasks/components/task-action-toolbar";
+import { BlockedByBadge } from "@/features/tasks/components/dependencies-section";
+import { TaskPipelineRail } from "@/features/tasks/components/task-pipeline-rail";
 import {
-  BlockedByBadge,
-  DependenciesSection,
-} from "@/features/tasks/components/dependencies-section";
+  ArtifactsSidebarBody,
+  DependenciesSidebarBody,
+  DependenciesSidebarEditAction,
+  hasAnyArtifacts,
+} from "@/features/tasks/components/task-sidebar-sections";
 import { useLatestMergeAttempt } from "@/features/tasks/merge-hooks";
+import { useRecentEvents } from "@/features/events/hooks";
+import { useActiveWorkspace } from "@/features/workspaces/hooks";
 import { usePhaseRuns } from "@/features/phase-runs/hooks";
-import { PipelineCards } from "@/features/phase-runs/components/pipeline-cards";
-import { PhaseRunsTrail } from "@/features/phase-runs/components/phase-runs-trail";
 import { TaskEventList } from "@/features/events/components/task-event-list";
-import { DiffPanel } from "@/features/diff/components/diff-panel";
+import { PhaseRunsTrail } from "@/features/phase-runs/components/phase-runs-trail";
 import { DiffModal } from "@/features/diff/components/diff-modal";
 import { diffModalController } from "@/features/diff/modal-controller";
 import { formatRelativeTime } from "@/lib/format";
@@ -43,6 +52,16 @@ function TaskDetailPage() {
   return <TaskDetailView task={taskQ.data} workspaceId={workspaceId} />;
 }
 
+/**
+ * Task detail layout: scrolling main column on the left, fixed-width
+ * reference sidebar on the right, and the review diff available as a modal.
+ *
+ * Reading order top-to-bottom: action toolbar → title + status → auditor
+ * verdict (the thing the user came to read) → spec / audit trail as
+ * collapsible disclosures with state-aware default-expansion. Pipeline,
+ * dependencies and artifact links live in the right sidebar so they're
+ * always at-a-glance regardless of how long the verdict prose is.
+ */
 function TaskDetailView({
   task,
   workspaceId,
@@ -73,21 +92,56 @@ function TaskDetailView({
     });
   }, [task.id]);
 
+  const sidebarSections: DetailSidebarSection[] = [
+    {
+      key: "pipeline",
+      title: "Pipeline",
+      children: (
+        <TaskPipelineRail
+          workspaceId={workspaceId}
+          taskId={task.id}
+          phaseConfig={task.current_phase_config}
+          phaseRuns={runs}
+        />
+      ),
+    },
+    {
+      key: "dependencies",
+      title: "Dependencies",
+      action: <DependenciesSidebarEditAction task={task} />,
+      children: (
+        <DependenciesSidebarBody workspaceId={workspaceId} task={task} />
+      ),
+    },
+    {
+      key: "artifacts",
+      title: "Artifacts",
+      hidden: !hasAnyArtifacts(task, runs),
+      children: (
+        <ArtifactsSidebarBody
+          task={task}
+          phaseRuns={runs}
+          onOpenDiff={() => openDiffModal()}
+        />
+      ),
+    },
+  ];
+
   return (
     <div className="flex h-full min-h-0">
+      <HeaderSlot>
+        <TaskActionToolbar
+          task={task}
+          workspaceId={workspaceId}
+          onOpenDiff={() => openDiffModal()}
+        />
+      </HeaderSlot>
       <div className="scrollbar-styled min-w-0 flex-1 overflow-auto">
-        <div className="bg-card sticky top-0 z-10 border-b p-2">
-          <TaskActionToolbar
-            task={task}
-            workspaceId={workspaceId}
-            onOpenDiff={() => openDiffModal()}
-          />
-        </div>
-        <div className="space-y-7 px-5 py-4">
-          <header className="space-y-3">
-            <ContentColumn className="min-w-0">
+        <div className="space-y-6 px-6 pt-4 pb-8">
+          <ContentColumn className="min-w-0 space-y-3">
+            <header className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="truncate text-[20px] font-medium font-body">
+                <h1 className="truncate text-[22px] font-medium tracking-tight font-body">
                   {task.title}
                 </h1>
                 <TaskStatusBadge status={task.status} />
@@ -101,71 +155,35 @@ function TaskDetailView({
                 )}
               </div>
               <TaskHeaderMeta task={task} />
-            </ContentColumn>
+            </header>
             {task.cancel_reason && (
-              <ContentColumn>
-                <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-[11px]">
-                  <span className="font-medium">Cancelled:</span>{" "}
-                  {task.cancel_reason}
-                </p>
-              </ContentColumn>
+              <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-[11px]">
+                <span className="font-medium">Cancelled:</span>{" "}
+                {task.cancel_reason}
+              </p>
             )}
             <MergeAttemptInline taskId={task.id} task={task} />
-          </header>
-
-          {task.spec_markdown.trim() ? (
-            <section className="space-y-2">
-              <SectionLabel>Spec</SectionLabel>
-              <ContentColumn className="bg-card rounded-sm border p-1">
-                <Markdown className="text-xs">{task.spec_markdown}</Markdown>
-              </ContentColumn>
-            </section>
-          ) : null}
-
-          <ContentColumn>
-            <DependenciesSection workspaceId={workspaceId} task={task} />
           </ContentColumn>
 
-          <AuditorVerdictSection taskId={task.id} />
+          <ContentColumn>
+            <AuditorVerdictPromoted taskId={task.id} />
+          </ContentColumn>
 
-          <WorktreeInitSection task={task} />
+          <ContentColumn>
+            <WorktreeInitSection task={task} />
+          </ContentColumn>
 
-          <section className="space-y-2.5">
-            <SectionLabel>Pipeline</SectionLabel>
-            <PipelineCards
+          <ContentColumn className="space-y-0">
+            <SpecAndAuditDisclosures
+              task={task}
               workspaceId={workspaceId}
-              taskId={task.id}
-              phaseConfig={task.current_phase_config}
-              phaseRuns={runs}
             />
-          </section>
-
-          <section className="space-y-2.5">
-            <SectionLabel>Audit trail</SectionLabel>
-            <ContentColumn className="space-y-2.5">
-              <TaskEventList workspaceId={workspaceId} taskId={task.id} />
-              {phaseRuns.isLoading ? (
-                <p className="text-muted-foreground text-[11px]">Loading…</p>
-              ) : (
-                <PhaseRunsTrail phaseRuns={runs} />
-              )}
-            </ContentColumn>
-          </section>
-
-          <section className="space-y-2.5">
-            <SectionLabel>Worktree</SectionLabel>
-            <WorktreeSection task={task} />
-          </section>
+          </ContentColumn>
         </div>
       </div>
-      <DiffPanel
-        workspaceId={workspaceId}
-        taskId={task.id}
-        onOpenModal={() => {
-          setModalConcernIdx(undefined);
-          setModalOpen(true);
-        }}
-      />
+
+      <DetailSidebar sections={sidebarSections} />
+
       <DiffModal
         workspaceId={workspaceId}
         taskId={task.id}
@@ -177,25 +195,111 @@ function TaskDetailView({
   );
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return <h2 className="text-muted-foreground font-medium">{children}</h2>;
+/**
+ * Auditor verdict, promoted to immediately follow the title row. The
+ * underlying section component already returns null when there is no
+ * verdict yet, so this is just a thin wrapper that ensures it gets a
+ * visible heading-equivalent in the new layout (it already renders one
+ * internally — kept here as a hook for future tweaks).
+ */
+function AuditorVerdictPromoted({ taskId }: { taskId: string }) {
+  return <AuditorVerdictSection taskId={taskId} />;
 }
 
+/**
+ * Spec and audit-trail disclosures. The brief specifies state-aware default
+ * expansion:
+ *   not_started     → spec expanded, audit trail collapsed
+ *   in_progress     → spec collapsed, audit trail expanded
+ *   awaiting_review → both collapsed (verdict is what matters)
+ *   merged/cancelled → both collapsed
+ *
+ * "running" is the in-progress equivalent in this codebase's TaskStatus enum
+ * (no separate `in_progress`). "draft" maps to not_started.
+ */
+function SpecAndAuditDisclosures({
+  task,
+  workspaceId,
+}: {
+  task: Task;
+  workspaceId: string;
+}) {
+  const active = useActiveWorkspace();
+  const events = useRecentEvents(active.data?.id ?? null);
+  const phaseRuns = usePhaseRuns(workspaceId, task.id);
+  // Mirrors TaskEventList's filter — same union (task events + phase-run
+  // events) so the disclosure summary matches what the user sees inside.
+  const phaseRunIds = new Set((phaseRuns.data ?? []).map((r) => r.id));
+  const eventCount = (events.data ?? []).filter(
+    (e) =>
+      (e.aggregate_type === "task" && e.aggregate_id === task.id) ||
+      (e.aggregate_type === "phase_run" && phaseRunIds.has(e.aggregate_id)),
+  ).length;
+
+  const status = task.status;
+
+  const specDefaultOpen = status === "draft";
+  const auditTrailDefaultOpen = status === "running";
+
+  return (
+    <div className="border-border/60 border-t">
+      {task.spec_markdown.trim() ? (
+        <Disclosure
+          title="Spec"
+          summary={specDefaultOpen ? undefined : "view acceptance criteria"}
+          defaultOpen={specDefaultOpen}
+        >
+          <div className="bg-muted/20 rounded-sm border p-3">
+            <Markdown className="text-xs">{task.spec_markdown}</Markdown>
+          </div>
+        </Disclosure>
+      ) : null}
+      <Disclosure
+        title="Audit trail"
+        summary={
+          eventCount > 0
+            ? `${eventCount} event${eventCount === 1 ? "" : "s"}`
+            : "no events yet"
+        }
+        defaultOpen={auditTrailDefaultOpen}
+      >
+        <div className="space-y-2.5">
+          <TaskEventList workspaceId={workspaceId} taskId={task.id} />
+          {phaseRuns.isLoading ? (
+            <p className="text-muted-foreground text-[11px]">Loading…</p>
+          ) : (
+            <PhaseRunsTrail phaseRuns={phaseRuns.data ?? []} />
+          )}
+        </div>
+      </Disclosure>
+    </div>
+  );
+}
+
+/**
+ * Best-effort count of "acceptance criteria" from the spec markdown.
+ * Looks for a `## Acceptance criteria` (or similar) heading and counts
+ * the immediate list items beneath it. Falls back to total list-item
+ * count when the heading isn't present, since some specs lay out
+ * criteria as a top-level checklist. The displayed count is summary
+ * meta and doesn't need to be exact — the brief calls it out as
+ * "{N} acceptance criteria" purely so the user can tell at a glance
+ * whether the spec is small or substantial.
+ */
 function TaskHeaderMeta({ task }: { task: Task }) {
   if (task.status === "merged" && task.merged_commit_sha) {
-    // Mixed register: prose ("Merged into … as … · 13h ago") in sans, the
-    // branch name and SHA in mono since they're code.
     return (
-      <p className="text-muted-foreground mt-1 text-[11px] tabular-nums">
+      <p className="text-muted-foreground text-[12px] tabular-nums">
         Merged into{" "}
         <code className="font-mono">{task.merge_target_branch ?? "main"}</code>{" "}
         as <CopyableSha sha={task.merged_commit_sha} />
         {task.merged_at != null && <> · {formatRelativeTime(task.merged_at)}</>}
+        {task.worktree_status === "removed" && <> · worktree removed</>}
       </p>
     );
   }
   return (
-    <p className="text-muted-foreground text-[11px] tabular-nums">
+    <p className="text-muted-foreground text-[12px] tabular-nums">
       Updated {formatRelativeTime(task.updated_at)}
     </p>
   );
@@ -223,17 +327,10 @@ function CopyableSha({ sha }: { sha: string }) {
   );
 }
 
-/**
- * Surface the most recent failed merge attempt (if any) inline in the header so the
- * user remembers there's a conflict blocking the merge. We hide it once the task is
- * actually merged — the merge succeeded, the past attempt is no longer actionable.
- */
 function MergeAttemptInline({ taskId, task }: { taskId: string; task: Task }) {
   const attempt = useLatestMergeAttempt(taskId);
   if (task.status === "merged") return null;
   if (!attempt.data) return null;
-  // Suppress if the attempt is older than the most recent task update — heuristic
-  // for "the user has done something since" (resolved, restarted pipeline, etc).
   if (attempt.data.attempted_at < task.updated_at) return null;
 
   const a = attempt.data;
@@ -241,17 +338,15 @@ function MergeAttemptInline({ taskId, task }: { taskId: string; task: Task }) {
   const more =
     a.conflicts.length > 3 ? `, +${a.conflicts.length - 3} more` : "";
   return (
-    <ContentColumn>
-      <p className="border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200 border px-3 py-2 text-xs">
-        Last merge attempt blocked by conflicts{" "}
-        {formatRelativeTime(a.attempted_at)}. {a.conflicts.length} file
-        {a.conflicts.length === 1 ? "" : "s"}:{" "}
-        <code className="bg-amber-500/15 rounded-sm px-1 py-0.5 font-mono text-[0.9em]">
-          {truncated}
-          {more}
-        </code>
-      </p>
-    </ContentColumn>
+    <p className="border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200 border px-3 py-2 text-xs">
+      Last merge attempt blocked by conflicts{" "}
+      {formatRelativeTime(a.attempted_at)}. {a.conflicts.length} file
+      {a.conflicts.length === 1 ? "" : "s"}:{" "}
+      <code className="bg-amber-500/15 rounded-sm px-1 py-0.5 font-mono text-[0.9em]">
+        {truncated}
+        {more}
+      </code>
+    </p>
   );
 }
 
