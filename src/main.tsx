@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { router } from "./router";
+import { checkForUpdatesOnStartup } from "./auto-update";
 import "./App.css";
 
 const queryClient = new QueryClient({
@@ -21,3 +22,10 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     </QueryClientProvider>
   </React.StrictMode>,
 );
+
+// Fire-and-forget after the UI mounts. A short delay keeps the network call
+// off the hot path so the window paints first and the prompt (if any) feels
+// like an opt-in rather than a startup blocker.
+window.setTimeout(() => {
+  void checkForUpdatesOnStartup();
+}, 2000);
