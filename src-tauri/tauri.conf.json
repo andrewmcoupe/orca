@@ -27,12 +27,26 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/andrewmcoupe/orca/releases/latest/download/latest.json"
+      ],
+      "pubkey": "ZFc1MGNuVnpkR1ZrSUdOdmJXMWxiblE2SUcxcGJtbHphV2R1SUhCMVlteHBZeUJyWlhrNklERTROVEU0TlVFMFJUQkZSakpET0VFS1VsZFRTMHhQTDJkd1NWWlNSMUJWYkZwU2JtRXpXR1pQU21Sc1JUQkdjWGhLVDBONWVsWjVVMUIzVTJKbGEwMVBOV2syUjFwYVFYb0s=",
+      "dialog": true
+    }
   }
 }
