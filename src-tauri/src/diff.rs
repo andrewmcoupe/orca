@@ -736,7 +736,6 @@ impl HighlightTheme {
             _ => Self::Dark,
         }
     }
-
 }
 
 struct SyntectAssets {
@@ -756,18 +755,14 @@ fn assets() -> &'static SyntectAssets {
         // zinc-tinted dark palette. `InspiredGitHub` is the corresponding light
         // theme — calibrated for white backgrounds.
         let pick = |name: &str| {
-            themes
-                .themes
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| {
-                    themes
-                        .themes
-                        .values()
-                        .next()
-                        .cloned()
-                        .expect("at least one theme")
-                })
+            themes.themes.get(name).cloned().unwrap_or_else(|| {
+                themes
+                    .themes
+                    .values()
+                    .next()
+                    .cloned()
+                    .expect("at least one theme")
+            })
         };
         SyntectAssets {
             syntaxes,
@@ -781,11 +776,7 @@ fn assets() -> &'static SyntectAssets {
 /// state of the highlighter carries across lines, so multi-line tokens (block
 /// strings, doc comments, etc.) render correctly. Returns an empty `Vec` for
 /// empty input.
-fn highlight_lines(
-    content: &str,
-    language: Option<&str>,
-    theme: HighlightTheme,
-) -> Vec<String> {
+fn highlight_lines(content: &str, language: Option<&str>, theme: HighlightTheme) -> Vec<String> {
     if content.is_empty() {
         return Vec::new();
     }
