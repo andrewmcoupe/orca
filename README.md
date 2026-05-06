@@ -2,6 +2,14 @@
 
 A Tauri + React + TypeScript desktop app.
 
+## Community
+
+- [Contributing guide](CONTRIBUTING.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Security policy](SECURITY.md)
+- [Support guide](SUPPORT.md)
+- [MIT license](LICENSE)
+
 ## Development setup
 
 ### 1. Rust toolchain
