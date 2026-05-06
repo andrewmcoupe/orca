@@ -12,6 +12,7 @@ import type { ProviderStatus } from "@/features/providers/types";
 import type { RecentEvent } from "@/features/events/types";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
+import { OrbitDot } from "../ui/mini-loaders";
 
 type EventTone = "success" | "running" | "failure" | "neutral";
 
@@ -213,10 +214,9 @@ function WorkspaceState({
           )}
         >
           {inFlight > 0 && (
-            <span
-              className="bg-emerald-500 inline-block size-1.5 animate-pulse rounded-full"
-              aria-hidden="true"
-            />
+            <span className="text-emerald-500 inline-flex" aria-hidden="true">
+              <OrbitDot />
+            </span>
           )}
           {inFlight} in flight
         </span>
@@ -226,7 +226,7 @@ function WorkspaceState({
         size={"xs"}
         type="button"
         onClick={onOpenEvents}
-        className={"border-none text-xs font-mono"}
+        className={"border-none text-xs font-mono px-0"}
         title="Open recent events"
       >
         events

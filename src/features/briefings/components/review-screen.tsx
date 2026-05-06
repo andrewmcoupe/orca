@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
+import { Markdown } from "@/components/markdown";
 import {
   useAcceptBriefing,
   useApplyBriefingEdits,
@@ -98,7 +99,8 @@ export function BriefingReviewScreen({
     edits.task_edits.length > 0 ||
     edits.task_additions.length > 0 ||
     edits.task_removals.length > 0 ||
-    edits.assumption_pushbacks.length > 0;
+    edits.assumption_pushbacks.length > 0 ||
+    !!edits.general_notes?.trim();
 
   const applyEdits = useApplyBriefingEdits();
   const refine = useRefineBriefing();
@@ -243,17 +245,25 @@ export function BriefingReviewScreen({
     }));
   };
 
+  const setGeneralNotes = (text: string) => {
+    setEdits((p) => ({ ...p, general_notes: text.length === 0 ? null : text }));
+  };
+
   const setPushback = (assumptionId: string, text: string) => {
     setEdits((p) => {
       const others = p.assumption_pushbacks.filter(
         (pb) => pb.assumption_id !== assumptionId,
       );
+      // Don't trim while typing — that would strip the space the user just
+      // pressed and the controlled textarea would refuse to advance the caret.
+      // Treat whitespace-only as "no pushback" so the row stays clean, but
+      // preserve internal/trailing whitespace until persistence.
       if (!text.trim()) return { ...p, assumption_pushbacks: others };
       return {
         ...p,
         assumption_pushbacks: [
           ...others,
-          { assumption_id: assumptionId, pushback: text.trim() },
+          { assumption_id: assumptionId, pushback: text },
         ],
       };
     });
@@ -263,7 +273,17 @@ export function BriefingReviewScreen({
 
   const persistEditsIfAny = async () => {
     if (!hasEdits) return;
-    await applyEdits.mutateAsync({ briefingId: briefing.id, edits });
+    // Trim pushback text only at the persistence boundary — keeping it loose
+    // during typing lets the user enter spaces normally.
+    const trimmedNotes = edits.general_notes?.trim() ?? "";
+    const sanitised = {
+      ...edits,
+      assumption_pushbacks: edits.assumption_pushbacks
+        .map((p) => ({ ...p, pushback: p.pushback.trim() }))
+        .filter((p) => p.pushback.length > 0),
+      general_notes: trimmedNotes.length > 0 ? trimmedNotes : null,
+    };
+    await applyEdits.mutateAsync({ briefingId: briefing.id, edits: sanitised });
   };
 
   const handleRefine = async () => {
@@ -393,6 +413,19 @@ export function BriefingReviewScreen({
             + Add task
           </Button>
         </div>
+      </Section>
+
+      <Section
+        label="Additional notes"
+        hint="Anything else the model should consider on the next refinement — context, scope changes, or feedback that doesn't map to a specific task or assumption above."
+      >
+        <Textarea
+          value={edits.general_notes ?? ""}
+          onChange={(e) => setGeneralNotes(e.target.value)}
+          rows={4}
+          placeholder="Optional. e.g. 'We use Drizzle, not Prisma' or 'Drop everything related to auth — out of scope for this milestone.'"
+          className="text-sm leading-relaxed"
+        />
       </Section>
 
       {errorMsg && (
@@ -572,6 +605,63 @@ function AssumptionRow({
   );
 }
 
+/**
+ * Acceptance criteria field that defaults to rendered markdown (so reviewers
+ * can skim without parsing source) and swaps to a textarea on click. Exits
+ * edit mode on blur — the parent already persists every keystroke through
+ * `onChange`, so blur is purely a UI affordance.
+ */
+function SpecField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const isEmpty = value.trim().length === 0;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <Label className="text-muted-foreground text-xs uppercase tracking-wide">
+          Acceptance criteria
+        </Label>
+        {!editing && !isEmpty && (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="text-muted-foreground hover:text-foreground text-[11px] underline-offset-2 hover:underline"
+          >
+            Edit
+          </button>
+        )}
+      </div>
+      {editing || isEmpty ? (
+        <Textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={() => {
+            if (!isEmpty) setEditing(false);
+          }}
+          rows={Math.max(3, value.split("\n").length)}
+          className="font-mono text-sm leading-relaxed"
+          placeholder="Numbered list of acceptance criteria…"
+          autoFocus={editing}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          title="Click to edit"
+          className="hover:bg-muted/30 block w-full rounded-sm border border-transparent px-2 py-1.5 text-left transition-colors hover:border-border"
+        >
+          <Markdown className="text-sm">{value}</Markdown>
+        </button>
+      )}
+    </div>
+  );
+}
+
 function TaskCard({
   task,
   validations,
@@ -608,18 +698,12 @@ function TaskCard({
         </Button>
       </div>
 
-      <div className="space-y-1.5">
-        <Label className="text-muted-foreground text-xs uppercase tracking-wide">
-          Acceptance criteria
-        </Label>
-        <Textarea
-          value={task.spec_markdown}
-          onChange={(e) => onSpecChange(e.target.value)}
-          rows={Math.max(3, task.spec_markdown.split("\n").length)}
-          className="font-mono text-sm leading-relaxed"
-          placeholder="Numbered list of acceptance criteria…"
-        />
-      </div>
+      <SpecField
+        value={task.spec_markdown}
+        onChange={onSpecChange}
+      />
+
+
 
       <div className="space-y-1.5">
         <Label className="text-muted-foreground text-xs uppercase tracking-wide">

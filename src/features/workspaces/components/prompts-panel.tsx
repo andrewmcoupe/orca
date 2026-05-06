@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import {
   usePrompt,
   useResetPrompt,
@@ -32,10 +37,38 @@ export function PromptsPanel({ workspaceId }: { workspaceId: string }) {
           with <code className="font-mono">{"{{#if name}}…{{/if}}"}</code>.
         </p>
       </div>
-      {PHASES.map((phase) => (
-        <PromptEditor key={phase} workspaceId={workspaceId} phase={phase} />
-      ))}
+      <Accordion>
+        {PHASES.map((phase) => (
+          <AccordionItem key={phase} value={phase} className="border-none">
+            <AccordionTrigger className="text-sm border-none">
+              <PromptHeader workspaceId={workspaceId} phase={phase} />
+            </AccordionTrigger>
+            <AccordionContent>
+              <PromptEditor workspaceId={workspaceId} phase={phase} />
+            </AccordionContent>
+          </AccordionItem>
+        ))}
+      </Accordion>
     </div>
+  );
+}
+
+function PromptHeader({
+  workspaceId,
+  phase,
+}: {
+  workspaceId: string;
+  phase: PhaseType;
+}) {
+  const promptQ = usePrompt(workspaceId, phase);
+  const isCustomised = promptQ.data?.is_customised;
+  return (
+    <span className="flex items-center gap-2">
+      <span className="font-mono">{phase}</span>
+      <span className="text-muted-foreground text-[11px] font-normal">
+        {promptQ.data ? (isCustomised ? "customised" : "bundled default") : "…"}
+      </span>
+    </span>
   );
 }
 
@@ -57,24 +90,13 @@ function PromptEditor({
   }, [promptQ.data, touched]);
 
   if (promptQ.isLoading || !promptQ.data) {
-    return (
-      <div className="space-y-2">
-        <Label className="font-mono text-sm">{phase}</Label>
-        <p className="text-muted-foreground text-xs">Loading…</p>
-      </div>
-    );
+    return <p className="text-muted-foreground text-xs">Loading…</p>;
   }
 
   const dirty = draft !== promptQ.data.content;
 
   return (
     <div className="space-y-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <Label className="font-mono text-sm">{phase}</Label>
-        <span className="text-muted-foreground text-[11px]">
-          {promptQ.data.is_customised ? "customised" : "bundled default"}
-        </span>
-      </div>
       <p className="text-muted-foreground text-[11px]">
         Variables: <code className="font-mono">{PER_PHASE_HINT[phase]}</code>
       </p>

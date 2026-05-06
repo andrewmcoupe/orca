@@ -9,11 +9,25 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use crate::providers::Provider;
 use crate::subprocess::{self, ChildTracker};
+
+/// Tauri event name for live LLM text chunks emitted during briefing generation.
+/// Frontend subscribes per-briefing and accumulates the text in a transient
+/// buffer (no DB persistence — option-2 of the planned rollout).
+pub const BRIEFING_CHUNK_EVENT: &str = "briefing_chunk";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BriefingChunkPayload {
+    pub briefing_id: String,
+    /// Cumulative-friendly text fragment. Already provider-decoded — for
+    /// stream-json providers we emit the human-readable `TextChunk` content.
+    pub text: String,
+}
 
 const BUNDLED_BRIEFING_PROMPT: &str = include_str!("prompts/defaults/briefing.md");
 const BRIEFING_PROMPT_FILENAME: &str = "briefing.md";
@@ -101,6 +115,11 @@ pub struct BriefingEdits {
     pub task_removals: Vec<String>,
     #[serde(default)]
     pub assumption_pushbacks: Vec<AssumptionPushback>,
+    /// Freeform "anything else" feedback the user wants the model to consider
+    /// during refinement. Passed through to the prompt as a dedicated section
+    /// so the model treats it as top-level guidance rather than burying it.
+    #[serde(default)]
+    pub general_notes: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +163,9 @@ struct BriefingPromptContext<'a> {
     previous_draft: bool,
     previous_draft_json: Option<String>,
     user_feedback_json: Option<String>,
+    /// User's freeform refinement notes, surfaced as its own section in the
+    /// prompt so the model can't miss it.
+    general_notes: Option<String>,
 }
 
 fn briefing_prompt_path(workspace_path: &Path) -> PathBuf {
@@ -180,6 +202,10 @@ pub fn render_briefing_prompt(
             .map(|d| serde_json::to_string_pretty(d).unwrap_or_default()),
         user_feedback_json: user_feedback
             .map(|f| serde_json::to_string_pretty(f).unwrap_or_default()),
+        general_notes: user_feedback
+            .and_then(|f| f.general_notes.as_ref())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
     };
     hb.render_template(template, &ctx)
         .map_err(|e| BriefingError::Prompt(e.to_string()))
@@ -303,6 +329,10 @@ pub async fn run_briefing_generation(
     user_feedback: Option<&BriefingEdits>,
     tracker: Arc<ChildTracker>,
     cancel: CancellationToken,
+    // Optional live-output sink. When `Some`, each provider-decoded text chunk
+    // is forwarded as a `BRIEFING_CHUNK_EVENT` Tauri event so the UI can render
+    // it live. Tests / non-Tauri callers pass None.
+    live_output: Option<(AppHandle, String)>,
 ) -> Result<GenerationOutcome, BriefingError> {
     if !workspace_path.exists() {
         return Err(BriefingError::WorkspaceNotFound(
@@ -341,6 +371,12 @@ pub async fn run_briefing_generation(
         let started = std::time::Instant::now();
         let collected = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let collected_cb = std::sync::Arc::clone(&collected);
+        // Per-attempt line buffer: stream-json providers emit JSONL, so we
+        // hold partial lines until a `\n` arrives, then feed `parse_line`.
+        let pending_line = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let pending_line_cb = std::sync::Arc::clone(&pending_line);
+        let provider_id_owned = provider.id().to_string();
+        let live_output_cb = live_output.clone();
 
         let args_owned = invocation.args.clone();
         let args_refs: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
@@ -360,6 +396,15 @@ pub async fn run_briefing_generation(
             move |chunk| {
                 if let Ok(mut g) = collected_cb.lock() {
                     g.push_str(&chunk.text);
+                }
+                if let Some((app, briefing_id)) = &live_output_cb {
+                    forward_live_text(
+                        app,
+                        briefing_id,
+                        &provider_id_owned,
+                        &chunk.text,
+                        &pending_line_cb,
+                    );
                 }
             },
         )
@@ -398,6 +443,105 @@ pub async fn run_briefing_generation(
         last_output: output,
         last_error: error,
     })
+}
+
+/// Render a one-line, human-friendly summary of a tool-call's args. Picks the
+/// "most identifying" field for common Claude tools (file_path, pattern,
+/// command, …) and falls back to a truncated JSON dump. Kept short so the
+/// live pane reads as a sequence of "→ Read(foo.ts)"-style lines rather than
+/// a wall of structured args.
+fn summarise_tool_args(args: &serde_json::Value) -> String {
+    let obj = match args.as_object() {
+        Some(o) => o,
+        None => return truncate_inline(&args.to_string()),
+    };
+    for key in [
+        "file_path",
+        "path",
+        "pattern",
+        "query",
+        "command",
+        "url",
+        "todos",
+    ] {
+        if let Some(v) = obj.get(key).and_then(|x| x.as_str()) {
+            return truncate_inline(v);
+        }
+    }
+    // Generic object: show the first scalar value we find.
+    for (_, v) in obj {
+        if let Some(s) = v.as_str() {
+            return truncate_inline(s);
+        }
+    }
+    truncate_inline(&args.to_string())
+}
+
+fn truncate_inline(s: &str) -> String {
+    let s = s.replace('\n', " ");
+    if s.chars().count() > 80 {
+        let trimmed: String = s.chars().take(77).collect();
+        format!("{}…", trimmed)
+    } else {
+        s
+    }
+}
+
+/// Append a streaming chunk to the per-attempt line buffer, drain any complete
+/// lines through the provider's parser, and emit each resulting `TextChunk` to
+/// the UI. For providers that don't emit JSONL we fall back to forwarding the
+/// raw chunk so plain-text streams still reach the UI.
+fn forward_live_text(
+    app: &AppHandle,
+    briefing_id: &str,
+    provider_id: &str,
+    chunk_text: &str,
+    pending_line: &std::sync::Arc<std::sync::Mutex<String>>,
+) {
+    let provider = match crate::providers::get(provider_id) {
+        Some(p) => p,
+        None => return,
+    };
+    let mut emitted_any = false;
+    if let Ok(mut buf) = pending_line.lock() {
+        buf.push_str(chunk_text);
+        while let Some(nl) = buf.find('\n') {
+            let line: String = buf.drain(..=nl).collect();
+            let line_trim = line.trim_end_matches('\n');
+            for ev in provider.parse_line(line_trim) {
+                let payload_text = match ev {
+                    crate::providers::ProviderEvent::TextChunk(t) if !t.is_empty() => Some(t),
+                    crate::providers::ProviderEvent::ToolCall { name, args } => {
+                        Some(format!("\n→ {}({})\n", name, summarise_tool_args(&args)))
+                    }
+                    _ => None,
+                };
+                if let Some(t) = payload_text {
+                    let _ = app.emit(
+                        BRIEFING_CHUNK_EVENT,
+                        BriefingChunkPayload {
+                            briefing_id: briefing_id.to_string(),
+                            text: t,
+                        },
+                    );
+                    emitted_any = true;
+                }
+            }
+        }
+    }
+    // Plain-text fallback: nothing parsed and the chunk has no newlines, so
+    // forward verbatim. JSONL chunks are handled above; if a JSONL chunk arrived
+    // without a trailing newline its text gets emitted on the next chunk that
+    // closes the line.
+    if !emitted_any && !chunk_text.is_empty() && !chunk_text.contains('\n') {
+        let _ = app.emit(
+            BRIEFING_CHUNK_EVENT,
+            BriefingChunkPayload {
+                briefing_id: briefing_id.to_string(),
+                text: chunk_text.to_string(),
+            },
+        );
+    }
 }
 
 /// Best-effort: feed each line through `provider.parse_line` and collect the text chunks.

@@ -4,7 +4,7 @@ import {
   useParams,
   useSearch,
 } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { workspaceLayoutRoute } from "./layout";
 import { ContentColumn } from "@/components/layout/content-column";
@@ -13,6 +13,7 @@ import { BriefingSetupScreen } from "@/features/briefings/components/setup-scree
 import { BriefingReviewScreen } from "@/features/briefings/components/review-screen";
 import {
   useBriefing,
+  useBriefingLiveOutput,
   useCancelBriefing,
   useCancelBriefingGeneration,
   useGenerateBriefingDraft,
@@ -126,6 +127,13 @@ function BriefingPreDraftScreen({
   const cancelGeneration = useCancelBriefingGeneration();
   const cancelBriefing = useCancelBriefing();
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const liveOutput = useBriefingLiveOutput(briefing.id, briefing.is_generating);
+  // Wipe the buffer when a fresh generation kicks off so retries start clean.
+  useEffect(() => {
+    if (briefing.is_generating) liveOutput.reset();
+    // Intentionally only on the rising edge of `is_generating`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [briefing.is_generating, briefing.updated_at]);
 
   // Live elapsed counter while the projection says we're generating. Only
   // mounts a clock when actually generating; resets on every fresh start.
@@ -212,14 +220,19 @@ function BriefingPreDraftScreen({
       </div>
 
       {briefing.is_generating && (
-        <div className="border-border bg-muted/30 flex items-center gap-3 rounded-md border p-3">
-          <span className="border-foreground/20 border-t-foreground inline-block h-3 w-3 animate-spin rounded-full border-2" />
-          <div className="flex-1">
-            <p className="text-sm font-medium">Reading your codebase…</p>
-            <p className="text-muted-foreground text-xs">
-              {elapsed}s elapsed. This typically takes 30–90 seconds.
-            </p>
+        <div className="border-border bg-muted/30 space-y-2 rounded-md border p-3">
+          <div className="flex items-center gap-3">
+            <span className="border-foreground/20 border-t-foreground inline-block h-3 w-3 animate-spin rounded-full border-2" />
+            <div className="flex-1">
+              <p className="text-sm font-medium">Reading your codebase…</p>
+              <p className="text-muted-foreground text-xs">
+                {elapsed}s elapsed. This typically takes 30–90 seconds.
+              </p>
+            </div>
           </div>
+          {liveOutput.text && (
+            <LiveOutputPane text={liveOutput.text} />
+          )}
         </div>
       )}
 
@@ -272,6 +285,28 @@ function BriefingPreDraftScreen({
         )}
       </div>
     </ContentColumn>
+  );
+}
+
+/**
+ * Scrollable, terminal-styled view of the model's live output. Auto-pins to
+ * the bottom as text streams in. Shrunk and dialled back so it informs
+ * without dominating the page during the wait.
+ */
+function LiveOutputPane({ text }: { text: string }) {
+  const ref = useRef<HTMLPreElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [text]);
+  return (
+    <pre
+      ref={ref}
+      className="bg-background text-muted-foreground max-h-48 overflow-auto rounded-sm border p-2 font-mono text-[11px] leading-snug whitespace-pre-wrap"
+    >
+      {text}
+    </pre>
   );
 }
 

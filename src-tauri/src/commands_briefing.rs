@@ -447,6 +447,7 @@ async fn execute_generation_task(
         inputs.user_feedback.as_ref(),
         tracker,
         cancel.clone(),
+        Some((app.clone(), briefing_id.clone())),
     )
     .await;
 
