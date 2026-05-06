@@ -45,8 +45,36 @@ pub struct ActiveWorkspace {
     pub conn: Connection,
 }
 
+/// macOS launches GUI apps with a minimal `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`)
+/// that doesn't include Homebrew, nvm, volta, npm globals, or `~/.local/bin` — so
+/// `which::which("claude")` fails for users who installed via any of those, even
+/// though it works fine in `tauri dev` (which inherits the terminal's PATH).
+///
+/// Fix: spawn the user's login shell once at startup, ask it for its `$PATH`,
+/// and apply that to our process env *before* provider detection runs.
+#[cfg(target_os = "macos")]
+fn inherit_login_shell_path() {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    // `-l` sources login profile (.zprofile / .bash_profile), `-i` sources
+    // interactive rc files (.zshrc / .bashrc). Both together cover the common
+    // cases where users put PATH-modifying lines.
+    let output = std::process::Command::new(&shell)
+        .args(["-l", "-i", "-c", "echo -n $PATH"])
+        .output();
+    let path = match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => return,
+    };
+    if !path.is_empty() {
+        std::env::set_var("PATH", path);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    inherit_login_shell_path();
+
     let tracker: Arc<ChildTracker> = Arc::new(ChildTracker::new());
     let tracker_for_shutdown = Arc::clone(&tracker);
     let briefings: Arc<InflightBriefings> = Arc::new(InflightBriefings::new());
