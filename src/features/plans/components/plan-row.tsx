@@ -54,7 +54,7 @@ function TaskSummary({ plan }: { plan: Plan }) {
       {running > 0 && (
         <>
           <Sep />
-          <span className="text-emerald-600 dark:text-emerald-400 tabular-nums">
+          <span className="text-success tabular-nums">
             {running} running
           </span>
         </>

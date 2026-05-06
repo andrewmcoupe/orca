@@ -25,8 +25,8 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 const SEVERITY_BAR: Record<string, string> = {
-  blocking: "bg-red-500",
-  advisory: "bg-amber-500",
+  blocking: "bg-destructive",
+  advisory: "bg-warning",
 };
 
 type Props = {
@@ -227,7 +227,7 @@ function AnchorGutter({ concern }: { concern?: ConcernOnFile }) {
           <span
             className={cn(
               "block w-1 shrink-0 cursor-help",
-              SEVERITY_BAR[sev] ?? "bg-zinc-500",
+              SEVERITY_BAR[sev] ?? "bg-muted-foreground",
             )}
             data-concern-anchor
           />
@@ -249,17 +249,19 @@ function ConcernPopover({ concern }: { concern: ConcernOnFile }) {
           className={cn(
             "rounded-sm px-1 text-[9px] font-medium uppercase tracking-[0.06em]",
             c.severity === "blocking"
-              ? "bg-red-500 text-white"
-              : "bg-amber-500 text-black",
+              ? "bg-destructive text-destructive-foreground"
+              : "bg-warning text-warning-foreground",
           )}
         >
           {c.severity}
         </span>
-        <span className="text-[10px] uppercase tracking-[0.06em] text-zinc-300">
+        <span className="text-muted-foreground text-[10px] uppercase tracking-[0.06em]">
           {c.category}
         </span>
       </div>
-      <p className="text-[11px] leading-relaxed text-zinc-100">{c.rationale}</p>
+      <p className="text-popover-foreground text-[11px] leading-relaxed">
+        {c.rationale}
+      </p>
     </div>
   );
 }

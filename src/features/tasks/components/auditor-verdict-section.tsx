@@ -5,18 +5,25 @@ import { diffModalController } from "@/features/diff/modal-controller";
 import { useLatestAuditorVerdict } from "../hooks";
 import type { AuditorConcern, AuditorVerdictKind } from "../types";
 
-const VERDICT_STYLES: Record<string, string> = {
-  approve:
-    "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
-  revise:
-    "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30",
-  reject: "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30",
+const VERDICT_BADGE_STYLES: Record<string, string> = {
+  approve: "bg-success/15 text-success border-success/40",
+  revise: "bg-warning/15 text-warning border-warning/40",
+  reject: "bg-destructive/15 text-destructive border-destructive/40",
+};
+
+// The card surface itself picks up a tinted wash via these utility classes
+// (defined in App.css). The mix is against `--background`, so the same rule
+// produces a barely-tinted pale wash in light mode and a subtle deepening
+// of the surface in dark mode.
+const VERDICT_TINT_CLASSES: Record<string, string> = {
+  approve: "verdict-tint-success",
+  revise: "verdict-tint-warning",
+  reject: "verdict-tint-destructive",
 };
 
 const SEVERITY_STYLES: Record<string, string> = {
-  blocking: "bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30",
-  advisory:
-    "bg-zinc-500/15 text-zinc-700 dark:text-zinc-300 border-zinc-500/30",
+  blocking: "bg-destructive/15 text-destructive border-destructive/40",
+  advisory: "bg-muted text-muted-foreground border-border",
 };
 
 /**
@@ -34,13 +41,18 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
   return (
     <section className="space-y-2">
       <h2 className="text-muted-foreground font-medium">Auditor verdict</h2>
-      <ContentColumn className="bg-muted/20 space-y-2.5 border p-[14px]">
+      <ContentColumn
+        className={cn(
+          "space-y-2.5 border p-[14px]",
+          VERDICT_TINT_CLASSES[kind] ?? VERDICT_TINT_CLASSES.revise,
+        )}
+      >
         <div className="flex flex-wrap items-center gap-2">
           <Badge
             variant="outline"
             className={cn(
               "h-[18px] rounded-sm border px-2 text-[10px] font-medium uppercase tracking-[0.08em]",
-              VERDICT_STYLES[kind] ?? VERDICT_STYLES.revise,
+              VERDICT_BADGE_STYLES[kind] ?? VERDICT_BADGE_STYLES.revise,
             )}
           >
             {String(v.verdict)}

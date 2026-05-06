@@ -92,7 +92,7 @@ export function DependenciesSection({
 
 export function BlockedByBadge({ count }: { count: number }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-sm border border-amber-500/30 bg-amber-500/10 px-1.5 py-px text-[10px] font-medium tabular-nums text-amber-900 dark:text-amber-200">
+    <span className="inline-flex items-center gap-1 rounded-sm border border-warning/40 bg-warning/10 px-1.5 py-px text-[10px] font-medium tabular-nums text-warning">
       <Warning weight="fill" className="size-2.5" />
       Blocked by {count}
     </span>

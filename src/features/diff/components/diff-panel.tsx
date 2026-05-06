@@ -244,7 +244,7 @@ function PanelHeader({
 function LiveDot() {
   return (
     <span
-      className="bg-emerald-500/80 ml-1 inline-block size-1.5 animate-pulse rounded-full"
+      className="bg-success ml-1 inline-block size-1.5 animate-pulse rounded-full"
       title="Live — phase running"
     />
   );

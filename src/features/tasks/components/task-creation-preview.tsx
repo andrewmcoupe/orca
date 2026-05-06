@@ -238,7 +238,7 @@ export function TaskCreationPreview({
                             ? "The auditor never accepts bypass."
                             : null}{" "}
                           {permission_mode === "bypassPermissions" && (
-                            <span className="text-amber-600 dark:text-amber-400">
+                            <span className="text-warning">
                               Bypass mode runs the agent without prompts —
                               double-check before starting.
                             </span>

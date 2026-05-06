@@ -41,8 +41,8 @@ export function CascadePreview({
             <span
               className={
                 t.has_running_phase_run
-                  ? "size-1.5 shrink-0 rounded-full bg-emerald-500"
-                  : "size-1.5 shrink-0 rounded-full bg-zinc-400"
+                  ? "size-1.5 shrink-0 rounded-full bg-success"
+                  : "size-1.5 shrink-0 rounded-full bg-muted-foreground/60"
               }
               aria-hidden
             />
@@ -54,7 +54,7 @@ export function CascadePreview({
         ))}
       </ul>
       {tasks.some((t) => t.worktree_path) && (
-        <p className="bg-amber-500/10 text-foreground rounded-md border border-amber-500/30 p-2 text-xs">
+        <p className="bg-warning/10 text-foreground rounded-md border border-warning/40 p-2 text-xs">
           Worktrees are <strong>not</strong> deleted automatically. Remove
           them manually with{" "}
           <code className="font-mono">git worktree remove &lt;path&gt;</code>{" "}

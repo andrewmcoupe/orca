@@ -460,10 +460,13 @@ function ToolbarButton({
 }) {
   // Wrap a span around disabled buttons so the tooltip still fires on hover —
   // pointer-events:none on a disabled button suppresses the trigger otherwise.
+  // Brief 4 / detail-restructure: lighter button register — outline for
+  // secondary actions, solid for the single primary. Reduces visual weight
+  // so the toolbar doesn't compete with the auditor verdict for attention.
   const button = (
     <Button
       size="sm"
-      variant={isPrimary ? "default" : "ghost"}
+      variant={isPrimary ? "default" : "outline"}
       disabled={disabled}
       onClick={onClick}
       className={cn(
@@ -471,7 +474,7 @@ function ToolbarButton({
         variant === "reject" &&
           !isPrimary &&
           !disabled &&
-          "text-muted-foreground hover:text-destructive",
+          "text-muted-foreground hover:text-destructive hover:border-destructive/40",
       )}
     >
       {icon}
@@ -533,7 +536,7 @@ function OverflowMenu({
                 render={
                   <Button
                     size="icon-sm"
-                    variant="ghost"
+                    variant="outline"
                     aria-label="More actions"
                   >
                     <DotsThree weight="bold" />

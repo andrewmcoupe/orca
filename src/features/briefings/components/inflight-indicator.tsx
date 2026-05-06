@@ -59,7 +59,7 @@ function SingleBriefingPill({
           search: { id: briefing.id },
         })
       }
-      className="text-foreground/80 hover:text-foreground hover:bg-muted/60 flex h-5 items-center gap-1.5 rounded-sm border border-emerald-500/30 bg-emerald-500/10 px-1.5 text-[11px] transition-colors"
+      className="text-foreground/80 hover:text-foreground hover:bg-muted/60 flex h-5 items-center gap-1.5 rounded-sm border border-success/40 bg-success/10 px-1.5 text-[11px] transition-colors"
       title={inflightTooltip(briefing)}
       aria-label={`Briefing generating: ${labelFor(briefing)}. Click to open.`}
     >
@@ -85,7 +85,7 @@ function MultipleBriefingsPill({
         render={
           <button
             type="button"
-            className="text-foreground/80 hover:text-foreground hover:bg-muted/60 flex h-5 items-center gap-1.5 rounded-sm border border-emerald-500/30 bg-emerald-500/10 px-1.5 text-[11px] transition-colors"
+            className="text-foreground/80 hover:text-foreground hover:bg-muted/60 flex h-5 items-center gap-1.5 rounded-sm border border-success/40 bg-success/10 px-1.5 text-[11px] transition-colors"
             aria-label={`${briefings.length} briefings generating. Click to expand.`}
           >
             <PulseDot />
@@ -161,7 +161,7 @@ function BriefingRow({
 /** Live activity indicator — blinking pixel grid. */
 function PulseDot() {
   return (
-    <span className="text-emerald-500 inline-flex">
+    <span className="text-success inline-flex">
       <PixelRain />
     </span>
   );

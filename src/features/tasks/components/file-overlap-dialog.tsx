@@ -43,9 +43,9 @@ export function FileOverlapDialog({
           {overlaps.map((o) => (
             <div
               key={o.other_task_id}
-              className="border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs"
+              className="border border-warning/40 bg-warning/10 px-3 py-2 text-xs"
             >
-              <div className="font-medium mb-1 text-amber-900 dark:text-amber-200">
+              <div className="font-medium mb-1 text-warning">
                 Task "{o.other_task_title}" is touching:
               </div>
               <ul className="space-y-0.5">

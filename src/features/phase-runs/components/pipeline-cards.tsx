@@ -35,19 +35,18 @@ import type { PhaseRun } from "../types";
 type PhaseStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 const STATUS_BADGE_STYLES: Record<Exclude<PhaseStatus, "pending">, string> = {
-  running: "text-emerald-600 dark:text-emerald-400",
-  completed: "text-blue-600 dark:text-blue-400",
-  failed: "text-red-600 dark:text-red-400",
-  cancelled: "text-zinc-500",
+  running: "text-success",
+  completed: "text-primary",
+  failed: "text-destructive",
+  cancelled: "text-muted-foreground",
 };
 
 const CARD_BORDER_STYLES: Record<PhaseStatus, string> = {
   pending: "border-dashed border-border/60 bg-transparent",
-  running:
-    "border-emerald-500/40 bg-emerald-500/5 ring-1 ring-emerald-500/20",
-  completed: "border-blue-500/30 bg-blue-500/[0.03]",
-  failed: "border-red-500/40 bg-red-500/5",
-  cancelled: "border-zinc-500/30 bg-zinc-500/[0.03]",
+  running: "border-success/40 bg-success/5 ring-1 ring-success/20",
+  completed: "border-primary/30 bg-primary/[0.03]",
+  failed: "border-destructive/40 bg-destructive/5",
+  cancelled: "border-border bg-muted/30",
 };
 
 function CustomisationDot({ tooltip }: { tooltip: string }) {
@@ -59,7 +58,7 @@ function CustomisationDot({ tooltip }: { tooltip: string }) {
             <span
               {...props}
               aria-label={tooltip}
-              className="bg-emerald-500/80 dark:bg-emerald-400/80 size-1.5 rounded-full"
+              className="bg-success size-1.5 rounded-full"
             />
           )}
         />

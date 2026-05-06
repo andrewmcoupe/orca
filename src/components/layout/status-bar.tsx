@@ -33,10 +33,10 @@ const EVENT_TONES: Array<[(t: string) => boolean, EventTone]> = [
 ];
 
 const TONE_DOT: Record<EventTone, string> = {
-  success: "bg-emerald-500",
-  running: "bg-amber-500 animate-pulse",
-  failure: "bg-red-500",
-  neutral: "bg-zinc-500",
+  success: "bg-success",
+  running: "bg-warning animate-pulse",
+  failure: "bg-destructive",
+  neutral: "bg-muted-foreground/60",
 };
 
 function eventTone(eventType: string): EventTone {
@@ -63,9 +63,9 @@ function providerTone(p: ProviderStatus): ProviderTone {
 }
 
 const PROVIDER_DOT: Record<ProviderTone, string> = {
-  healthy: "bg-emerald-500",
-  degraded: "bg-amber-500",
-  offline: "bg-red-500",
+  healthy: "bg-success",
+  degraded: "bg-warning",
+  offline: "bg-destructive",
 };
 
 const PROVIDER_TITLE: Record<ProviderTone, string> = {
@@ -116,7 +116,9 @@ function LatestEvent({
       <span
         className={cn(
           "inline-block size-[6px] flex-shrink-0 rounded-full",
-          latest ? TONE_DOT[eventTone(latest.event_type)] : "bg-zinc-600/60",
+          latest
+            ? TONE_DOT[eventTone(latest.event_type)]
+            : "bg-muted-foreground/40",
         )}
         aria-hidden="true"
       />
@@ -214,7 +216,7 @@ function WorkspaceState({
           )}
         >
           {inFlight > 0 && (
-            <span className="text-emerald-500 inline-flex" aria-hidden="true">
+            <span className="text-success inline-flex" aria-hidden="true">
               <OrbitDot />
             </span>
           )}

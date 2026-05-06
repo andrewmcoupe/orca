@@ -2,6 +2,10 @@ import { Outlet, createRoute, useParams } from "@tanstack/react-router";
 import { rootRoute } from "../root";
 import { useActivateWorkspace } from "@/features/workspaces/hooks";
 import { WorkspaceBreadcrumbs } from "@/components/layout/breadcrumbs";
+import {
+  HeaderSlotProvider,
+  HeaderSlotTarget,
+} from "@/components/layout/header-slot";
 import { BriefingsLiveUpdatesProvider } from "@/features/briefings/live-updates-provider";
 import { InflightBriefingsIndicator } from "@/features/briefings/components/inflight-indicator";
 
@@ -26,20 +30,28 @@ function WorkspaceLayout() {
           continue to invalidate caches so the in-flight indicator and the
           briefing page stay accurate. */}
       <BriefingsLiveUpdatesProvider />
-      <header className="border-border bg-background sticky top-0 z-10 flex h-7 items-center justify-between gap-2 border-b px-3">
-        <WorkspaceBreadcrumbs
-          workspaceId={workspaceId}
-          planId={all.planId}
-          taskId={all.taskId}
-        />
-        {/* Pill that shows when one or more briefings are still drafting in
-            the background. Hidden when there are none, so the header is
-            visually unchanged in the common case. */}
-        <InflightBriefingsIndicator />
-      </header>
-      <div className="scrollbar-styled min-h-0 flex-1 overflow-auto">
-        <Outlet />
-      </div>
+      <HeaderSlotProvider>
+        {/* Bumped from h-7 to h-11 so detail-view action toolbars (Run /
+            Approve / Pass back / etc.) can portal into the right side of
+            this bar without cramming text buttons into a 28px strip. */}
+        <header className="border-border bg-background sticky top-0 z-10 flex h-11 items-center justify-between gap-3 border-b px-3">
+          <WorkspaceBreadcrumbs
+            workspaceId={workspaceId}
+            planId={all.planId}
+            taskId={all.taskId}
+          />
+          <div className="flex shrink-0 items-center gap-2">
+            <HeaderSlotTarget className="flex items-center" />
+            {/* Pill that shows when one or more briefings are still drafting in
+                the background. Hidden when there are none, so the header is
+                visually unchanged in the common case. */}
+            <InflightBriefingsIndicator />
+          </div>
+        </header>
+        <div className="scrollbar-styled min-h-0 flex-1 overflow-auto">
+          <Outlet />
+        </div>
+      </HeaderSlotProvider>
     </div>
   );
 }

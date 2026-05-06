@@ -717,9 +717,32 @@ pub struct HighlightedDiffLine {
     pub html: String,
 }
 
+/// Which app theme the highlighter is rendering for. Matches the frontend's
+/// resolved theme mode (system preference, after the inline bootstrap script
+/// applies the `dark`/`light` class).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HighlightTheme {
+    Light,
+    Dark,
+}
+
+impl HighlightTheme {
+    /// Frontend sends "light" or "dark"; anything else falls back to dark
+    /// (the app's historical default — minimises blast radius if a caller is
+    /// unsure of the resolved mode).
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "light" => Self::Light,
+            _ => Self::Dark,
+        }
+    }
+
+}
+
 struct SyntectAssets {
     syntaxes: SyntaxSet,
-    theme: Theme,
+    dark_theme: Theme,
+    light_theme: Theme,
 }
 
 fn assets() -> &'static SyntectAssets {
@@ -730,20 +753,27 @@ fn assets() -> &'static SyntectAssets {
         let syntaxes = two_face::syntax::extra_newlines();
         let themes = ThemeSet::load_defaults();
         // `base16-ocean.dark` ships with syntect and reads well against the app's
-        // zinc-tinted dark palette.
-        let theme = themes
-            .themes
-            .get("base16-ocean.dark")
-            .cloned()
-            .unwrap_or_else(|| {
-                themes
-                    .themes
-                    .values()
-                    .next()
-                    .cloned()
-                    .expect("at least one theme")
-            });
-        SyntectAssets { syntaxes, theme }
+        // zinc-tinted dark palette. `InspiredGitHub` is the corresponding light
+        // theme — calibrated for white backgrounds.
+        let pick = |name: &str| {
+            themes
+                .themes
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| {
+                    themes
+                        .themes
+                        .values()
+                        .next()
+                        .cloned()
+                        .expect("at least one theme")
+                })
+        };
+        SyntectAssets {
+            syntaxes,
+            dark_theme: pick("base16-ocean.dark"),
+            light_theme: pick("InspiredGitHub"),
+        }
     })
 }
 
@@ -751,16 +781,25 @@ fn assets() -> &'static SyntectAssets {
 /// state of the highlighter carries across lines, so multi-line tokens (block
 /// strings, doc comments, etc.) render correctly. Returns an empty `Vec` for
 /// empty input.
-fn highlight_lines(content: &str, language: Option<&str>) -> Vec<String> {
+fn highlight_lines(
+    content: &str,
+    language: Option<&str>,
+    theme: HighlightTheme,
+) -> Vec<String> {
     if content.is_empty() {
         return Vec::new();
     }
-    let SyntectAssets { syntaxes, theme } = assets();
+    let assets = assets();
+    let syntect_theme = match theme {
+        HighlightTheme::Light => &assets.light_theme,
+        HighlightTheme::Dark => &assets.dark_theme,
+    };
+    let syntaxes = &assets.syntaxes;
     let syntax = language
         .and_then(|l| syntaxes.find_syntax_by_token(l))
         // `find_syntax_by_token` covers most cases; fall back to plain text.
         .unwrap_or_else(|| syntaxes.find_syntax_plain_text());
-    let mut highlighter = HighlightLines::new(syntax, theme);
+    let mut highlighter = HighlightLines::new(syntax, syntect_theme);
 
     let mut out = Vec::new();
     for line in LinesWithEndings::from(content) {
@@ -805,14 +844,14 @@ fn html_escape(s: &str) -> String {
 /// HTML for hunk lines is sourced from the pre-highlighted line arrays of the
 /// pre/post file content so that highlighter state is consistent (multi-line
 /// strings highlight correctly even across hunk boundaries).
-pub fn highlight_diff(diff: &TaskDiff) -> HighlightedTaskDiff {
+pub fn highlight_diff(diff: &TaskDiff, theme: HighlightTheme) -> HighlightedTaskDiff {
     let mut files = Vec::with_capacity(diff.files.len());
     let mut total_add = 0usize;
     let mut total_del = 0usize;
     for f in &diff.files {
         total_add += f.additions;
         total_del += f.deletions;
-        files.push(highlight_file(f));
+        files.push(highlight_file(f, theme));
     }
     HighlightedTaskDiff {
         task_id: diff.task_id.clone(),
@@ -826,18 +865,22 @@ pub fn highlight_diff(diff: &TaskDiff) -> HighlightedTaskDiff {
     }
 }
 
-fn highlight_file(f: &DiffFile) -> HighlightedDiffFile {
+fn highlight_file(f: &DiffFile, theme: HighlightTheme) -> HighlightedDiffFile {
     let lang = f.language.as_deref();
 
     let new_lines_html = if f.is_binary {
         None
     } else {
-        f.new_content.as_deref().map(|c| highlight_lines(c, lang))
+        f.new_content
+            .as_deref()
+            .map(|c| highlight_lines(c, lang, theme))
     };
     let old_lines_html = if f.is_binary {
         None
     } else {
-        f.old_content.as_deref().map(|c| highlight_lines(c, lang))
+        f.old_content
+            .as_deref()
+            .map(|c| highlight_lines(c, lang, theme))
     };
 
     let mut hunks = Vec::with_capacity(f.hunks.len());
@@ -1239,7 +1282,7 @@ mod tests {
     #[test]
     fn highlight_produces_html_per_diff_line() {
         let diff = build_diff_for_modified();
-        let h = highlight_diff(&diff);
+        let h = highlight_diff(&diff, HighlightTheme::Dark);
         assert_eq!(h.files.len(), 1);
         let f = &h.files[0];
         assert!(f.new_lines_html.is_some());

@@ -11,8 +11,8 @@ import { useUnchangedFileContent } from "../hooks";
 import type { MappedConcern } from "../types";
 
 const SEVERITY_BAR: Record<string, string> = {
-  blocking: "bg-red-500",
-  advisory: "bg-amber-500",
+  blocking: "bg-destructive",
+  advisory: "bg-warning",
 };
 
 type Props = {
@@ -177,7 +177,7 @@ function FileSnippets({
                   <span
                     className={cn(
                       "scrollbar-styled min-w-0 flex-1 whitespace-pre overflow-x-auto pr-2",
-                      isAnchor && "bg-amber-500/10",
+                      isAnchor && "bg-warning/10",
                     )}
                   >
                     {text || " "}

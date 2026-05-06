@@ -19,8 +19,8 @@ const viewModeKey = (workspaceId: string) =>
 const railKey = (workspaceId: string) => `diff-modal-rail:${workspaceId}`;
 
 const SEVERITY_BAR: Record<string, string> = {
-  blocking: "bg-red-500",
-  advisory: "bg-amber-500",
+  blocking: "bg-destructive",
+  advisory: "bg-warning",
 };
 
 type Props = {
@@ -427,9 +427,9 @@ function FileTree({
                   className={cn(
                     "size-1.5 shrink-0 rounded-full",
                     sev === "blocking"
-                      ? "bg-red-500"
+                      ? "bg-destructive"
                       : sev === "advisory"
-                        ? "bg-amber-500"
+                        ? "bg-warning"
                         : "bg-transparent",
                   )}
                 />
@@ -767,10 +767,10 @@ function ConcernsRail({
               className={cn(
                 "rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em]",
                 verdict.verdict === "approve"
-                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                  ? "bg-success/15 text-success"
                   : verdict.verdict === "reject"
-                    ? "bg-red-500/15 text-red-700 dark:text-red-300"
-                    : "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+                    ? "bg-destructive/15 text-destructive"
+                    : "bg-warning/15 text-warning",
               )}
             >
               {verdict.verdict}
@@ -899,9 +899,9 @@ function scrollToConcern(idx: number) {
   if (!el) return;
   el.scrollIntoView({ block: "center", behavior: "smooth" });
   // Brief pulse to draw the eye.
-  el.classList.add("ring-2", "ring-amber-500", "ring-inset");
+  el.classList.add("ring-2", "ring-warning", "ring-inset");
   window.setTimeout(() => {
-    el.classList.remove("ring-2", "ring-amber-500", "ring-inset");
+    el.classList.remove("ring-2", "ring-warning", "ring-inset");
   }, 700);
 }
 

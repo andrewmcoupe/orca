@@ -1,285 +1,239 @@
-# Brief for Claude Code: Task Dependencies and File-Overlap Warnings
+# Brief for Claude Code: Light Theme Support
 
 ## Context
 
-The app currently has no concept of task ordering. If a user has a plan with 5 tasks and runs them in parallel, they all create worktrees from the same base commit and try to merge into the same branch. Where the tasks touch overlapping files, this produces merge conflicts on every merge after the first. There's also no way to express "Task B logically depends on Task A's output existing" — the user has to manually run them in order.
+The app currently ships dark theme only. Dogfooding revealed the desire for a light theme — the existing dark palette is good, but there are real workflows (pairing with someone on a light setup, daytime use on a sunny screen, theme parity with the rest of the user's tools) where light reads better.
 
-This brief adds task dependencies. Tasks can declare `depends_on` references to other tasks; running a task with unmet dependencies queues it; the queued task auto-starts when its last dependency merges. This is necessary infrastructure to make parallel multi-task execution actually testable — without it, dogfooding the parallel workflow devolves into merge conflict triage.
+This brief adds full light theme support with system-preference following. No layout changes — the structure of every screen stays exactly as it is today. Only the colour palette switches based on OS theme.
 
-The brief also adds a soft file-overlap warning: when a task is about to start while another in-flight task is touching overlapping files, surface a warning so the user can choose to proceed or wait. This catches a class of conflicts that explicit dependencies miss (the implementer touched a file outside the declared `relevant_files`).
+The layout restructure (moving pipeline to a right sidebar, etc.) is a separate brief. This one is theme-only so theme issues don't compound with layout regressions.
 
 **Prerequisites already in place:**
 
-- Task aggregate with the existing event lifecycle (`TaskCreated`, `TaskMerged`, etc.)
-- `relevant_files` on `TaskCreated` from briefing-generated tasks
-- Pipeline orchestrator with `on_phase_completed` hook
-- Plan auto-completion logic (when last task is terminal, `PlanCompleted` fires)
-- Briefing aggregate producing structured drafts with tasks
-- Action toolbar on the task detail view with state-aware Run button
-- TanStack Query with `projection_updated` invalidation
-
-Read `docs/events.md` first.
+- Tailwind v4 with CSS variables for theming (set up at the start of the project)
+- shadcn/ui components using CSS-variable-based styling
+- A `ThemeProvider` component that detects system preference and applies a `dark` class to `<html>`
+- All component styling already references `var(--background)`, `var(--foreground)`, etc., rather than hardcoded colours
+- The light theme palette already exists in `globals.css` (or wherever the theme tokens live) — this brief makes it actually work end-to-end and adds the missing semantic colours
 
 ## Goals
 
-1. Tasks can declare dependencies on other tasks via a `depends_on` field.
-2. The briefing model populates `depends_on` for generated drafts when it identifies dependencies between tasks.
-3. The user can manually edit a task's dependencies after creation via a UI affordance on the task detail view.
-4. Clicking Run on a task with unmet dependencies queues it; queued tasks auto-start when their last dependency merges.
-5. The pipeline orchestrator gains a queue manager that handles unblocking.
-6. A soft warning surfaces at task-start time when an in-flight task has overlapping `relevant_files`.
-7. Cyclic dependencies are detected and rejected at the moment of declaration.
+1. The app supports a light theme that follows the OS system preference automatically.
+2. The dark theme stays exactly as it is today (no regressions).
+3. The light theme palette uses the existing values defined in `:root` (neutral greyscale, no hue).
+4. New semantic colour roles (`--success`, `--warning`) are added for verdict-status colours, applied consistently across both themes.
+5. The status bar at the bottom of the app respects the theme (not stuck on dark in light mode).
 
-## Schema additions
+## Existing palette
 
-Update `docs/events.md` and the implementation.
+The light theme `:root` block already contains:
 
-### Task aggregate changes
-
-**`TaskCreated`** — gains:
-- `depends_on: string[]` — array of task IDs this task depends on. Defaults to empty.
-
-Bump `TaskCreated` to v4. No upcaster needed if you wipe dev data, or treat missing `depends_on` as `[]` on read.
-
-**`TaskDependenciesChanged`** — new event. Fired when the user edits dependencies after task creation.
-- `depends_on: string[]` — full new list. Replaces previous; not a delta.
-
-**`TaskQueued`** — new event. Fired when the user clicks Run on a task with unmet dependencies and chooses to queue.
-- `queued_at: int64` — timestamp; redundant with the event's own `created_at` but useful for the projection.
-
-**`TaskUnblocked`** — new event. Fired automatically by the queue manager when a task's last unmet dependency reaches `merged` state.
-- `unblocked_at: int64`
-- `unblocking_task_id: string` — the dep whose merging caused this task to become unblocked. Useful audit info.
-
-**`TaskUnqueued`** — new event. Fired when the user explicitly cancels a queued task's queued state (e.g. they decide they don't want to auto-start it after all).
-
-### Briefing draft schema changes
-
-**`DraftTask`** in the briefing draft — gains:
-- `depends_on: string[]` — references to other task IDs *in the same draft* (not external task IDs). Empty for tasks with no dependencies.
-
-The model populates this in the briefing system prompt (see Milestone 4 below).
-
-The briefing's accept flow translates draft task IDs to actual task IDs at plan-creation time — the `depends_on` references in the draft refer to other draft tasks; on accept, those references resolve to the new ULIDs assigned to created tasks.
-
-### Projection changes
-
-`task_projection` gains:
-- `depends_on: string[]` (JSON column)
-- `is_blocked: bool` — computed: any dep not in a `merged` state?
-- `is_queued: bool` — has the user clicked Run while blocked?
-- `unblocked_at: int64 | null`
-
-The `is_blocked` flag is recomputed when:
-- `TaskCreated` lands (initial computation based on initial deps)
-- `TaskDependenciesChanged` lands (deps changed)
-- `TaskMerged` lands for any task in the same workspace (a dep might have merged)
-
-The `is_queued` flag toggles on `TaskQueued` and `TaskUnqueued`, and clears on the task's first phase actually starting.
-
-## Cyclic dependency rejection
-
-A task cannot depend (transitively) on itself. The system rejects:
-
-- Direct cycles (Task A depends on B, B depends on A)
-- Indirect cycles (A → B → C → A)
-- Self-loops (A depends on A)
-
-Validation happens at the moment of declaration:
-
-- `create_task` rejects if the new task's `depends_on` would create a cycle (impossible at creation since the new task doesn't exist yet, but check defensively for invalid IDs).
-- `update_task_dependencies` rejects if the change would create a cycle.
-
-Implement a small graph cycle detection function: build the dependency graph from `task_projection` rows in the workspace, add the proposed edge, run a DFS to detect cycles. Reject with `AppError::CyclicDependency` and an explanatory message identifying the cycle path.
-
-## Milestones
-
-### Milestone 1: Schema and projection plumbing
-
-- Update `docs/events.md` with the new events and field changes.
-- Implement Rust event types and serde derivations.
-- Update `task_projection` schema for new columns.
-- Implement appliers:
-  - `TaskCreated` initialises `depends_on`, computes initial `is_blocked`.
-  - `TaskDependenciesChanged` updates `depends_on`, recomputes `is_blocked`.
-  - `TaskQueued` / `TaskUnqueued` toggle `is_queued`.
-  - `TaskUnblocked` updates `is_blocked = false` and `unblocked_at`.
-  - `TaskMerged` (existing applier) gains a side effect: scan `task_projection` for tasks whose `depends_on` includes this task's ID, recompute their `is_blocked` state.
-- The `TaskMerged` cross-task projection update is in the same transaction as the merge applier (cheap; same workspace db).
-
-### Milestone 2: Cycle detection
-
-Implement `validate_no_cycle(workspace_id, task_id, proposed_depends_on) -> Result<(), CyclicDependencyError>`:
-
-- Read all task projections for the workspace
-- Build a graph: nodes are task IDs, edges are dependency relationships
-- Add the proposed edges (task_id → each ID in proposed_depends_on)
-- Run DFS from task_id; if we reach task_id again, return the cycle path
-- Return Ok if no cycle
-
-Used by `create_task` and `update_task_dependencies` commands. Tests on this function are mandatory — cycle detection is the kind of logic where subtle bugs allow data corruption.
-
-### Milestone 3: Tauri commands
-
-```rust
-#[tauri::command]
-async fn update_task_dependencies(
-    task_id: String,
-    depends_on: Vec<String>,
-) -> Result<Task, AppError>;
-// Validates cycle-free, validates all referenced task IDs exist in the same plan,
-// emits TaskDependenciesChanged.
-
-#[tauri::command]
-async fn unqueue_task(task_id: String) -> Result<Task, AppError>;
-// Emits TaskUnqueued. The task is no longer queued; user clicks Run again to resume.
+```css
+--background: oklch(1 0 0);
+--foreground: oklch(0.145 0 0);
+--card: oklch(1 0 0);
+--card-foreground: oklch(0.145 0 0);
+--popover: oklch(1 0 0);
+--popover-foreground: oklch(0.145 0 0);
+--primary: oklch(0.205 0 0);
+--primary-foreground: oklch(0.985 0 0);
+--secondary: oklch(0.97 0 0);
+--secondary-foreground: oklch(0.205 0 0);
+--muted: oklch(0.97 0 0);
+--muted-foreground: oklch(0.556 0 0);
+--accent: oklch(0.97 0 0);
+--accent-foreground: oklch(0.205 0 0);
+--destructive: oklch(0.577 0.245 27.325);
+--destructive-foreground: oklch(0.985 0 0);
+--border: oklch(0.922 0 0);
+--input: oklch(0.922 0 0);
+--ring: oklch(0.708 0 0);
+--radius: 0.625rem;
+--chart-1: oklch(0.87 0 0);
+--chart-2: oklch(0.556 0 0);
+--chart-3: oklch(0.439 0 0);
+--chart-4: oklch(0.371 0 0);
+--chart-5: oklch(0.269 0 0);
+--sidebar: oklch(0.985 0 0);
+--sidebar-foreground: oklch(0.145 0 0);
+--sidebar-primary: oklch(0.205 0 0);
+--sidebar-primary-foreground: oklch(0.985 0 0);
+--sidebar-accent: oklch(0.97 0 0);
+--sidebar-accent-foreground: oklch(0.205 0 0);
+--sidebar-border: oklch(0.922 0 0);
+--sidebar-ring: oklch(0.708 0 0);
 ```
 
-The existing `start_real_phase` (or whatever your "run a phase" command is) gains pre-execution logic:
+These values are the source of truth. Don't re-derive or replace them. The dark theme variant of these variables (in the `.dark` block) is also already correct — preserve as-is.
 
-- Look up the task. If `is_blocked`:
-  - If the user explicitly invoked Run via the toolbar (the common case), emit `TaskQueued` and return early. Don't start the phase. Return a result indicating the task was queued, not started — so the UI can show appropriate feedback.
-  - If the call came from the queue manager (auto-start after unblocking), the unblocking should have already updated `is_blocked` to false; if it's still true, log a warning and don't start.
-- If not blocked, proceed as today.
+## What's missing
 
-### Milestone 4: Queue manager
+The existing palette is pure neutral. The only chromatic colour is `--destructive`. This is fine as a base palette, but the auditor verdict card needs status-aware colours that aren't in the variable set yet:
 
-Add a queue manager component to the orchestrator. It hooks into `TaskMerged` events:
+- `APPROVE` should render with a green-tinted background and green badge
+- `REVISE` should render with an amber-tinted background and amber badge
+- `REJECT` already has `--destructive` available; just needs a tinted-background variant
 
-When `TaskMerged` lands:
+Two new semantic roles need to be added to both `:root` and `.dark`:
 
-1. Find all tasks in the same workspace where:
-   - `depends_on` includes the merged task's ID
-   - `is_queued` is true
-   - All *other* dependencies are also in `merged` state (this task is now fully unblocked)
-2. For each, emit `TaskUnblocked` with the unblocking task ID, then emit a synthetic invocation that starts the task's first phase (same code path as user-clicked Run, but flagged as auto-started).
+```css
+/* :root (light) */
+--success: oklch(0.55 0.12 145);          /* sage green */
+--success-foreground: oklch(0.985 0 0);
+--warning: oklch(0.7 0.13 80);            /* amber */
+--warning-foreground: oklch(0.18 0.04 80);
 
-The queue manager runs as part of the existing event-handling flow — when `TaskMerged`'s `projection_updated` fires, the queue manager is one of the handlers that responds. Async; doesn't block the merge completion.
-
-Edge case: if multiple queued tasks unblock simultaneously (the merged task was their last common dependency), they all start. This is correct — the user queued them precisely to run as soon as possible.
-
-Cross-plan note: the queue manager only operates within the same workspace, but dependencies are theoretically cross-plan. For v1, restrict dependencies to same-plan only (validate this in `update_task_dependencies` and `create_task`). Cross-plan dependencies are a complexity multiplier; defer.
-
-### Milestone 5: Briefing-generated dependencies
-
-Update the briefing prompt to instruct the model to identify task dependencies:
-
-Add to the briefing system prompt:
-
-```
-After identifying tasks, identify dependencies between them. Task B depends on Task A if:
-- B's tests would exercise functionality that A creates
-- B modifies code that A introduces
-- B logically requires A's completion to be meaningful
-
-Express dependencies via the `depends_on` field on each task, referencing the IDs of tasks within this same draft. Tasks with no dependencies have an empty array.
-
-Be conservative: only declare dependencies that are necessary. Tasks that could plausibly run in parallel should not have dependencies just to make the order more "obvious."
+/* .dark */
+--success: oklch(0.65 0.13 145);          /* slightly brighter sage for dark backgrounds */
+--success-foreground: oklch(0.145 0 0);
+--warning: oklch(0.75 0.14 80);
+--warning-foreground: oklch(0.145 0 0);
 ```
 
-Update the briefing draft JSON schema to include `depends_on: string[]` on each task. Update the briefing draft Rust types accordingly.
+These are starting values; tune during visual verification. The exact hue and chroma may need adjustment to match the mockup's sage green and to read well against both backgrounds.
 
-On briefing accept, when translating draft task IDs to actual task ULIDs, propagate the `depends_on` references — if draft task `task-3` had `depends_on: ["task-1"]`, the created Task corresponding to `task-3` has `depends_on: [<actual_ULID_of_task-1>]`.
+## What's in scope
 
-### Milestone 6: Toolbar Run button changes
+- Verifying the existing `:root` and `.dark` blocks render correctly across every screen and component.
+- Adding `--success` and `--warning` to both theme blocks.
+- Applying status-aware colours to the verdict card, phase status indicators, dependency badges, and provider chips.
+- Ensuring the status bar themes correctly.
+- Ensuring syntax highlighting in the diff panel switches between light and dark variants.
 
-The Run button on the task detail toolbar gains nuance:
+## What's out of scope
 
-- **When task is not blocked**: Run is enabled, primary if appropriate. Same as today.
-- **When task is blocked and not yet queued**: Run is enabled, label remains "Run", tooltip says "Will queue — task is blocked by N tasks". On click, emits `TaskQueued`. The button immediately reflects the queued state.
-- **When task is queued**: Button label changes to "Cancel queue". Tooltip: "Cancel — task is waiting for N dependencies to merge." On click, emits `TaskUnqueued`. The button reverts to "Run".
-- **When task is blocked but user wants to override** (run anyway, ignore deps): the overflow menu has "Run anyway (ignore dependencies)" with a strong warning tooltip about likely conflicts. This is an escape hatch, not the recommended path.
+- Modifying the existing `:root` or `.dark` palette values
+- Adding any colours beyond `--success` and `--warning` to the semantic palette
+- Layout changes (separate brief)
+- A theme toggle button (system-preference following only for now)
+- Custom theme creation by users
+- Print stylesheet or high-contrast theme
+- Animation on theme switch (instant transitions)
 
-The "blocked by N tasks" indicator also appears on the task title area — a small badge showing the count, expandable to a list of the blocking tasks (each a link to that task's detail).
+## Verdict colour mapping
 
-### Milestone 7: Manual dependency editing UI
+The auditor verdict card uses theme-aware tinted backgrounds:
 
-On the task detail view, add a "Dependencies" section (small, near the spec). Shows:
+- `APPROVE`: tinted background derived from `--success`, badge in `--success`
+- `REVISE`: tinted background derived from `--warning`, badge in `--warning`
+- `REJECT`: tinted background derived from `--destructive`, badge in `--destructive`
 
-- Current dependencies as a list of links to those tasks (with their current status — merged, in-flight, blocked, etc.)
-- An "Edit dependencies" button → opens a popover or dialog
-- Editor: a multi-select of other tasks in the same plan, currently dependencies marked. User adds/removes, clicks Save. Calls `update_task_dependencies`.
-- Cycle detection failure surfaces inline: "This dependency would create a cycle: A → B → A. Remove one of these dependencies first."
+The tint comes via `color-mix` against `--background`:
 
-The Dependencies section is hidden when the task has no dependencies AND isn't blocked. (Don't show empty sections by default; the "Edit dependencies" button is accessible via the overflow menu instead.)
-
-When dependencies exist, the section shows them prominently. When the task is blocked, the section header includes the blocked badge.
-
-### Milestone 8: File-overlap warnings
-
-When a task is about to start (via Run, or via queue manager auto-start), check for file overlaps:
-
-```rust
-fn detect_file_overlap(
-    starting_task: &Task,
-    workspace_id: &str,
-) -> Vec<FileOverlap>;
-
-struct FileOverlap {
-    other_task_id: String,
-    other_task_title: String,
-    overlapping_files: Vec<String>,
+```css
+.verdict-approve {
+  background: color-mix(in oklch, var(--success) 12%, var(--background));
+}
+.verdict-revise {
+  background: color-mix(in oklch, var(--warning) 12%, var(--background));
+}
+.verdict-reject {
+  background: color-mix(in oklch, var(--destructive) 12%, var(--background));
 }
 ```
 
-The function:
+This produces a barely-tinted background in light mode (e.g. very light sage for approve) and a similarly subtle tint in dark mode (where the same blend yields a dark sage hue). One implementation, both themes.
 
-1. Query `task_projection` for in-flight tasks (tasks with at least one phase run started but not all phases completed) in the same workspace.
-2. For each, compute intersection of their `relevant_files` paths with the starting task's `relevant_files`.
-3. Return `FileOverlap` for each in-flight task with non-empty intersection.
+If `color-mix` produces values that don't read well in one theme, fall back to explicit `--success-bg-subtle` etc. variables defined per-theme. Try `color-mix` first; only escalate if it fails.
 
-If overlaps exist, the UI surfaces a warning dialog before the task actually starts:
+## Milestones
 
-- Title: "File overlap detected"
-- Body: "This task touches files that another in-flight task is also working on. Conflicts may arise when both tasks merge."
-- For each overlap: "Task '{other_title}' is touching {overlapping_files joined}"
-- Buttons: "Proceed anyway" (continues to start the task) and "Cancel" (don't start).
+### Milestone 1: Theme infrastructure verification
 
-**Suppression policy:** within the current session, don't show the warning twice for the same `(starting_task, other_task)` combination. If the user dismissed the warning when starting Task A while Task B was in flight, don't show it again when Task A's auto-retry hits the same overlap. Use a simple in-memory set keyed by ordered pair.
+Before changing anything visible, verify the existing infrastructure works:
 
-Persistence: don't persist suppression across app restarts. Sessions are short enough that re-prompting on restart is fine.
+1. Confirm the `ThemeProvider` correctly reads `prefers-color-scheme: dark` and applies/removes the `dark` class on `<html>`.
+2. Confirm that toggling system theme on macOS (System Settings → Appearance) reflects within the app within ~1 second without restart.
+3. Confirm there's no flash of dark theme on app start in light mode (or vice versa). The inline script in `index.html` should set the theme class before React mounts.
+4. Grep the codebase for hardcoded colours: `bg-black`, `text-white`, hex values like `#000`, `#fff`, raw `rgb()` calls. Refactor any holdouts to use CSS variables.
 
-This warning runs *after* the dependency check. If a task is blocked by dependencies, it queues; the warning doesn't fire until the queue manager actually starts it (and at that point, the dependent tasks have merged, so the in-flight tasks set is different). The warning is for "what's running right now" — it's race-time information, not plan-time.
+If any of these fail, fix as part of Milestone 1 before proceeding.
+
+### Milestone 2: Walk every screen in light mode
+
+With the existing palette already defined, switch the OS to light mode and walk every major screen:
+
+- Workspaces home
+- Plan list
+- Plan detail
+- Task detail (in various states: not started, in progress, awaiting review, merged, cancelled)
+- Briefing setup
+- Briefing review
+- Settings (workspace settings, app settings, providers)
+
+For each, verify:
+
+- Backgrounds, foregrounds, borders all render correctly
+- Cards, popovers, dialogs, tooltips render with appropriate hierarchy
+- Buttons (primary, secondary, ghost, outline) all theme correctly
+- Sidebar (workspaces accordion) uses the `--sidebar-*` variables and reads cleanly
+- Status bar at the bottom themes correctly
+- Inline code chips have appropriate subtle background contrast against prose
+
+Particular attention to:
+
+**Muted text contrast.** `--muted-foreground` at `oklch(0.556)` against `--background` at `oklch(1)` produces a contrast ratio that's borderline for WCAG AA at small text sizes. Test with a contrast checker. If muted text reads as too light, the fix is to apply a darker effective colour for body-sized muted text — but don't change the variable itself (it's the existing source of truth). Use a more contrasted variant only at the component level if needed.
+
+**Border visibility.** `--border` at `oklch(0.922)` against `oklch(1)` background is a low-contrast border. This is intentional shadcn-style "barely visible" border. Confirm it reads as intended; it should be subtle but visible.
+
+**Inline code backgrounds.** Inline code chips need a subtle background that distinguishes them from prose. Use `--secondary` or `--muted` (both `oklch(0.97)`) as the chip background. Test that mono code on this background reads well in both themes.
+
+### Milestone 3: Add success and warning variables
+
+Add `--success`, `--success-foreground`, `--warning`, `--warning-foreground` to both `:root` and `.dark` blocks, using the values above as starting points.
+
+Apply to:
+
+- Auditor verdict card backgrounds and badges
+- Phase status indicators (running spinner uses `--warning`, completed dot uses `--success`, failed uses `--destructive`)
+- Dependency status badges (MERGED uses `--success`, BLOCKED uses `--warning`, CANCELLED uses `--muted-foreground`)
+- Provider status chips in the status bar (healthy=`--success`, degraded=`--warning`, down=`--destructive`)
+- File-overlap warning dialog accents
+
+Use the `color-mix` approach for tinted backgrounds. Verify the tints read appropriately in both themes; tune the percentages (currently 12%) up or down if needed.
+
+### Milestone 4: Syntax highlighting
+
+The diff panel uses `syntect` for syntax highlighting, with one of `syntect`'s dark themes selected. For light mode, switch to a light syntect theme — `InspiredGitHub` or `Solarized (light)` from the bundled themes are reasonable starting points.
+
+Detect the active theme on the frontend, request the appropriate highlighting variant from the Rust side. The Rust diff command takes a theme parameter and picks the right syntect theme.
+
+If the current implementation pre-highlights once and caches, you'll need to either cache both light and dark highlighted versions, or invalidate and recompute on theme change. Recompute-on-theme-change is acceptable for v1 — theme changes are rare.
+
+### Milestone 5: Visual verification
+
+Walk through each major screen in both themes side-by-side. Verify:
+
+- Information hierarchy reads correctly in both themes (headings stand out, body text is comfortable, muted text is muted but legible)
+- All interactive elements have visible hover and focus states in both themes
+- All icon colours work in both themes (icons that are stroke-only inherit colour; filled icons may need explicit theme handling)
+- Loading skeletons, empty states, and error states all theme correctly
+- The diff panel renders correctly in both themes with appropriate syntax highlighting
+
+If any colour reads subtly wrong, the fix is at the component level (use a different variable, adjust the `color-mix` percentage). Don't modify the source palette values.
 
 ## Conventions
 
-- Read and update `docs/events.md` before implementing.
-- Tauri events emitted **after** transaction commit. One `projection_updated` per affected aggregate.
-- Cross-aggregate projection updates (TaskMerged updating other tasks' `is_blocked`) happen in the same transaction.
-- Auto-derived events (`TaskUnblocked` from queue manager) are emitted after the triggering event's transaction commits, not inside it.
-- TanStack Query for all reads. The task detail view's query refetches on `projection_updated` for the task or its dependencies.
-- Typed errors with `thiserror`. New variants: `AppError::CyclicDependency`, `AppError::DependencyNotFound`, `AppError::CrossPlanDependency`.
-- shadcn primitives for the UI: Dialog for the warning, Select (multi-select if available; otherwise checkbox list) for the dependency editor.
-
-## Out of scope
-
-- Cross-plan dependencies (same-plan only for v1)
-- Visual dependency graph display (could be useful but separate design problem)
-- Dependency-based task ordering in the plan list view (sort by dep order rather than insertion order) — interesting future feature
-- Auto-rebase or auto-conflict-resolution at merge time (still requires human resolution)
-- Soft warnings beyond file overlap (e.g. "you're about to run 5 tasks; that's a lot")
-- Per-task dependency overrides ("ignore this one dependency just for this run") — overflow's "Run anyway" is the only escape hatch
-- Dependency-aware briefing refinement ("the model should refine the dependency graph if I push back") — out of scope; user manually edits if needed
-- Notification when a queued task auto-starts (could be nice; defer)
+- All colour values via CSS variables. No hardcoded hex or rgb values in components.
+- shadcn components inherit theme automatically; don't override their colours unless absolutely necessary.
+- The existing `:root` and `.dark` palette values are the source of truth. Don't modify them.
+- New semantic colours (`--success`, `--warning`) are added to both blocks together; keep them in sync.
+- Use `color-mix(in oklch, ...)` for tinted backgrounds. Falls back to explicit per-theme variables only if `color-mix` produces unacceptable results.
+- Component-level contrast adjustments are fine; palette-level changes are not.
 
 ## Deliverable
 
 A working app where:
 
-1. Briefing-generated draft tasks include `depends_on` references where the model identifies dependencies.
-2. The user can manually edit a task's dependencies via the task detail view.
-3. Cyclic dependencies are detected and rejected with a clear error message.
-4. Clicking Run on a blocked task queues it; the toolbar reflects queued state; the user can cancel the queue.
-5. When a task's last dependency merges, the queue manager auto-starts it.
-6. The blocked-by indicator appears prominently on blocked tasks.
-7. A file-overlap warning surfaces when a task is about to start while another in-flight task is touching overlapping files. Dismissable; suppression within session.
-8. Cross-plan dependencies are rejected at the validation layer.
-9. `docs/events.md` reflects the new events and schema changes.
+1. Setting the OS to light mode renders the app in light theme automatically using the existing palette values.
+2. Setting the OS to dark mode renders the app in dark theme (existing behaviour preserved).
+3. Switching the OS theme while the app is open updates within ~1 second without restart.
+4. All major screens read cleanly in both themes.
+5. The new `--success` and `--warning` variables are added to both theme blocks and applied to verdict cards, status indicators, and dependency badges.
+6. Syntax highlighting in the diff panel switches between light and dark variants.
+7. No layout or structural changes — only colour application.
+8. The existing `:root` and `.dark` palette values are unmodified.
 
-Plus tests on:
-- Cycle detection (direct cycles, indirect cycles, self-loops, valid graphs).
-- Queue manager (a task with two deps; merge one, task remains queued; merge the other, task auto-starts).
-- File-overlap detection (overlap correctly identified; suppression within session works).
-- Briefing draft → task creation correctly translates `depends_on` from draft IDs to created task IDs.
+No automated tests required. Visual changes only. Verify by walking each screen in both themes.
 
-Three commits is right: schema and projection (Milestones 1-2-3), queue manager and briefing integration (Milestones 4-5), UI surfaces and warnings (Milestones 6-7-8).
+Two commits is the right shape: infrastructure verification and walkthrough (Milestones 1-2), semantic colour additions and syntax highlighting (Milestones 3-5).
