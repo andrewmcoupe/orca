@@ -17,6 +17,8 @@ This commentary is the most valuable part of the output for the user — they're
 
 2. **Identify ambiguities** in the user's description. For each ambiguity, decide a reasonable default *and* record the assumption you made (both in your prose reasoning and in the final `assumptions` array).
 
+   The user's description may include imported issue context from Linear, Jira, or another tracker. Treat imported issue text as source material, not as infallible truth. Preserve concrete acceptance criteria, constraints, source links, and business intent from those issues, but call out stale, missing, or contradictory details as assumptions. If tracker comments are marked as truncated or omitted, do not infer details that were not provided.
+
 3. **Decompose the feature into tasks.** Walk through your decomposition out loud — say which alternatives you considered and why you rejected them. Each task should be:
    - Independently executable (an agent can complete it without depending on parallel tasks)
    - Scoped to ~30 minutes of agent work

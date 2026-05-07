@@ -1,11 +1,14 @@
 import { useMemo } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Markdown } from "@/components/markdown";
+import { LinearLogo } from "@/features/integrations/linear/components/linear-logo";
 import type {
   BriefingDraft,
   BriefingEdits,
   BriefingHistoryEntry,
+  ImportedBriefingSource,
   PathValidationResult,
   RelevantFile,
 } from "../types";
@@ -69,6 +72,9 @@ function EntryBody({ entry }: { entry: BriefingHistoryEntry }) {
 
   switch (entry.event_type) {
     case "BriefingStarted":
+      const sources =
+        (payload.imported_sources as ImportedBriefingSource[] | undefined) ??
+        [];
       return (
         <div className="space-y-2 text-sm">
           <Field label="Provider">
@@ -77,6 +83,28 @@ function EntryBody({ entry }: { entry: BriefingHistoryEntry }) {
               {(payload.model as string) ?? "?"}
             </code>
           </Field>
+          {sources.length > 0 && (
+            <Field label="Imported sources">
+              <div className="flex flex-wrap gap-1.5">
+                {sources.map((source) => (
+                  <button
+                    type="button"
+                    key={`${source.provider}:${source.external_id}`}
+                    onClick={() => openUrl(source.url)}
+                    className="border-border bg-muted/40 inline-flex items-center gap-1 border px-2 py-0.5 font-mono text-[11px] text-muted-foreground hover:text-foreground"
+                    title={`Open ${source.identifier}`}
+                  >
+                    {source.provider === "linear" ? (
+                      <LinearLogo className="size-3" />
+                    ) : (
+                      <span>{source.provider}</span>
+                    )}
+                    <span>{source.identifier}</span>
+                  </button>
+                ))}
+              </div>
+            </Field>
+          )}
           <Field label="Initial description">
             <Markdown>
               {(payload.initial_description as string) ?? ""}

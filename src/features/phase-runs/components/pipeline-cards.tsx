@@ -18,6 +18,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ProviderModelLabel } from "@/features/providers/components/provider-logo";
 
 // Compact, identifier-style labels for the phase card. We intentionally don't
 // use `PERMISSION_MODE_LABEL` here — its prose form ("Plan (read-only)") is
@@ -344,9 +345,7 @@ function PhaseCardRow({
             isPending ? "text-muted-foreground/60" : "text-muted-foreground",
           )}
         >
-          <span className="truncate">
-            {provider && model ? `${provider} · ${model}` : "—"}
-          </span>
+          <ProviderModelLabel provider={provider} model={model} />
           <span className="inline-flex items-center gap-1 truncate">
             {permissionMode === "plan" && (
               <Lock className="size-3 shrink-0" aria-label="read-only" />

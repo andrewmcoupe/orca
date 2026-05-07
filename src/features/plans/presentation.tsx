@@ -8,6 +8,7 @@ import {
   type Icon,
 } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
+import { LinearLogo } from "@/features/integrations/linear/components/linear-logo";
 import type { PlanSource, PlanStatus } from "./types";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +35,9 @@ export function PlanSourceIcon({
   source: PlanSource | string;
   className?: string;
 }) {
+  if (source === "linear") {
+    return <LinearLogo className={cn("size-3.5", className)} />;
+  }
   const SourceIcon =
     (SOURCE_ICONS as Record<string, Icon>)[source] ?? Kanban;
   return (

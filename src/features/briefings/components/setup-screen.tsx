@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { X } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { ContentColumn } from "@/components/layout/content-column";
 import { Label } from "@/components/ui/label";
@@ -10,14 +12,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useProviderModels, useProviders } from "@/features/providers/hooks";
+import { LinearImportDialog } from "@/features/integrations/linear/components/linear-import-dialog";
+import { LinearLogo } from "@/features/integrations/linear/components/linear-logo";
 import {
-  useProviderModels,
-  useProviders,
-} from "@/features/providers/hooks";
-import {
-  useGenerateBriefingDraft,
-  useStartBriefing,
-} from "../hooks";
+  linearIssuesToBriefingMarkdown,
+  linearIssuesToBriefingSources,
+} from "@/features/integrations/linear/briefing-markdown";
+import type { LinearIssue } from "@/features/integrations/linear/types";
+import { useGenerateBriefingDraft, useStartBriefing } from "../hooks";
 import type { Briefing } from "../types";
 
 export function BriefingSetupScreen({
@@ -33,7 +36,8 @@ export function BriefingSetupScreen({
     [providersQuery.data],
   );
 
-  const [description, setDescription] = useState("");
+  const [manualDescription, setManualDescription] = useState("");
+  const [importedIssues, setImportedIssues] = useState<LinearIssue[]>([]);
   const [providerId, setProviderId] = useState<string>("");
   const [model, setModel] = useState<string>("");
 
@@ -60,6 +64,20 @@ export function BriefingSetupScreen({
   const generate = useGenerateBriefingDraft();
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  const importedSources = useMemo(
+    () => linearIssuesToBriefingSources(importedIssues),
+    [importedIssues],
+  );
+  const importedMarkdown = useMemo(
+    () => linearIssuesToBriefingMarkdown(importedIssues),
+    [importedIssues],
+  );
+  const finalDescription = useMemo(() => {
+    const manual = manualDescription.trim();
+    if (!importedMarkdown) return manual;
+    return manual ? `${manual}\n\n${importedMarkdown}` : importedMarkdown;
+  }, [manualDescription, importedMarkdown]);
+
   // Both mutations are fast — start commits a single event, generate spawns
   // the worker and returns immediately. We still disable the form during
   // them so a double-submit can't double-create. The 30–90s "reading your
@@ -67,7 +85,7 @@ export function BriefingSetupScreen({
   // `briefing.is_generating`), not here.
   const submitting = start.isPending || generate.isPending;
   const canSubmit =
-    description.trim().length > 10 && !!providerId && !!model && !submitting;
+    finalDescription.trim().length > 10 && !!providerId && !!model && !submitting;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,7 +93,8 @@ export function BriefingSetupScreen({
     setErrorMsg(null);
     try {
       const briefing = await start.mutateAsync({
-        initial_description: description.trim(),
+        initial_description: finalDescription.trim(),
+        imported_sources: importedSources,
         provider: providerId,
         model,
       });
@@ -87,6 +106,12 @@ export function BriefingSetupScreen({
     } catch (e) {
       setErrorMsg(String(e));
     }
+  };
+
+  const removeImportedIssue = (issue: LinearIssue) => {
+    setImportedIssues((prev) =>
+      prev.filter((item) => item.id !== issue.id),
+    );
   };
 
   return (
@@ -102,23 +127,81 @@ export function BriefingSetupScreen({
 
       <form onSubmit={submit} className="space-y-5">
         <div className="space-y-1.5">
-          <Label htmlFor="description">Feature description</Label>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Label htmlFor="description">Feature description</Label>
+            <LinearImportDialog
+              disabled={submitting}
+              onImport={(issues) => {
+                setImportedIssues((prev) => {
+                  const next = new Map(
+                    prev.map((issue) => [issue.id, issue]),
+                  );
+                  for (const issue of issues) {
+                    next.set(issue.id, issue);
+                  }
+                  return Array.from(next.values());
+                });
+              }}
+            />
+          </div>
           <Textarea
             id="description"
             autoFocus
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            value={manualDescription}
+            onChange={(e) => setManualDescription(e.target.value)}
             placeholder="Describe the feature you want to build. Be as vague or detailed as you like — the model will ask itself the right questions."
             rows={10}
             disabled={submitting}
             className="text-sm leading-relaxed"
           />
           <p className="text-muted-foreground text-xs">
-            {description.trim().length} characters
+            {finalDescription.trim().length} characters
+            {importedSources.length > 0
+              ? ` · ${importedSources.length} imported source${
+                  importedSources.length === 1 ? "" : "s"
+                } attached`
+              : ""}
           </p>
+          {importedSources.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex flex-wrap gap-1.5">
+                {importedIssues.map((issue) => (
+                <span
+                  key={issue.id}
+                  className="border-border bg-muted/40 inline-flex max-w-full items-center gap-1 border px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
+                >
+                  <button
+                    type="button"
+                    onClick={() => openUrl(issue.url)}
+                    disabled={submitting}
+                    className="hover:text-foreground inline-flex min-w-0 items-center gap-1 disabled:pointer-events-none disabled:opacity-50"
+                    aria-label={`Open ${issue.identifier} in Linear`}
+                    title={`Open ${issue.identifier} in Linear`}
+                  >
+                    <LinearLogo className="size-3" />
+                    <span>{issue.identifier}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeImportedIssue(issue)}
+                    disabled={submitting}
+                    className="hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                    aria-label={`Remove imported source ${issue.identifier}`}
+                    title={`Remove imported source ${issue.identifier}`}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </span>
+              ))}
+              </div>
+              <p className="text-muted-foreground text-[11px]">
+                Imported issue context is added to the briefing when you start it. Remove a badge to exclude that issue.
+              </p>
+            </div>
+          )}
         </div>
 
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="grid gap-4">
           <div className="space-y-1.5">
             <Label>Provider</Label>
             <Select

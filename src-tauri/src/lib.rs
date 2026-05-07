@@ -8,6 +8,7 @@ mod diff;
 mod diff_service;
 mod events;
 mod gates;
+mod integrations;
 mod merge;
 mod phases;
 mod pipeline;
@@ -170,6 +171,12 @@ pub fn run() {
             commands_briefing::list_active_briefings,
             commands_briefing::list_briefing_history,
             commands_briefing::validate_briefing_paths,
+            integrations::linear::linear_connection_status,
+            integrations::linear::linear_save_api_key,
+            integrations::linear::linear_disconnect,
+            integrations::linear::linear_test_connection,
+            integrations::linear::linear_get_issue,
+            integrations::linear::linear_search_issues,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

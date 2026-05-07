@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { CircleNotch, Eye, LinkSimple } from "@phosphor-icons/react";
 import { TaskStatusBadge } from "@/features/tasks/presentation";
 import { usePhaseRuns } from "@/features/phase-runs/hooks";
+import { ProviderLogo } from "@/features/providers/components/provider-logo";
 import { formatRelativeTime } from "@/lib/format";
 import type { Task } from "@/features/tasks/types";
 
@@ -123,7 +124,11 @@ export function TaskRow({
                 Running {PHASE_LABEL[activeRun.phase] ?? activeRun.phase}
               </span>
               <span className="text-muted-foreground/70 hidden md:inline">
-                · {activeRun.provider}
+                ·
+              </span>
+              <span className="text-muted-foreground/70 hidden items-center gap-1 md:inline-flex">
+                <ProviderLogo provider={activeRun.provider} className="size-2.5" />
+                {activeRun.provider}
               </span>
             </span>
           )}
