@@ -12,6 +12,7 @@ import { QuickTaskPreviewToggle } from "@/features/workspaces/components/quick-t
 import { GateConfigPanel } from "@/features/workspaces/components/gate-config-panel";
 import { PromptsPanel } from "@/features/workspaces/components/prompts-panel";
 import { ReliabilityPanel } from "@/features/workspaces/components/reliability-panel";
+import { PreviewServerPanel } from "@/features/workspaces/components/preview-server-panel";
 import { LinearSettingsPanel } from "@/features/integrations/linear/components/linear-settings-panel";
 import { workspaceLayoutRoute } from "./layout";
 
@@ -83,6 +84,13 @@ function WorkspaceSettingsPage() {
         description="Per-phase prompt templates for this workspace. Saved files override the bundled defaults."
       >
         <PromptsPanel workspaceId={ws.id} />
+      </SettingsSection>
+
+      <SettingsSection
+        title="Preview server"
+        description="Start a frontend dev server from a task worktree and open a route in the external browser."
+      >
+        <PreviewServerPanel workspaceId={ws.id} />
       </SettingsSection>
 
       <SettingsSection

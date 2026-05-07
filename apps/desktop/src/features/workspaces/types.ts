@@ -85,6 +85,15 @@ export type SubprocessSettings = {
   additional_env: Record<string, string>;
 };
 
+export type PreviewServerSettings = {
+  enabled: boolean;
+  command: string | null;
+  base_url: string;
+  health_path: string;
+  default_route_path: string;
+  startup_timeout_seconds: number;
+};
+
 export type WorkspaceSettings = {
   default_phase_config: PhaseConfig;
   gates: Record<string, GateConfig>;
@@ -98,6 +107,7 @@ export type WorkspaceSettings = {
   worktree_init?: WorktreeInitSettings;
   phase_timeouts?: PhaseTimeoutSettings;
   subprocess?: SubprocessSettings;
+  preview_server?: PreviewServerSettings;
 };
 
 /**
@@ -142,4 +152,13 @@ export const DEFAULT_PHASE_TIMEOUTS: PhaseTimeoutSettings = {
 
 export const DEFAULT_SUBPROCESS_SETTINGS: SubprocessSettings = {
   additional_env: {},
+};
+
+export const DEFAULT_PREVIEW_SERVER_SETTINGS: PreviewServerSettings = {
+  enabled: false,
+  command: null,
+  base_url: "http://127.0.0.1:5173",
+  health_path: "/",
+  default_route_path: "/",
+  startup_timeout_seconds: 60,
 };

@@ -3,6 +3,7 @@ import { Plus, Trash } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   useUpdateWorkspaceSettings,
   useWorkspaceSettings,
@@ -18,6 +19,10 @@ import {
 } from "../types";
 
 type EnvRow = { key: string; value: string };
+type EnvParseResult = {
+  rows: EnvRow[];
+  skipped: string[];
+};
 
 function envToRows(env: Record<string, string>): EnvRow[] {
   return Object.entries(env).map(([key, value]) => ({ key, value }));
@@ -30,6 +35,67 @@ function rowsToEnv(rows: EnvRow[]): Record<string, string> {
     out[r.key] = r.value;
   }
   return out;
+}
+
+function parseEnvBlock(text: string): EnvParseResult {
+  const rows: EnvRow[] = [];
+  const skipped: string[] = [];
+
+  text.split(/\r?\n/).forEach((rawLine, index) => {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) return;
+
+    const normalized = line.startsWith("export ")
+      ? line.slice("export ".length).trim()
+      : line;
+    const equalsIndex = normalized.indexOf("=");
+    if (equalsIndex <= 0) {
+      skipped.push(`Line ${index + 1}`);
+      return;
+    }
+
+    const key = normalized.slice(0, equalsIndex).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      skipped.push(`Line ${index + 1}`);
+      return;
+    }
+
+    rows.push({
+      key,
+      value: stripEnvQuotes(normalized.slice(equalsIndex + 1).trim()),
+    });
+  });
+
+  return { rows, skipped };
+}
+
+function stripEnvQuotes(value: string): string {
+  if (value.length < 2) return value;
+  const first = value[0];
+  const last = value[value.length - 1];
+  if ((first === `"` && last === `"`) || (first === `'` && last === `'`)) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function mergeEnvRows(existing: EnvRow[], incoming: EnvRow[]): EnvRow[] {
+  const next = [...existing];
+  const indexByKey = new Map(
+    next.map((row, index) => [row.key.trim(), index] as const),
+  );
+
+  for (const row of incoming) {
+    const existingIndex = indexByKey.get(row.key);
+    if (existingIndex == null) {
+      indexByKey.set(row.key, next.length);
+      next.push(row);
+    } else {
+      next[existingIndex] = row;
+    }
+  }
+
+  return next;
 }
 
 /**
@@ -47,6 +113,8 @@ export function ReliabilityPanel({ workspaceId }: { workspaceId: string }) {
     DEFAULT_PHASE_TIMEOUTS,
   );
   const [envRows, setEnvRows] = useState<EnvRow[]>([]);
+  const [bulkEnvText, setBulkEnvText] = useState("");
+  const [bulkEnvSkipped, setBulkEnvSkipped] = useState<string[]>([]);
 
   useEffect(() => {
     if (!settingsQ.data) return;
@@ -87,6 +155,14 @@ export function ReliabilityPanel({ workspaceId }: { workspaceId: string }) {
       subprocess: subprocessSettings,
     };
     update.mutate(next);
+  };
+
+  const importBulkEnv = () => {
+    const parsed = parseEnvBlock(bulkEnvText);
+    setBulkEnvSkipped(parsed.skipped);
+    if (parsed.rows.length === 0) return;
+    setEnvRows(mergeEnvRows(envRows, parsed.rows));
+    setBulkEnvText("");
   };
 
   return (
@@ -171,8 +247,45 @@ export function ReliabilityPanel({ workspaceId }: { workspaceId: string }) {
             Additional environment variables
           </h3>
           <p className="text-muted-foreground text-[11px]">
-            Merged into every phase subprocess (caller env wins on conflict).
+            Merged into every phase subprocess and preview server process.
           </p>
+        </div>
+        <div className="space-y-2 rounded-sm border bg-muted/20 p-3">
+          <div className="space-y-1">
+            <Label htmlFor="bulk-env-import" className="text-xs">
+              Paste key-value pairs
+            </Label>
+            <Textarea
+              id="bulk-env-import"
+              value={bulkEnvText}
+              placeholder={"API_URL=https://example.test\nVITE_FLAG=true"}
+              onChange={(e) => {
+                setBulkEnvText(e.target.value);
+                if (bulkEnvSkipped.length > 0) setBulkEnvSkipped([]);
+              }}
+              className="min-h-24 font-mono"
+            />
+            <p className="text-muted-foreground text-[11px]">
+              Accepts <code>KEY=value</code> lines and <code>export KEY=value</code>.
+              Existing keys are updated.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={importBulkEnv}
+              disabled={!bulkEnvText.trim()}
+            >
+              Import variables
+            </Button>
+            {bulkEnvSkipped.length > 0 && (
+              <span className="text-amber-700 text-xs dark:text-amber-300">
+                Skipped {bulkEnvSkipped.join(", ")}.
+              </span>
+            )}
+          </div>
         </div>
         {envRows.length === 0 ? (
           <p className="text-muted-foreground text-xs">No extra vars set.</p>

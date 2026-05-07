@@ -229,6 +229,35 @@ pub struct SubprocessSettings {
     pub additional_env: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewServerSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default = "default_preview_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_preview_path")]
+    pub health_path: String,
+    #[serde(default = "default_preview_path")]
+    pub default_route_path: String,
+    #[serde(default = "default_preview_startup_timeout_seconds")]
+    pub startup_timeout_seconds: u64,
+}
+
+impl Default for PreviewServerSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: None,
+            base_url: default_preview_base_url(),
+            health_path: default_preview_path(),
+            default_route_path: default_preview_path(),
+            startup_timeout_seconds: default_preview_startup_timeout_seconds(),
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -240,6 +269,15 @@ fn default_silence_timeout_seconds() -> u64 {
 }
 fn default_wall_clock_timeout_seconds() -> u64 {
     1800
+}
+fn default_preview_base_url() -> String {
+    "http://127.0.0.1:5173".to_string()
+}
+fn default_preview_path() -> String {
+    "/".to_string()
+}
+fn default_preview_startup_timeout_seconds() -> u64 {
+    60
 }
 
 /// Full workspace settings. Every field is defaulted so missing keys in stored JSON
@@ -280,6 +318,8 @@ pub struct WorkspaceSettings {
     pub phase_timeouts: PhaseTimeoutSettings,
     #[serde(default)]
     pub subprocess: SubprocessSettings,
+    #[serde(default)]
+    pub preview_server: PreviewServerSettings,
 }
 
 impl Default for WorkspaceSettings {
@@ -294,6 +334,7 @@ impl Default for WorkspaceSettings {
             worktree_init: WorktreeInitSettings::default(),
             phase_timeouts: PhaseTimeoutSettings::default(),
             subprocess: SubprocessSettings::default(),
+            preview_server: PreviewServerSettings::default(),
         }
     }
 }
@@ -486,6 +527,12 @@ mod tests {
         assert_eq!(s.phase_timeouts.silence_timeout_seconds, 300);
         assert_eq!(s.phase_timeouts.wall_clock_timeout_seconds, 1800);
         assert!(s.subprocess.additional_env.is_empty());
+        assert!(!s.preview_server.enabled);
+        assert!(s.preview_server.command.is_none());
+        assert_eq!(s.preview_server.base_url, "http://127.0.0.1:5173");
+        assert_eq!(s.preview_server.health_path, "/");
+        assert_eq!(s.preview_server.default_route_path, "/");
+        assert_eq!(s.preview_server.startup_timeout_seconds, 60);
     }
 
     #[test]
@@ -503,6 +550,14 @@ mod tests {
             },
             "subprocess": {
                 "additional_env": { "FOO": "bar" }
+            },
+            "preview_server": {
+                "enabled": true,
+                "command": "pnpm dev --host 127.0.0.1",
+                "base_url": "http://127.0.0.1:3000",
+                "health_path": "/health",
+                "default_route_path": "/dashboard",
+                "startup_timeout_seconds": 15
             }
         }"#;
         let s = WorkspaceSettings::from_json_str(json);
@@ -516,6 +571,19 @@ mod tests {
             s.subprocess.additional_env.get("FOO").map(String::as_str),
             Some("bar")
         );
+        assert!(s.preview_server.enabled);
+        assert_eq!(
+            s.preview_server.command.as_deref(),
+            Some("pnpm dev --host 127.0.0.1")
+        );
+        assert_eq!(s.preview_server.base_url, "http://127.0.0.1:3000");
+        assert_eq!(s.preview_server.health_path, "/health");
+        assert_eq!(s.preview_server.default_route_path, "/dashboard");
+        assert_eq!(s.preview_server.startup_timeout_seconds, 15);
+
+        let json = serde_json::to_string(&s).unwrap();
+        let back: WorkspaceSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.preview_server.base_url, "http://127.0.0.1:3000");
     }
 
     fn ws_with_phase_settings(
