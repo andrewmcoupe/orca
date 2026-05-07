@@ -8,5 +8,5 @@
     "web:dev": "pnpm --filter web dev",
     "web:build": "pnpm --filter web build"
   },
-  "packageManager": "pnpm@9.0.0"
+  "packageManager": "pnpm@9.15.0"
 }
