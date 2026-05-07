@@ -7,8 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
+    "preview": "pnpm run build && wrangler dev",
+    "tauri": "tauri",
+    "deploy": "pnpm run build && wrangler deploy"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
@@ -45,6 +46,7 @@
     "@vitejs/plugin-react": "^4.6.0",
     "tailwindcss": "^4.2.4",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "wrangler": "^4.88.0"
   }
 }
