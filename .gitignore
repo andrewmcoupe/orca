@@ -11,6 +11,10 @@ node_modules
 dist
 dist-ssr
 *.local
+*.tsbuildinfo
+
+# Build-time generated files
+apps/web/src/generated/
 
 # Editor directories and files
 .vscode/*

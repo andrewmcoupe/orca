@@ -17,8 +17,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -29,14 +27,14 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck and build
-        run: pnpm build
+        run: pnpm --filter orca build
 
   rust:
     name: Rust (fmt + clippy + test)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: apps/desktop/src-tauri
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +59,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: apps/desktop/src-tauri
 
       - name: Format check
         run: cargo fmt --all -- --check
