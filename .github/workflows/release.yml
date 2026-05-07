@@ -41,7 +41,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: apps/desktop/src-tauri -> target
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -61,6 +61,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: "Orca ${{ github.ref_name }}"
           releaseBody: "See assets to download. The updater will pick it up automatically on next launch."
