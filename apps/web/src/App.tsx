@@ -1,37 +1,66 @@
+import release from "./generated/release.json";
+
+const features = [
+  {
+    title: "Briefings",
+    body: "Turn rough intent into a structured briefing and plan.",
+  },
+  {
+    title: "Plans",
+    body: "Group related work, track dependencies, status, and lifecycle decisions.",
+  },
+  {
+    title: "Tasks",
+    body: "Run task-specific implementation flows with relevant files and dependency awareness.",
+  },
+  {
+    title: "Phase runs",
+    body: "Execute provider-backed phases for test authoring, implementation, and audit.",
+  },
+  {
+    title: "Providers",
+    body: "Integrations for CLI-based coding providers, including Codex and Claude.",
+  },
+  {
+    title: "Review",
+    body: "Inspect phase output, diffs, auditor verdicts, and merge readiness.",
+  },
+];
+
 export function App() {
   return (
     <main className="page">
-      <header className="hero">
-        <h1>Orca</h1>
-        <p className="tagline">Your local-first task companion.</p>
+      <section className="hero">
+        <img src="/orca-logo.png" alt="Orca" className="logo" />
+        <p className="tagline">A local-first task companion.</p>
         <div className="actions">
-          <a className="button primary" href="https://github.com/andrewmcoupe/orca/releases/latest">
-            Download
+          <a className="button primary" href={release.aarch64}>
+            Download for macOS
           </a>
-          <a className="button" href="https://github.com/andrewmcoupe/orca">
-            View on GitHub
+          <a
+            className="button secondary"
+            href="https://github.com/andrewmcoupe/orca"
+          >
+            GitHub
           </a>
         </div>
-      </header>
-
-      <section className="features">
-        <article>
-          <h2>Local-first</h2>
-          <p>Your data stays on your machine. No accounts, no cloud lock-in.</p>
-        </article>
-        <article>
-          <h2>Fast</h2>
-          <p>Built with Tauri and React for a native, snappy desktop experience.</p>
-        </article>
-        <article>
-          <h2>Open source</h2>
-          <p>MIT-licensed. Contributions and feedback welcome.</p>
-        </article>
+        {release.x64 && (
+          <a className="intel-link" href={release.x64}>
+            Intel Mac?
+          </a>
+        )}
       </section>
 
-      <footer className="footer">
-        <p>© {new Date().getFullYear()} Orca</p>
-      </footer>
+      <section className="features" aria-label="Features">
+        <ul className="feature-grid">
+          {features.map((feature) => (
+            <li key={feature.title} className="feature">
+              <h3>{feature.title}</h3>
+              <p>{feature.body}</p>
+            </li>
+          ))}
+        </ul>
+      </section>
     </main>
   );
 }

@@ -113,6 +113,12 @@ importers:
 
   apps/web:
     dependencies:
+      '@fontsource-variable/ibm-plex-sans':
+        specifier: ^5.2.8
+        version: 5.2.8
+      '@fontsource/ibm-plex-mono':
+        specifier: ^5.2.7
+        version: 5.2.7
       react:
         specifier: ^19.1.0
         version: 19.2.5

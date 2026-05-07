@@ -4,11 +4,14 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/fetch-release.mjs && vite",
+    "prebuild": "node scripts/fetch-release.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource-variable/ibm-plex-sans": "^5.2.8",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
