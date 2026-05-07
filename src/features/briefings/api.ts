@@ -4,6 +4,7 @@ import type {
   Briefing,
   BriefingEdits,
   BriefingHistoryEntry,
+  ImportedBriefingSource,
 } from "./types";
 
 /**
@@ -17,11 +18,13 @@ import type {
 export const briefingsApi = {
   start: (input: {
     initial_description: string;
+    imported_sources?: ImportedBriefingSource[];
     provider: string;
     model: string;
   }) =>
     invoke<Briefing>("start_briefing", {
       initialDescription: input.initial_description,
+      importedSources: input.imported_sources ?? [],
       provider: input.provider,
       model: input.model,
     }),

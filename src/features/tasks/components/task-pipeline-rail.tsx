@@ -9,6 +9,7 @@ import {
   resolvePhaseSettings,
   type PermissionMode,
 } from "@/features/workspaces/types";
+import { ProviderModelLabel } from "@/features/providers/components/provider-logo";
 import { useWorkspaceSettings } from "@/features/workspaces/hooks";
 import type { PhaseRun } from "@/features/phase-runs/types";
 
@@ -196,13 +197,17 @@ function PhaseRow({
         {displayPermissionMode === "plan" && (
           <Lock className="size-2.5 shrink-0" aria-label="read-only" />
         )}
-        <span className="truncate">
-          {displayProvider && displayModel
-            ? `${displayProvider} · ${displayModel}`
-            : "—"}
-          {displayPermissionMode
-            ? ` · ${PERMISSION_MODE_SHORT[displayPermissionMode]}`
-            : ""}
+        <span className="inline-flex min-w-0 items-center gap-1 truncate">
+          <ProviderModelLabel
+            provider={displayProvider}
+            model={displayModel}
+            logoClassName="size-2.5"
+          />
+          {displayPermissionMode && (
+            <span className="shrink-0">
+              · {PERMISSION_MODE_SHORT[displayPermissionMode]}
+            </span>
+          )}
         </span>
       </div>
       {latest && (

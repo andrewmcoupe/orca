@@ -312,6 +312,7 @@ CREATE TABLE IF NOT EXISTS briefing_projection (
     workspace_id            TEXT NOT NULL,
     status                  TEXT NOT NULL,            -- active | completed | cancelled
     initial_description     TEXT NOT NULL,
+    imported_sources_json   TEXT NOT NULL DEFAULT '[]',
     provider                TEXT NOT NULL,
     model                   TEXT NOT NULL,
     current_draft_json      TEXT,                     -- BriefingDraft JSON, NULL until first draft lands
@@ -384,6 +385,10 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
         "ALTER TABLE briefing_projection ADD COLUMN is_generating INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE briefing_projection ADD COLUMN generation_kind TEXT",
         "ALTER TABLE briefing_projection ADD COLUMN last_generation_error TEXT",
+        // Integration source attribution for imported Linear/Jira/etc issues.
+        // Stored separately from `initial_description` so imported context remains
+        // traceable even after the prompt text is refined or summarized.
+        "ALTER TABLE briefing_projection ADD COLUMN imported_sources_json TEXT NOT NULL DEFAULT '[]'",
     ];
     for sql in migrations {
         match conn.execute(sql, []) {
@@ -1809,6 +1814,7 @@ pub struct BriefingProjection {
     pub workspace_id: String,
     pub status: String,
     pub initial_description: String,
+    pub imported_sources: serde_json::Value,
     pub provider: String,
     pub model: String,
     pub current_draft: Option<serde_json::Value>,
@@ -1838,6 +1844,8 @@ pub struct BriefingProjection {
 struct BriefingStartedPayload {
     workspace_id: String,
     initial_description: String,
+    #[serde(default)]
+    imported_sources: serde_json::Value,
     provider: String,
     model: String,
 }
@@ -1901,13 +1909,14 @@ pub fn apply_briefing_event(
             let p: BriefingStartedPayload = serde_json::from_str(&event.payload)?;
             tx.execute(
                 "INSERT INTO briefing_projection
-                    (id, workspace_id, status, initial_description, provider, model,
+                    (id, workspace_id, status, initial_description, imported_sources_json, provider, model,
                      generation_count, created_at, updated_at)
-                 VALUES (?1, ?2, 'active', ?3, ?4, ?5, 0, ?6, ?6)",
+                 VALUES (?1, ?2, 'active', ?3, ?4, ?5, ?6, 0, ?7, ?7)",
                 params![
                     event.aggregate_id,
                     p.workspace_id,
                     p.initial_description,
+                    p.imported_sources.to_string(),
                     p.provider,
                     p.model,
                     event.created_at,
@@ -2039,20 +2048,23 @@ pub fn apply_briefing_event(
     Ok(())
 }
 
-const BRIEFING_COLUMNS: &str = "id, workspace_id, status, initial_description, provider, model, current_draft_json, pending_edits_json, validation_results_json, generation_count, is_generating, generation_kind, last_generation_error, final_plan_id, cancel_reason, created_at, updated_at";
+const BRIEFING_COLUMNS: &str = "id, workspace_id, status, initial_description, imported_sources_json, provider, model, current_draft_json, pending_edits_json, validation_results_json, generation_count, is_generating, generation_kind, last_generation_error, final_plan_id, cancel_reason, created_at, updated_at";
 
 fn read_briefing(r: &rusqlite::Row) -> rusqlite::Result<BriefingProjection> {
-    let current_draft_str: Option<String> = r.get(6)?;
-    let pending_edits_str: Option<String> = r.get(7)?;
-    let validation_results_str: Option<String> = r.get(8)?;
-    let is_generating_int: i64 = r.get(10)?;
+    let imported_sources_str: String = r.get(4)?;
+    let current_draft_str: Option<String> = r.get(7)?;
+    let pending_edits_str: Option<String> = r.get(8)?;
+    let validation_results_str: Option<String> = r.get(9)?;
+    let is_generating_int: i64 = r.get(11)?;
     Ok(BriefingProjection {
         id: r.get(0)?,
         workspace_id: r.get(1)?,
         status: r.get(2)?,
         initial_description: r.get(3)?,
-        provider: r.get(4)?,
-        model: r.get(5)?,
+        imported_sources: serde_json::from_str(&imported_sources_str)
+            .unwrap_or_else(|_| serde_json::Value::Array(Vec::new())),
+        provider: r.get(5)?,
+        model: r.get(6)?,
         current_draft: current_draft_str
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok()),
@@ -2062,14 +2074,14 @@ fn read_briefing(r: &rusqlite::Row) -> rusqlite::Result<BriefingProjection> {
         validation_results: validation_results_str
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok()),
-        generation_count: r.get(9)?,
+        generation_count: r.get(10)?,
         is_generating: is_generating_int != 0,
-        generation_kind: r.get(11)?,
-        last_generation_error: r.get(12)?,
-        final_plan_id: r.get(13)?,
-        cancel_reason: r.get(14)?,
-        created_at: r.get(15)?,
-        updated_at: r.get(16)?,
+        generation_kind: r.get(12)?,
+        last_generation_error: r.get(13)?,
+        final_plan_id: r.get(14)?,
+        cancel_reason: r.get(15)?,
+        created_at: r.get(16)?,
+        updated_at: r.get(17)?,
     })
 }
 
@@ -2478,6 +2490,36 @@ mod tests {
         assert_eq!(b.generation_kind.as_deref(), Some("initial"));
         assert_eq!(b.last_generation_error, None);
         assert_eq!(b.generation_count, 0); // not incremented until DraftProduced
+    }
+
+    #[test]
+    fn briefing_started_projects_imported_sources() {
+        let mut conn = db();
+        apply_briefing_in_tx(
+            &mut conn,
+            &briefing_event(
+                1,
+                "BriefingStarted",
+                json!({
+                    "workspace_id": "ws",
+                    "initial_description": "ship it",
+                    "imported_sources": [{
+                        "provider": "linear",
+                        "external_id": "abc",
+                        "identifier": "ENG-123",
+                        "title": "Fix login",
+                        "url": "https://linear.app/acme/issue/ENG-123/fix-login",
+                        "imported_at": 12345
+                    }],
+                    "provider": "claude",
+                    "model": "sonnet",
+                }),
+            ),
+        );
+
+        let b = get_briefing(&conn, "brf1").unwrap().unwrap();
+        assert_eq!(b.imported_sources[0]["provider"], "linear");
+        assert_eq!(b.imported_sources[0]["identifier"], "ENG-123");
     }
 
     #[test]

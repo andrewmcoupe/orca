@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ContentColumn } from "@/components/layout/content-column";
@@ -7,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
 import { Markdown } from "@/components/markdown";
+import { LinearLogo } from "@/features/integrations/linear/components/linear-logo";
 import {
   useAcceptBriefing,
   useApplyBriefingEdits,
@@ -22,6 +24,7 @@ import {
   type DraftAssumption,
   type DraftTask,
   type FileCertainty,
+  type ImportedBriefingSource,
   type RelevantFile,
   type TaskEdit,
 } from "../types";
@@ -349,6 +352,7 @@ export function BriefingReviewScreen({
         generationCount={briefing.generation_count}
         provider={briefing.provider}
         model={briefing.model}
+        importedSources={briefing.imported_sources}
       />
 
       <Section label="Description">
@@ -496,12 +500,14 @@ function Header({
   generationCount,
   provider,
   model,
+  importedSources,
 }: {
   title: string;
   onTitleChange: (next: string) => void;
   generationCount: number;
   provider: string;
   model: string;
+  importedSources: ImportedBriefingSource[];
 }) {
   const [editing, setEditing] = useState(false);
   return (
@@ -534,7 +540,36 @@ function Header({
           <Badge variant="secondary" className="font-mono text-[10px]">
             {provider}:{model}
           </Badge>
+          {importedSources.length > 0 && (
+            <>
+              <span>·</span>
+              <span>
+                {importedSources.length} imported source
+                {importedSources.length === 1 ? "" : "s"}
+              </span>
+            </>
+          )}
         </div>
+        {importedSources.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {importedSources.map((source) => (
+              <button
+                type="button"
+                key={`${source.provider}:${source.external_id}`}
+                onClick={() => openUrl(source.url)}
+                className="border-border bg-muted/40 hover:bg-muted inline-flex max-w-full items-center gap-1 border px-2 py-0.5 font-mono text-[11px] text-muted-foreground hover:text-foreground"
+                title={`Open ${source.identifier}`}
+              >
+                {source.provider === "linear" ? (
+                  <LinearLogo className="size-3" />
+                ) : (
+                  <span>{source.provider}</span>
+                )}
+                <span>{source.identifier}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </header>
   );

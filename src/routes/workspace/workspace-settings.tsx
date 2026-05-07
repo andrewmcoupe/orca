@@ -12,6 +12,7 @@ import { QuickTaskPreviewToggle } from "@/features/workspaces/components/quick-t
 import { GateConfigPanel } from "@/features/workspaces/components/gate-config-panel";
 import { PromptsPanel } from "@/features/workspaces/components/prompts-panel";
 import { ReliabilityPanel } from "@/features/workspaces/components/reliability-panel";
+import { LinearSettingsPanel } from "@/features/integrations/linear/components/linear-settings-panel";
 import { workspaceLayoutRoute } from "./layout";
 
 function WorkspaceSettingsPage() {
@@ -61,6 +62,13 @@ function WorkspaceSettingsPage() {
         description="Behaviour of the task creation flow."
       >
         <QuickTaskPreviewToggle workspaceId={ws.id} />
+      </SettingsSection>
+
+      <SettingsSection
+        title="Integrations"
+        description="Connect external systems used to import source context into Orca workflows."
+      >
+        <LinearSettingsPanel />
       </SettingsSection>
 
       <SettingsSection

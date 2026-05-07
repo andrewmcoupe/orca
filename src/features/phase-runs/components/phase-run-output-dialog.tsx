@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { usePhaseRunOutput } from "@/features/phase-runs/hooks";
 import type { PhaseRun } from "@/features/phase-runs/types";
+import { ProviderModelLabel } from "@/features/providers/components/provider-logo";
 
 /**
  * Full-screen terminal-style view of a phase run's stdout/stderr stream.
@@ -103,8 +104,15 @@ export function PhaseRunOutputDialog({
       >
         <DialogHeader className="bg-zinc-950 border-zinc-800 flex flex-row items-center gap-2 border-b px-3 py-2 text-zinc-200">
           <Terminal className="size-4 text-emerald-400" aria-hidden="true" />
-          <DialogTitle className="text-xs font-medium text-zinc-100">
-            {phaseRun.phase} · {phaseRun.provider}/{phaseRun.model}
+          <DialogTitle className="inline-flex min-w-0 items-center gap-1 text-xs font-medium text-zinc-100">
+            <span>{phaseRun.phase}</span>
+            <span className="text-zinc-500">·</span>
+            <ProviderModelLabel
+              provider={phaseRun.provider}
+              model={phaseRun.model}
+              separator="/"
+              logoClassName="size-3"
+            />
           </DialogTitle>
           <DialogDescription className="text-[11px] text-zinc-400">
             {phaseRun.status}

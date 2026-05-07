@@ -17,6 +17,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ModelSelect } from "@/features/providers/components/model-select";
+import { ProviderLogo } from "@/features/providers/components/provider-logo";
 import {
   bundledDefaultPermissionMode,
   PERMISSION_MODE_HELP,
@@ -167,8 +168,9 @@ export function TaskCreationPreview({
                         {model && (
                           <Badge
                             variant="outline"
-                            className="ml-1.5 h-4 rounded-sm px-1 text-[10px] font-normal"
+                            className="ml-1.5 h-4 gap-1 rounded-sm px-1 text-[10px] font-normal"
                           >
+                            <ProviderLogo provider={model.provider} className="size-2.5" />
                             {model.provider}
                           </Badge>
                         )}

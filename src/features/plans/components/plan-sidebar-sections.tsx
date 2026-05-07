@@ -1,5 +1,7 @@
 import { Link } from "@tanstack/react-router";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { CaretRight } from "@phosphor-icons/react";
+import { LinearLogo } from "@/features/integrations/linear/components/linear-logo";
 import { formatRelativeTime } from "@/lib/format";
 import type { Plan } from "../types";
 import type { Task } from "@/features/tasks/types";
@@ -31,7 +33,7 @@ export function PlanSummarySidebarBody({
       <Row label="Updated" value={formatRelativeTime(plan.updated_at)} />
       <Row
         label="Source"
-        value={SOURCE_LABEL[plan.source] ?? plan.source}
+        value={<PlanSourceValue plan={plan} />}
       />
       <Row
         label="Tasks"
@@ -102,14 +104,15 @@ export function PlanArtifactsSidebarBody({
   workspaceId: string;
 }) {
   const briefingId = briefingIdOf(plan);
-  if (!briefingId) {
+  const importedSources = importedSourcesOf(plan);
+  if (!briefingId && importedSources.length === 0) {
     return (
       <p className="text-muted-foreground text-[11px] italic">none</p>
     );
   }
   return (
     <ul className="space-y-1.5">
-      <li>
+      {briefingId && <li>
         <Link
           to="/workspace/$workspaceId/briefings/$briefingId"
           params={{ workspaceId, briefingId }}
@@ -118,19 +121,100 @@ export function PlanArtifactsSidebarBody({
           <CaretRight className="size-3 shrink-0" />
           briefing transcript
         </Link>
-      </li>
+      </li>}
+      {importedSources.map((source) => (
+        <li key={`${source.provider}:${source.external_id}`}>
+          <button
+            type="button"
+            onClick={() => openUrl(source.url)}
+            className="text-primary/90 hover:text-primary inline-flex items-center gap-1 text-[12px] underline-offset-2 hover:underline"
+          >
+            {source.provider === "linear" ? (
+              <LinearLogo className="size-3" />
+            ) : (
+              <CaretRight className="size-3 shrink-0" />
+            )}
+            {source.identifier}
+          </button>
+        </li>
+      ))}
     </ul>
   );
 }
 
+function PlanSourceValue({ plan }: { plan: Plan }) {
+  const importedSources = importedSourcesOf(plan);
+  const importedProviders = Array.from(
+    new Set(importedSources.map((source) => source.provider)),
+  );
+
+  if (plan.source === "linear") {
+    return (
+      <span className="inline-flex items-center gap-1">
+        <LinearLogo className="size-3" />
+        Linear
+      </span>
+    );
+  }
+
+  if (plan.source === "briefing" && importedProviders.length === 1) {
+    const provider = importedProviders[0];
+    return (
+      <span className="inline-flex items-center gap-1">
+        <span>briefing via</span>
+        {provider === "linear" ? (
+          <>
+            <LinearLogo className="size-3" />
+            <span>Linear</span>
+          </>
+        ) : (
+          <span>{provider}</span>
+        )}
+      </span>
+    );
+  }
+
+  if (plan.source === "briefing" && importedProviders.length > 1) {
+    return "briefing via imported sources";
+  }
+
+  return SOURCE_LABEL[plan.source] ?? plan.source;
+}
+
 export function planHasArtifacts(plan: Plan): boolean {
-  return !!briefingIdOf(plan);
+  return !!briefingIdOf(plan) || importedSourcesOf(plan).length > 0;
 }
 
 function briefingIdOf(plan: Plan): string | null {
   if (plan.source !== "briefing") return null;
   const id = plan.source_metadata?.briefing_id;
   return typeof id === "string" ? id : null;
+}
+
+type ImportedSource = {
+  provider: string;
+  external_id: string;
+  identifier: string;
+  title: string;
+  url: string;
+  imported_at: number;
+};
+
+function importedSourcesOf(plan: Plan): ImportedSource[] {
+  const value = plan.source_metadata?.imported_sources;
+  return Array.isArray(value)
+    ? value.filter(
+        (source): source is ImportedSource =>
+          typeof source === "object" &&
+          source !== null &&
+          typeof source.provider === "string" &&
+          typeof source.external_id === "string" &&
+          typeof source.identifier === "string" &&
+          typeof source.title === "string" &&
+          typeof source.url === "string" &&
+          typeof source.imported_at === "number",
+      )
+    : [];
 }
 
 type TaskCounts = {

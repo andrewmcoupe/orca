@@ -103,6 +103,7 @@ fn resolve_provider_path(app: &AppHandle, provider_id: &str) -> Result<String, S
 pub async fn start_briefing(
     app: AppHandle,
     initial_description: String,
+    imported_sources: Option<serde_json::Value>,
     provider: String,
     model: String,
 ) -> Result<BriefingProjection, String> {
@@ -126,6 +127,7 @@ pub async fn start_briefing(
         let payload = json!({
             "workspace_id": workspace_id,
             "initial_description": initial_description,
+            "imported_sources": imported_sources.unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
             "provider": provider,
             "model": model,
         });
@@ -769,7 +771,7 @@ pub fn accept_briefing(
     };
 
     // Load briefing + apply pending edits to produce the final draft.
-    let (final_draft, generation_count) = {
+    let (final_draft, generation_count, imported_sources) = {
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         let aw = guard
@@ -800,7 +802,11 @@ pub fn accept_briefing(
         if final_draft.tasks.is_empty() {
             return Err("cannot accept a briefing with no tasks".into());
         }
-        (final_draft, briefing.generation_count)
+        (
+            final_draft,
+            briefing.generation_count,
+            briefing.imported_sources,
+        )
     };
 
     // Emit PlanCreated, TaskCreated (xN), BriefingCompleted on their own aggregate
@@ -815,6 +821,7 @@ pub fn accept_briefing(
         "source_metadata": {
             "briefing_id": briefing_id,
             "generation_count": generation_count,
+            "imported_sources": imported_sources,
         },
     });
 

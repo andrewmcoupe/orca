@@ -25,6 +25,15 @@ export type BriefingDraft = {
   assumptions: DraftAssumption[];
 };
 
+export type ImportedBriefingSource = {
+  provider: "linear" | "jira" | string;
+  external_id: string;
+  identifier: string;
+  title: string;
+  url: string;
+  imported_at: number;
+};
+
 export type TaskEdit = {
   task_id: string;
   title?: string | null;
@@ -71,6 +80,7 @@ export type Briefing = {
   workspace_id: string;
   status: BriefingStatus;
   initial_description: string;
+  imported_sources: ImportedBriefingSource[];
   provider: string;
   model: string;
   current_draft: BriefingDraft | null;

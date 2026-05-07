@@ -12,6 +12,7 @@ import {
   PERMISSION_MODE_LABEL,
   type PermissionMode,
 } from "@/features/workspaces/types";
+import { ProviderModelLabel } from "@/features/providers/components/provider-logo";
 import { cn } from "@/lib/utils";
 
 const STATUS_BADGE: Record<string, string> = {
@@ -36,7 +37,10 @@ export function PhaseRunCard({ phaseRun }: { phaseRun: PhaseRun }) {
       <div className="flex items-center gap-2 border-b px-3 py-2">
         <span className="text-sm font-medium">{phaseRun.phase}</span>
         <span className="text-muted-foreground text-xs">
-          {phaseRun.provider} · {phaseRun.model}
+          <ProviderModelLabel
+            provider={phaseRun.provider}
+            model={phaseRun.model}
+          />
         </span>
         {phaseRun.permission_mode && (
           <span className="text-muted-foreground inline-flex items-center gap-1 text-xs">
