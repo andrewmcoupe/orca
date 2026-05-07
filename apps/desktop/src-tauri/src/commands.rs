@@ -16,6 +16,7 @@ use crate::events::projections::{
 use crate::events::types::{EventMetadata, NewEvent};
 use crate::events::{append::append_events_in_tx, AppendError};
 use crate::phases::{self, InflightRuns};
+use crate::preview_server::{PreviewServerManager, PreviewServerStatus};
 use crate::providers::{self, KnownModel, OptionDecl, ProviderCache, ProviderStatus};
 use crate::recent_events::{self, RecentEventRow};
 use crate::settings::{self, PermissionMode, PhaseConfig, PhaseType};
@@ -247,6 +248,62 @@ pub fn update_workspace_settings(
     }
     emit_projection_updated(&app, None, "workspace", &workspace_id);
     Ok(settings)
+}
+
+#[tauri::command]
+pub async fn start_preview_server(
+    task_id: String,
+    route_path: String,
+    global: State<'_, GlobalDb>,
+    active: State<'_, ActiveWorkspaceState>,
+    preview: State<'_, Arc<PreviewServerManager>>,
+) -> Result<PreviewServerStatus, String> {
+    let (workspace_id, worktree_path) = {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        let task = projections::get_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("task not found: {}", task_id))?;
+        let worktree_path = task
+            .worktree_path
+            .ok_or_else(|| "task does not have a worktree".to_string())?;
+        (aw.id.clone(), worktree_path)
+    };
+
+    let settings = {
+        let conn = global.0.lock().map_err(|e| e.to_string())?;
+        let settings_json: String = conn
+            .query_row(
+                "SELECT settings_json FROM workspace_projection WHERE id = ?1",
+                params![workspace_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        crate::settings::WorkspaceSettings::from_json_str(&settings_json)
+    };
+
+    preview
+        .start(
+            task_id,
+            worktree_path,
+            settings.preview_server,
+            settings.subprocess.additional_env,
+            route_path,
+        )
+        .await
+}
+
+#[tauri::command]
+pub fn get_preview_server_status(
+    preview: State<'_, Arc<PreviewServerManager>>,
+) -> Result<PreviewServerStatus, String> {
+    Ok(preview.status())
+}
+
+#[tauri::command]
+pub fn stop_preview_server(preview: State<'_, Arc<PreviewServerManager>>) -> Result<(), String> {
+    preview.stop();
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

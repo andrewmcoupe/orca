@@ -1,7 +1,11 @@
 import { useMemo, useState } from "react";
-import { GitBranch } from "@phosphor-icons/react";
+import { Globe, GitBranch, Stop } from "@phosphor-icons/react";
 import { useRecentEvents } from "@/features/events/hooks";
 import { EventsDrawer } from "@/features/events/components/events-drawer";
+import {
+  usePreviewServerStatus,
+  useStopPreviewServer,
+} from "@/features/preview-server/hooks";
 import { useProviders } from "@/features/providers/hooks";
 import { usePlans } from "@/features/plans/hooks";
 import {
@@ -85,6 +89,7 @@ export function StatusBar() {
       <div className="border-border bg-card flex flex-shrink-0 items-center gap-4 border-t px-2 py-1 font-mono">
         <LatestEvent activeWorkspaceId={activeId} />
         <ProviderChips />
+        <PreviewServerIndicator />
         <WorkspaceState
           activeWorkspaceId={activeId}
           activePath={activePath}
@@ -143,6 +148,61 @@ function LatestEvent({
         <span className="text-muted-foreground/70 truncate">no events</span>
       )}
     </div>
+  );
+}
+
+function PreviewServerIndicator() {
+  const statusQ = usePreviewServerStatus();
+  const stop = useStopPreviewServer();
+  const status = statusQ.data;
+
+  if (!status || status.state === "idle") return null;
+
+  const isActive = status.state === "starting" || status.state === "running";
+  const taskId = status.task_id ? shortId(status.task_id) : "unknown";
+  const title = [
+    `Preview server ${status.state}`,
+    status.open_url ? `URL: ${status.open_url}` : null,
+    status.worktree_path ? `Worktree: ${status.worktree_path}` : null,
+    status.last_error ? `Error: ${status.last_error}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return (
+    <span
+      title={title}
+      className={cn(
+        "inline-flex min-w-0 max-w-[260px] items-center gap-1.5 rounded-sm border px-1.5 py-0.5 text-xs",
+        status.state === "failed"
+          ? "border-destructive/30 bg-destructive/10 text-destructive"
+          : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+      )}
+    >
+      <Globe className="size-3 shrink-0" aria-hidden="true" />
+      {isActive && (
+        <span className="inline-flex text-success" aria-hidden="true">
+          <OrbitDot />
+        </span>
+      )}
+      <span className="min-w-0 truncate">
+        preview {status.state} {taskId}
+      </span>
+      {(status.state === "starting" || status.state === "running") && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => stop.mutate()}
+          disabled={stop.isPending}
+          className="h-4 w-4 shrink-0 border-none p-0 text-current hover:bg-current/10"
+          title="Stop preview server"
+          aria-label="Stop preview server"
+        >
+          <Stop className="size-3" />
+        </Button>
+      )}
+    </span>
   );
 }
 

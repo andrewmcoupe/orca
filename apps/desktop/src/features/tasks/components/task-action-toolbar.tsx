@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   ArrowUUpLeft,
+  ArrowSquareOut,
   CheckCircle,
   Copy,
   DotsThree,
@@ -54,6 +55,9 @@ import {
   isOverlapDismissed,
 } from "../file-overlap-suppression";
 import { DependencyEditDialog } from "./dependencies-section";
+import { PreviewServerDialog } from "@/features/preview-server/components/preview-server-dialog";
+import { usePreviewServerStatus } from "@/features/preview-server/hooks";
+import { useWorkspaceSettings } from "@/features/workspaces/hooks";
 import type { AuditorVerdict, AuditorVerdictKind, FileOverlap, Task } from "../types";
 import type { PhaseRun } from "@/features/phase-runs/types";
 
@@ -155,9 +159,12 @@ export function TaskActionToolbar({
   const deleteWorktree = useDeleteWorktree();
   const unqueueTask = useUnqueueTask();
   const tasksInPlanQ = useTasksInPlan(task.plan_id);
+  const workspaceSettingsQ = useWorkspaceSettings(workspaceId);
+  const previewStatusQ = usePreviewServerStatus();
 
   const [mergeOpen, setMergeOpen] = useState(false);
   const [passBackOpen, setPassBackOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   // M8 file overlap warning: cached overlaps + the original `forceRun`
   // intent for the *current* run-click attempt. Cleared on cancel or
   // proceed. Held in component state rather than TanStack Query because
@@ -341,6 +348,37 @@ export function TaskActionToolbar({
     ? "No diff available yet."
     : "Open the diff in side-by-side view.";
 
+  // === Preview server ====================================================
+  const previewSettings = workspaceSettingsQ.data?.preview_server;
+  const previewStatus = previewStatusQ.data;
+  const previewAvailable = !!task.worktree_path && task.worktree_status === "active";
+  const previewDisabled = !previewAvailable;
+  const previewRunningForThisTask =
+    previewStatus?.task_id === task.id &&
+    (previewStatus.state === "running" || previewStatus.state === "starting");
+  const previewRunningForOtherTask =
+    !!previewStatus?.task_id &&
+    previewStatus.task_id !== task.id &&
+    (previewStatus.state === "running" || previewStatus.state === "starting");
+  const previewLabel = previewRunningForThisTask
+    ? previewStatus?.state === "starting"
+      ? "Preview starting"
+      : "Preview running"
+    : previewRunningForOtherTask
+      ? "Preview busy"
+      : "Preview";
+  const previewTooltip = !task.worktree_path
+    ? "Task has no worktree yet."
+    : task.worktree_status !== "active"
+      ? "Task worktree is unavailable."
+      : !previewSettings?.enabled || !previewSettings.command?.trim()
+        ? "Open setup guidance for the preview server."
+        : previewRunningForThisTask
+          ? "Preview server is running for this task."
+          : previewRunningForOtherTask
+          ? "Another task has the preview server."
+          : "Start or reopen the frontend dev server.";
+
   const approveAction = {
     icon: <CheckCircle weight={primary === "approve" ? "fill" : "regular"} />,
     label: "Approve",
@@ -405,6 +443,14 @@ export function TaskActionToolbar({
           tooltip={diffTooltip}
           onClick={onOpenDiff}
         />
+        <ToolbarButton
+          icon={<ArrowSquareOut />}
+          label={previewLabel}
+          isPrimary={false}
+          disabled={previewDisabled}
+          tooltip={previewTooltip}
+          onClick={() => setPreviewOpen(true)}
+        />
 
         <OverflowMenu
           task={task}
@@ -450,6 +496,12 @@ export function TaskActionToolbar({
         taskId={task.id}
         open={passBackOpen}
         onOpenChange={setPassBackOpen}
+      />
+      <PreviewServerDialog
+        task={task}
+        settings={workspaceSettingsQ.data}
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
       />
     </TooltipProvider>
   );
