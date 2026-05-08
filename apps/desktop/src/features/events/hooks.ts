@@ -21,6 +21,23 @@ export function useProjectionInvalidation() {
           return;
         }
         qc.invalidateQueries({ queryKey: [aggregate_type, aggregate_id] });
+        if (
+          aggregate_type === "workspace" ||
+          aggregate_type === "plan" ||
+          aggregate_type === "task"
+        ) {
+          qc.invalidateQueries({ queryKey: ["workspace_stats"] });
+        }
+        if (
+          aggregate_type === "workspace" ||
+          aggregate_type === "plan" ||
+          aggregate_type === "task" ||
+          aggregate_type === "phase_run" ||
+          aggregate_type === "briefing" ||
+          aggregate_type === "recent_events"
+        ) {
+          qc.invalidateQueries({ queryKey: ["workspace_home_dispatch"] });
+        }
         // List queries are keyed inconsistently (plans by workspace, tasks by
         // plan, etc), so invalidate by prefix — react-query matches any
         // queryKey starting with [aggregate_type, "list"]. Without this, a

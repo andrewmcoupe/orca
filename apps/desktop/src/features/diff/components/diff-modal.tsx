@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
-import { SidebarSimple, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, SidebarSimple, X } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { tasksApi } from "@/features/tasks/api";
 import { useTaskDiff, useTaskDiffLiveUpdates } from "../hooks";
 import type {
   AnchorMapping,
@@ -56,6 +57,24 @@ export function DiffModal({
   const [focusedConcernIdx, setFocusedConcernIdx] = useState<number | null>(
     null,
   );
+  const [openingEditor, setOpeningEditor] = useState(false);
+
+  const activeFile = diffQ.data?.diff.files[focusedFileIdx] ?? null;
+  const activeLine = diffQ.data
+    ? lineForActiveFile(diffQ.data, focusedFileIdx, focusedConcernIdx)
+    : 1;
+
+  const openActiveFileInEditor = useCallback(async () => {
+    if (!activeFile || activeFile.status === "deleted") return;
+    setOpeningEditor(true);
+    try {
+      await tasksApi.openInEditor(taskId, activeFile.path, activeLine);
+    } catch (err) {
+      console.error("failed to open active diff file in editor", err);
+    } finally {
+      setOpeningEditor(false);
+    }
+  }, [activeFile, activeLine, taskId]);
 
   // Persist the view mode + rail state per workspace.
   useEffect(() => {
@@ -125,6 +144,9 @@ export function DiffModal({
             taskTitle={undefined}
             viewMode={viewMode}
             onViewModeChange={setViewMode}
+            activeFile={activeFile}
+            openingEditor={openingEditor}
+            onOpenActiveFile={openActiveFileInEditor}
             railOpen={railOpen}
             onRailToggle={() => setRailOpen((o) => !o)}
             onClose={() => onOpenChange(false)}
@@ -137,14 +159,14 @@ export function DiffModal({
             setFocusedConcernIdx={setFocusedConcernIdx}
             onClose={() => onOpenChange(false)}
           >
-            <div className="flex min-h-0 flex-1">
+            <div className="flex min-h-0 flex-1 overflow-hidden">
               <FileTree
                 files={diffQ.data?.diff.files ?? []}
                 concerns={diffQ.data?.mapped_concerns ?? []}
                 focusedIdx={focusedFileIdx}
                 onFocus={setFocusedFileIdx}
               />
-              <main className="flex min-w-0 flex-1 flex-col">
+              <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
                 {diffQ.isLoading || !diffQ.data ? (
                   <div className="text-muted-foreground flex flex-1 items-center justify-center text-xs">
                     Loading diff…
@@ -190,6 +212,9 @@ function ModalHeader({
   taskTitle,
   viewMode,
   onViewModeChange,
+  activeFile,
+  openingEditor,
+  onOpenActiveFile,
   railOpen,
   onRailToggle,
   onClose,
@@ -198,6 +223,9 @@ function ModalHeader({
   taskTitle: string | undefined;
   viewMode: ViewMode;
   onViewModeChange: (m: ViewMode) => void;
+  activeFile: HighlightedDiffFile | null;
+  openingEditor: boolean;
+  onOpenActiveFile: () => void;
   railOpen: boolean;
   onRailToggle: () => void;
   onClose: () => void;
@@ -223,6 +251,25 @@ function ModalHeader({
       </span>
       <div className="ml-auto flex items-center gap-1">
         <ViewModeToggle value={viewMode} onChange={onViewModeChange} />
+        <Button
+          size="xs"
+          variant="ghost"
+          title={
+            activeFile?.status === "deleted"
+              ? "Deleted files cannot be opened from the worktree"
+              : activeFile
+                ? `Open ${activeFile.path} in editor`
+                : "No active file"
+          }
+          onClick={onOpenActiveFile}
+          disabled={
+            !activeFile || activeFile.status === "deleted" || openingEditor
+          }
+          className="size-6 p-0"
+        >
+          <ArrowSquareOut className="size-3.5" />
+          <span className="sr-only">Open active file in editor</span>
+        </Button>
         <Button
           size="xs"
           variant="ghost"
@@ -256,21 +303,22 @@ function ViewModeToggle({
   onChange: (m: ViewMode) => void;
 }) {
   return (
-    <div className="border flex h-6 overflow-hidden rounded-none">
+    <div className="border flex h-6 overflow-hidden rounded-md">
       {(["split", "unified"] as const).map((m) => (
-        <button
+        <Button
+          variant="ghost"
           key={m}
           type="button"
           onClick={() => onChange(m)}
           className={cn(
-            "px-2 text-[10px] uppercase tracking-[0.08em]",
+            "h-full rounded-sm border-0 px-2 text-[10px] font-normal uppercase tracking-[0.08em]",
             value === m
               ? "bg-foreground text-background"
               : "bg-background text-muted-foreground hover:bg-muted/40",
           )}
         >
           {m === "split" ? "Side" : "Unified"}
-        </button>
+        </Button>
       ))}
     </div>
   );
@@ -413,11 +461,12 @@ function FileTree({
           const sev = sevByFile.get(i);
           return (
             <li key={`${f.path}-${i}`}>
-              <button
+              <Button
+                variant="ghost"
                 type="button"
                 onClick={() => onFocus(i)}
                 className={cn(
-                  "flex w-full items-center gap-1.5 px-2.5 py-1 text-left",
+                  "flex h-auto w-full justify-start gap-1.5 rounded-sm border-0 px-2.5 py-1 text-left font-normal",
                   i === focusedIdx
                     ? "bg-foreground/10 text-foreground"
                     : "text-muted-foreground hover:bg-muted/40",
@@ -440,7 +489,7 @@ function FileTree({
                   <span className="text-emerald-500">+{f.additions}</span>{" "}
                   <span className="text-red-500">−{f.deletions}</span>
                 </span>
-              </button>
+              </Button>
             </li>
           );
         })}
@@ -507,7 +556,7 @@ function UnifiedView({
   concerns: Map<string, LineConcern>;
 }) {
   return (
-    <div className="font-mono leading-[1.55] min-w-max">
+    <div className="min-w-max font-mono leading-[1.55]">
       {file.hunks.map((hunk, hi) => (
         <div key={hi}>
           {hi > 0 && <ModalHunkSeparator />}
@@ -639,7 +688,7 @@ function SplitView({
   concerns: Map<string, LineConcern>;
 }) {
   return (
-    <div className="font-mono leading-[1.55] min-w-max">
+    <div className="min-w-max font-mono leading-[1.55]">
       {file.hunks.map((hunk, hi) => {
         const pairs = pairLines(hunk.lines);
         return (
@@ -688,7 +737,7 @@ function SplitRow({
   return (
     <div
       data-concern-key={concern ? concernKey(concern.index) : undefined}
-      className="grid grid-cols-2 gap-px bg-border/60"
+      className="grid min-w-max grid-cols-2 gap-px bg-border/60"
     >
       <SplitCell line={pair.left} side="left" />
       <SplitCell line={pair.right} side="right" concern={concern?.concern} />
@@ -756,9 +805,9 @@ function ConcernsRail({
   const general = concerns.filter((c) => c.mapping.kind === "unmapped");
 
   return (
-    <aside className="scrollbar-styled bg-muted/10 w-[300px] shrink-0 overflow-auto border-l">
+    <aside className="bg-muted/10 flex w-[360px] shrink-0 flex-col overflow-hidden border-l">
       {verdict ? (
-        <div className="border-b p-3">
+        <div className="shrink-0 border-b p-3">
           <div className="text-muted-foreground/80 mb-1 text-[10px] uppercase tracking-[0.06em]">
             Auditor verdict
           </div>
@@ -780,73 +829,74 @@ function ConcernsRail({
             </span>
           </div>
           {verdict.summary && (
-            <p className="mt-2 text-[12px] leading-relaxed">
+            <p className="mt-2 break-words text-[12px] leading-relaxed">
               {verdict.summary}
             </p>
           )}
         </div>
       ) : null}
 
-      <ul>
-        {data.mapped_concerns.map((c, idx) => {
-          // Skip pure unmapped here — we list those at the bottom under
-          // "General concerns". This keeps the main rail pointing at the diff.
-          if (c.mapping.kind === "unmapped") return null;
-          const focused = focusedConcernIdx === idx;
-          return (
-            <li key={idx}>
-              <button
-                type="button"
-                onClick={() => onSelect(idx)}
-                className={cn(
-                  "block w-full border-b px-3 py-2 text-left",
-                  focused
-                    ? "bg-foreground/10"
-                    : "hover:bg-muted/40",
-                )}
-              >
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className={cn(
-                      "block size-1.5 shrink-0 rounded-full",
-                      SEVERITY_BAR[c.concern.severity] ?? "bg-zinc-500",
-                    )}
-                  />
-                  <span className="text-[10px] uppercase tracking-[0.06em] text-muted-foreground">
-                    {c.concern.severity} · {c.concern.category}
-                  </span>
+      <div className="scrollbar-styled min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+        <ul>
+          {data.mapped_concerns.map((c, idx) => {
+            // Skip pure unmapped here — we list those at the bottom under
+            // "General concerns". This keeps the main rail pointing at the diff.
+            if (c.mapping.kind === "unmapped") return null;
+            const focused = focusedConcernIdx === idx;
+            return (
+              <li key={idx}>
+                <Button
+                  variant="ghost"
+                  type="button"
+                  onClick={() => onSelect(idx)}
+                  className={cn(
+                    "block h-auto w-full rounded-sm border-0 px-3 py-2 text-left font-normal whitespace-normal",
+                    focused ? "bg-foreground/10" : "hover:bg-muted/40",
+                  )}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={cn(
+                        "block size-1.5 shrink-0 rounded-full",
+                        SEVERITY_BAR[c.concern.severity] ?? "bg-zinc-500",
+                      )}
+                    />
+                    <span className="text-[10px] uppercase tracking-[0.06em] text-muted-foreground">
+                      {c.concern.severity} · {c.concern.category}
+                    </span>
+                  </div>
+                  <p className="mt-1 break-words text-[12px] leading-relaxed">
+                    {c.concern.rationale}
+                  </p>
+                  <ConcernAnchorLabel concern={c} />
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+
+        {general.length > 0 && (
+          <div className="border-t">
+            <div className="text-muted-foreground/80 px-3 py-1.5 text-[10px] uppercase tracking-[0.06em]">
+              General concerns ({general.length})
+            </div>
+            {general.map((c, idx) => (
+              <div key={idx} className="border-b px-3 py-2 last:border-b-0">
+                <div className="text-[10px] uppercase tracking-[0.06em] text-muted-foreground">
+                  {c.concern.severity} · {c.concern.category}
                 </div>
-                <p className="mt-1 text-[12px] leading-relaxed">
+                <p className="mt-1 break-words text-[12px] leading-relaxed">
                   {c.concern.rationale}
                 </p>
-                <ConcernAnchorLabel concern={c} />
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-
-      {general.length > 0 && (
-        <div className="border-t">
-          <div className="text-muted-foreground/80 px-3 py-1.5 text-[10px] uppercase tracking-[0.06em]">
-            General concerns ({general.length})
-          </div>
-          {general.map((c, idx) => (
-            <div key={idx} className="border-b px-3 py-2 last:border-b-0">
-              <div className="text-[10px] uppercase tracking-[0.06em] text-muted-foreground">
-                {c.concern.severity} · {c.concern.category}
               </div>
-              <p className="mt-1 text-[12px] leading-relaxed">
-                {c.concern.rationale}
-              </p>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
 
-      {anchored.length === 0 && general.length === 0 && (
-        <p className="text-muted-foreground p-3 text-xs">No concerns.</p>
-      )}
+        {anchored.length === 0 && general.length === 0 && (
+          <p className="text-muted-foreground p-3 text-xs">No concerns.</p>
+        )}
+      </div>
     </aside>
   );
 }
@@ -857,14 +907,14 @@ function ConcernAnchorLabel({ concern }: { concern: MappedConcern }) {
     const a = concern.concern.anchor;
     if (!a) return null;
     return (
-      <p className="text-muted-foreground mt-1 font-mono text-[10px] tabular-nums">
+      <p className="text-muted-foreground mt-1 break-all font-mono text-[10px] tabular-nums">
         {a.path}:{a.line}
       </p>
     );
   }
   if (m.kind === "file_not_in_diff") {
     return (
-      <p className="text-muted-foreground mt-1 font-mono text-[10px] tabular-nums">
+      <p className="text-muted-foreground mt-1 break-all font-mono text-[10px] tabular-nums">
         {m.path}:{m.line} <span className="opacity-60">· not in diff</span>
       </p>
     );
@@ -890,6 +940,36 @@ function focusFileForConcern(
   if (m.kind === "on_diff_line" || m.kind === "on_unchanged_line") {
     setFocusedFileIdx(m.file_index);
   }
+}
+
+function lineForActiveFile(
+  data: TaskDiffWithMappings,
+  focusedFileIdx: number,
+  focusedConcernIdx: number | null,
+): number {
+  const file = data.diff.files[focusedFileIdx];
+  if (!file) return 1;
+
+  if (focusedConcernIdx != null) {
+    const focused = data.mapped_concerns[focusedConcernIdx];
+    const mapping = focused?.mapping;
+    if (
+      focused?.concern.anchor &&
+      (mapping?.kind === "on_diff_line" ||
+        mapping?.kind === "on_unchanged_line") &&
+      mapping.file_index === focusedFileIdx
+    ) {
+      return Math.max(1, focused.concern.anchor.line);
+    }
+  }
+
+  for (const hunk of file.hunks) {
+    for (const line of hunk.lines) {
+      if (line.new_lineno != null) return line.new_lineno;
+    }
+  }
+
+  return 1;
 }
 
 function scrollToConcern(idx: number) {
@@ -922,4 +1002,3 @@ function readBoolean(key: string, fallback: boolean): boolean {
     return fallback;
   }
 }
-

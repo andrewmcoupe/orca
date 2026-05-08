@@ -64,7 +64,7 @@ function InitializedRow({ task }: { task: Task }) {
   const skipped = task.worktree_init_detection_kind === "user_skipped";
 
   return (
-    <div className="bg-muted/20 border text-xs">
+    <div className="text-xs  crisp-border-gradient">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -78,7 +78,7 @@ function InitializedRow({ task }: { task: Task }) {
         <CheckCircle className="size-3.5 shrink-0 text-success" />
         <span className="text-muted-foreground">Initialized</span>
         <span className="text-muted-foreground">·</span>
-        <code className="truncate font-mono">{cmd}</code>
+        <code className="truncate font-mono text-muted-foreground">{cmd}</code>
         {!skipped && dur != null && (
           <>
             <span className="text-muted-foreground">·</span>
@@ -89,7 +89,7 @@ function InitializedRow({ task }: { task: Task }) {
         )}
       </button>
       {open && task.worktree_init_output && (
-        <pre className="scrollbar-styled bg-background/50 max-h-64 overflow-auto border-t px-3 py-2 font-mono text-[11px] leading-tight whitespace-pre-wrap">
+        <pre className="text-muted-foreground scrollbar-styled bg-background/50 max-h-64 overflow-auto border-t px-3 py-2 font-mono text-[11px] leading-tight whitespace-pre-wrap">
           {task.worktree_init_output}
         </pre>
       )}

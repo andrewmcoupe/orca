@@ -96,10 +96,7 @@ export function MarchingDashes({ className = "" }: { className?: string }) {
 /** Caret cursor walking along a faint baseline. */
 export function CaretWalk({ className = "" }: { className?: string }) {
   return (
-    <span
-      className={`relative inline-block h-3 w-12 ${className}`}
-      aria-hidden
-    >
+    <span className={`relative inline-block h-3 w-12 ${className}`} aria-hidden>
       <span className="absolute inset-x-0 bottom-0 h-px bg-current/15" />
       <span
         className="absolute bottom-0 h-2 w-[1.5px] bg-current"
@@ -205,14 +202,7 @@ export function HeartbeatLine({ className = "" }: { className?: string }) {
 
 /** Morse — dots and dashes appearing in sequence then resetting. */
 export function MorseLoader({ className = "" }: { className?: string }) {
-  const cells = [
-    { w: 2 },
-    { w: 2 },
-    { w: 6 },
-    { w: 2 },
-    { w: 6 },
-    { w: 2 },
-  ];
+  const cells = [{ w: 2 }, { w: 2 }, { w: 6 }, { w: 2 }, { w: 6 }, { w: 2 }];
   return (
     <span className={`inline-flex items-center gap-[2px] ${className}`}>
       {cells.map((c, i) => (
@@ -312,10 +302,7 @@ export function PixelRain({ className = "" }: { className?: string }) {
 /** Slash — a short diagonal stroke spinning in a 12px slot. */
 export function SlashSpinner({ className = "" }: { className?: string }) {
   return (
-    <span
-      className={`relative inline-block h-3 w-3 ${className}`}
-      aria-hidden
-    >
+    <span className={`relative inline-block h-3 w-3 ${className}`} aria-hidden>
       <span
         className="absolute left-1/2 top-1/2 h-[1.5px] w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-current"
         style={{ animation: "miniSpin 0.9s linear infinite" }}

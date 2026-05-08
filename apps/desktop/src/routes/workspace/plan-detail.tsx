@@ -1,8 +1,4 @@
-import {
-  createRoute,
-  useNavigate,
-  useParams,
-} from "@tanstack/react-router";
+import { createRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContentColumn } from "@/components/layout/content-column";
@@ -145,7 +141,7 @@ function PlanDetailView({
                   </p>
                 </div>
               ) : (
-                <div className="bg-card border">
+                <div className="grid gap-2">
                   {(() => {
                     const titlesById = new Map(
                       taskList.map((t) => [t.id, t.title]),

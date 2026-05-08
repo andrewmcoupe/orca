@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Globe, GitBranch, Stop } from "@phosphor-icons/react";
 import { useRecentEvents } from "@/features/events/hooks";
 import { EventsDrawer } from "@/features/events/components/events-drawer";
@@ -7,7 +7,6 @@ import {
   useStopPreviewServer,
 } from "@/features/preview-server/hooks";
 import { useProviders } from "@/features/providers/hooks";
-import { usePlans } from "@/features/plans/hooks";
 import {
   useActiveWorkspace,
   useWorkspaceBranch,
@@ -91,7 +90,6 @@ export function StatusBar() {
         <ProviderChips />
         <PreviewServerIndicator />
         <WorkspaceState
-          activeWorkspaceId={activeId}
           activePath={activePath}
           onOpenEvents={() => setEventsOpen(true)}
         />
@@ -128,7 +126,9 @@ function LatestEvent({
         aria-hidden="true"
       />
       {!activeWorkspaceId ? (
-        <span className="text-muted-foreground/70 truncate">no workspace</span>
+        <span className="text-muted-foreground/70 truncate">
+          no workspace selected
+        </span>
       ) : latest ? (
         <>
           <span className="text-muted-foreground/80 tabular-nums">
@@ -238,25 +238,13 @@ function ProviderChips() {
 }
 
 function WorkspaceState({
-  activeWorkspaceId,
   activePath,
   onOpenEvents,
 }: {
-  activeWorkspaceId: string | null;
   activePath: string | null;
   onOpenEvents: () => void;
 }) {
-  const plansQ = usePlans(activeWorkspaceId);
   const branchQ = useWorkspaceBranch(activePath);
-
-  const inFlight = useMemo(
-    () =>
-      (plansQ.data ?? []).reduce(
-        (acc, p) => acc + (p.running_task_count || 0),
-        0,
-      ),
-    [plansQ.data],
-  );
 
   return (
     <div className="text-muted-foreground/80 ml-auto flex items-center gap-3 tabular-nums">
@@ -266,21 +254,6 @@ function WorkspaceState({
           <span className="max-w-[140px] truncate" title={branchQ.data}>
             {branchQ.data}
           </span>
-        </span>
-      )}
-      {activeWorkspaceId && (
-        <span
-          className={cn(
-            "inline-flex items-center gap-1 font-body text-xs font-mono",
-            inFlight > 0 && "text-foreground",
-          )}
-        >
-          {inFlight > 0 && (
-            <span className="text-success inline-flex" aria-hidden="true">
-              <OrbitDot />
-            </span>
-          )}
-          {inFlight} in flight
         </span>
       )}
       <Button

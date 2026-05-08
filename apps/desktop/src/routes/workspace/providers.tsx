@@ -1,9 +1,9 @@
-import { createRoute } from "@tanstack/react-router";
-import { ArrowSquareOut, CheckCircle, XCircle } from "@phosphor-icons/react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ContentColumn } from "@/components/layout/content-column";
+import { Button } from "@/components/ui/button";
+import { CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useProviders, useRefreshProviders } from "@/features/providers/hooks";
+import { ArrowSquareOut, CheckCircle, XCircle } from "@phosphor-icons/react";
+import { createRoute } from "@tanstack/react-router";
 import { workspaceLayoutRoute } from "./layout";
 
 function ProvidersPage() {
@@ -26,8 +26,8 @@ function ProvidersPage() {
       <ul className="space-y-2">
         {(providers.data ?? []).map((p) => (
           <li key={p.id}>
-            <Card>
-              <CardHeader className="pb-2">
+            <div className="crisp-gradient-border p-2 rounded-sm px-1">
+              <CardHeader className="pb-2 px-2">
                 <CardTitle className="flex items-center gap-2 text-sm">
                   {p.installed && p.authenticated ? (
                     <CheckCircle className="text-emerald-600" weight="fill" />
@@ -76,7 +76,7 @@ function ProvidersPage() {
                   </div>
                 )}
               </CardContent>
-            </Card>
+            </div>
           </li>
         ))}
       </ul>

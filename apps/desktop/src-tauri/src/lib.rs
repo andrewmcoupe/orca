@@ -108,6 +108,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::add_workspace,
             commands::list_workspaces,
+            commands::list_workspace_stats,
+            commands::get_workspace_home_dispatch,
             commands::remove_workspace,
             commands::get_workspace_settings,
             commands::update_workspace_settings,
@@ -116,6 +118,7 @@ pub fn run() {
             commands::stop_preview_server,
             commands::set_active_workspace,
             commands::get_active_workspace,
+            commands::clear_active_workspace,
             commands::get_workspace_branch,
             commands::create_plan,
             commands::revise_plan,
@@ -191,9 +194,12 @@ pub fn run() {
         .run(move |_app, event| {
             // Kill any still-running child subprocesses on app exit so we don't leave
             // orphan `claude` processes behind. Also signal cancel on every in-flight
-            // briefing generation so spawned tasks have a brief window to land their
-            // BriefingGenerationCancelled event before the process tears down.
+            // phase / briefing generation so spawned tasks have a brief window to land
+            // terminal events before the process tears down.
             if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+                if let Some(inflight) = _app.try_state::<InflightRuns>() {
+                    inflight.cancel_all();
+                }
                 briefings_for_shutdown.cancel_all();
                 preview_server_for_shutdown.stop();
                 tracker_for_shutdown.kill_all();

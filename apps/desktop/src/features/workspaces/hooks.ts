@@ -4,6 +4,8 @@ import { workspacesApi } from "./api";
 import type {
   ActiveWorkspaceInfo,
   Workspace,
+  WorkspaceHomeDispatch,
+  WorkspaceStats,
   WorkspaceSettings,
 } from "./types";
 
@@ -14,6 +16,20 @@ export function useWorkspaces() {
   return useQuery<Workspace[]>({
     queryKey: WORKSPACE_LIST_KEY,
     queryFn: workspacesApi.list,
+  });
+}
+
+export function useWorkspaceStats() {
+  return useQuery<WorkspaceStats[]>({
+    queryKey: ["workspace_stats"],
+    queryFn: workspacesApi.listStats,
+  });
+}
+
+export function useWorkspaceHomeDispatch() {
+  return useQuery<WorkspaceHomeDispatch>({
+    queryKey: ["workspace_home_dispatch"],
+    queryFn: workspacesApi.getHomeDispatch,
   });
 }
 
@@ -65,6 +81,23 @@ export function useSetActiveWorkspace() {
     mutationFn: workspacesApi.setActive,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ACTIVE_WORKSPACE_KEY });
+    },
+  });
+}
+
+export function useClearActiveWorkspace() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: workspacesApi.clearActive,
+    onSuccess: () => {
+      qc.setQueryData(ACTIVE_WORKSPACE_KEY, null);
+      qc.invalidateQueries({ queryKey: ACTIVE_WORKSPACE_KEY });
+      qc.invalidateQueries({ queryKey: ["plan"] });
+      qc.invalidateQueries({ queryKey: ["task"] });
+      qc.invalidateQueries({ queryKey: ["phase_run"] });
+      qc.invalidateQueries({ queryKey: ["briefing"] });
+      qc.invalidateQueries({ queryKey: ["recent_events"] });
+      qc.invalidateQueries({ queryKey: ["workspace_branch"] });
     },
   });
 }

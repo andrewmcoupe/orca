@@ -22,10 +22,7 @@ export function TaskStatusBadge({ status }: { status: TaskStatus | string }) {
   return (
     <Badge
       variant="outline"
-      className={cn(
-        "h-5 rounded-sm border px-1.5 text-[10px] uppercase tracking-wide",
-        cls,
-      )}
+      className={cn("rounded-sm border px-1.5 text-[10px] tracking-wide", cls)}
     >
       {status.replace(/_/g, " ")}
     </Badge>

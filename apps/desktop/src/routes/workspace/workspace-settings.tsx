@@ -172,7 +172,7 @@ function SettingsSection({
         <h2 className="text-sm font-semibold">{title}</h2>
         <p className="text-muted-foreground text-xs">{description}</p>
       </div>
-      <div className="rounded-md border p-4">{children}</div>
+      <div className="rounded-md crisp-gradient-border p-4">{children}</div>
     </section>
   );
 }

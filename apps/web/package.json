@@ -12,13 +12,16 @@
   "dependencies": {
     "@fontsource-variable/ibm-plex-sans": "^5.2.8",
     "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@fontsource/ibm-plex-serif": "^5.2.7",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.2.4",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "tailwindcss": "^4.2.4",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"
   }

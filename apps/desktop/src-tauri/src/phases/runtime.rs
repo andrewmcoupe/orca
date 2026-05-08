@@ -62,6 +62,21 @@ impl InflightRuns {
             None => false,
         }
     }
+
+    pub fn snapshot_ids(&self) -> Vec<String> {
+        match self.0.lock() {
+            Ok(g) => g.keys().cloned().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn cancel_all(&self) {
+        if let Ok(g) = self.0.lock() {
+            for handle in g.values() {
+                handle.cancel.cancel();
+            }
+        }
+    }
 }
 
 pub fn emit_projection_updated(

@@ -69,16 +69,18 @@ export function PhaseConfigEditor({
   const trigger = (
     <PopoverTrigger
       render={
-        <button
+        <Button
+          variant={"outline"}
           type="button"
           aria-label={
             disabled ? disabledReason : `Edit ${PHASE_LABEL[phase]} config`
           }
           disabled={disabled}
           className={cn(
-            "text-muted-foreground/60 hover:text-foreground -m-1 inline-flex size-5 items-center justify-center rounded-sm transition-colors",
+            "text-muted-foreground/60 hover:text-foreground inline-flex size-5 items-center justify-center rounded-sm transition-colors",
             "focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-2",
-            disabled && "cursor-not-allowed opacity-40 hover:text-muted-foreground/60",
+            disabled &&
+              "cursor-not-allowed opacity-40 hover:text-muted-foreground/60",
           )}
           onClick={(e) => {
             // Prevent the click bubbling to the parent phase-card button (which
@@ -87,7 +89,7 @@ export function PhaseConfigEditor({
           }}
         >
           <Sliders className="size-3.5" />
-        </button>
+        </Button>
       }
     />
   );
@@ -154,7 +156,10 @@ function PhaseConfigEditorBody({
   // resolved provider is no longer eligible (e.g. uninstalled since the task
   // was created), fall back to the first eligible provider.
   const [provider, setProvider] = useState<string | null>(() => {
-    if (initialProvider && eligibleProviders.some((p) => p.id === initialProvider)) {
+    if (
+      initialProvider &&
+      eligibleProviders.some((p) => p.id === initialProvider)
+    ) {
       return initialProvider;
     }
     return eligibleProviders[0]?.id ?? null;
@@ -234,11 +239,7 @@ function PhaseConfigEditorBody({
     permissionMode !== initialPermissionMode;
 
   const canSave =
-    !!provider &&
-    !!model &&
-    !update.isPending &&
-    !reset.isPending &&
-    isDirty;
+    !!provider && !!model && !update.isPending && !reset.isPending && isDirty;
 
   const onSave = () => {
     if (!provider || !model) return;
@@ -278,8 +279,7 @@ function PhaseConfigEditorBody({
           Edit {PHASE_LABEL[phase]} config
         </h3>
         <p className="text-muted-foreground mt-0.5 text-[11px]">
-          Applies to the next run of this phase. Historical runs are
-          unaffected.
+          Applies to the next run of this phase. Historical runs are unaffected.
         </p>
       </div>
 
@@ -448,4 +448,3 @@ function formatError(err: unknown): string {
   }
   return raw;
 }
-

@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Lock, Terminal } from "@phosphor-icons/react";
-import { cn } from "@/lib/utils";
 import { PhaseConfigEditor } from "@/features/tasks/components/phase-config-editor";
 import { PhaseRunOutputDialog } from "@/features/phase-runs/components/phase-run-output-dialog";
 import type { PhaseConfig, PhaseType } from "@/features/tasks/types";
@@ -12,6 +11,7 @@ import {
 import { ProviderModelLabel } from "@/features/providers/components/provider-logo";
 import { useWorkspaceSettings } from "@/features/workspaces/hooks";
 import type { PhaseRun } from "@/features/phase-runs/types";
+import { OrbitDot } from "@/components/ui/mini-loaders";
 
 /**
  * Compact phase rows for the right sidebar. The brief explicitly calls out
@@ -21,14 +21,6 @@ import type { PhaseRun } from "@/features/phase-runs/types";
  * arrow connectors lives in the main column for previews; this is its
  * sidebar variant.
  */
-const STATUS_DOT: Record<string, string> = {
-  running: "bg-success animate-pulse",
-  completed: "bg-primary",
-  failed: "bg-destructive",
-  cancelled: "bg-muted-foreground/60",
-  pending: "bg-muted-foreground/30",
-};
-
 const PERMISSION_MODE_SHORT: Record<PermissionMode, string> = {
   plan: "plan",
   acceptEdits: "acceptEdits",
@@ -54,6 +46,26 @@ function latestRunForPhase(
   phase: PhaseType,
 ): PhaseRun | undefined {
   return [...runs].reverse().find((r) => r.phase === phase);
+}
+
+function StatusIndicator({ status }: { status: string }) {
+  if (status !== "running") {
+    return (
+      <span className="shrink-0 translate-y-[1px]" aria-label={status}>
+        <span className="text-muted-foreground/40 relative inline-block h-3 w-3 rounded-full border border-current/15">
+          <span className="absolute inset-0">
+            <span className="absolute -top-[1px] left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-current" />
+          </span>
+        </span>
+      </span>
+    );
+  }
+
+  return (
+    <span className="shrink-0 translate-y-[1px]" aria-label={status}>
+      <OrbitDot className="text-success" />
+    </span>
+  );
 }
 
 export function TaskPipelineRail({
@@ -101,9 +113,9 @@ export function TaskPipelineRail({
           null;
         const permissionMode = ((showHistorical
           ? latest?.permission_mode
-          : null) ?? resolved?.permission_mode ?? null) as
-          | PermissionMode
-          | null;
+          : null) ??
+          resolved?.permission_mode ??
+          null) as PermissionMode | null;
         const duration =
           latest?.completed_at && latest.started_at
             ? formatDurationMs(latest.completed_at - latest.started_at)
@@ -166,15 +178,9 @@ function PhaseRow({
   const showEditor = status !== "running";
 
   return (
-    <li className="space-y-1">
-      <div className="flex items-baseline gap-2">
-        <span
-          className={cn(
-            "size-1.5 shrink-0 translate-y-[1px] rounded-full",
-            STATUS_DOT[status] ?? STATUS_DOT.pending,
-          )}
-          aria-label={status}
-        />
+    <li className="crisp-gradient-border space-y-1 rounded-sm p-2">
+      <div className="flex items-center gap-2">
+        <StatusIndicator status={status} />
         <span className="text-foreground flex-1 truncate text-[12px] font-medium">
           {phase}
         </span>
