@@ -30,6 +30,53 @@ export type WorkspaceStats = {
   error: string | null;
 };
 
+export type WorkspaceHomeTask = {
+  workspace_id: string;
+  workspace_name: string;
+  workspace_path: string;
+  plan_id: string;
+  plan_title: string;
+  task_id: string;
+  task_title: string;
+  task_status: string;
+  updated_at: number;
+  attention_kind: "auditor_approved" | "auditor_returned" | "phase_failed" | string | null;
+  verdict: "approve" | "revise" | "reject" | string | null;
+  phase: PhaseType | string | null;
+  phase_status: "running" | "completed" | "failed" | string | null;
+  phase_run_id: string | null;
+  phase_started_at: number | null;
+  phase_updated_at: number | null;
+  error_message: string | null;
+};
+
+export type WorkspaceHomeWorkspace = {
+  workspace_id: string;
+  name: string;
+  path: string;
+  last_activity_at: number;
+  awaiting_review_count: number;
+  in_flight_count: number;
+  failed_count: number;
+  merged_count: number;
+  error: string | null;
+};
+
+export type WorkspaceHomeDispatch = {
+  workspace_count: number;
+  plan_count: number;
+  in_flight_count: number;
+  failed_count: number;
+  merged_count: number;
+  awaiting_review_count: number;
+  awaiting_review_workspace_count: number;
+  most_recent_workspace_id: string | null;
+  needs_attention: WorkspaceHomeTask[];
+  in_flight: WorkspaceHomeTask[];
+  recent_activity: WorkspaceHomeTask[];
+  workspaces: WorkspaceHomeWorkspace[];
+};
+
 export type PhaseType = "test_author" | "implementer" | "auditor";
 
 export type ModelChoice = {

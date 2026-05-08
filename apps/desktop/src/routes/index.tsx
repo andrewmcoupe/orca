@@ -1,50 +1,56 @@
-import { useMemo } from "react";
-import { createRoute, Link } from "@tanstack/react-router";
-import {
-  ArrowRight,
-  CheckCircle,
-  ClockCounterClockwise,
-  FolderPlus,
-  GitMerge,
-  ListChecks,
-  Pulse,
-  Warning,
-} from "@phosphor-icons/react";
+import { useEffect, useMemo } from "react";
+import { createRoute, Link, useSearch } from "@tanstack/react-router";
+import { ArrowRight, FilePlus, FolderPlus } from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { z } from "zod";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { TaskStatusBadge } from "@/features/tasks/presentation";
 import {
   useAddWorkspace,
-  useWorkspaceStats,
-  useWorkspaces,
+  useActiveWorkspace,
+  useClearActiveWorkspace,
+  useWorkspaceHomeDispatch,
 } from "@/features/workspaces/hooks";
 import type {
-  Workspace,
-  WorkspaceStats,
+  WorkspaceHomeDispatch,
+  WorkspaceHomeTask,
+  WorkspaceHomeWorkspace,
 } from "@/features/workspaces/types";
 import { formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { rootRoute } from "./root";
 
-type WorkspaceRow = {
-  workspace: Workspace;
-  stats: WorkspaceStats | null;
+const homeSearchSchema = z.object({
+  view: z.enum(["all", "awaiting_review"]).default("all"),
+});
+
+type HomeSearch = z.infer<typeof homeSearchSchema>;
+
+const PHASE_LABEL: Record<string, string> = {
+  test_author: "test author",
+  implementer: "implementer",
+  auditor: "auditor",
 };
 
 function HomePage() {
-  const workspaces = useWorkspaces();
-  const statsQ = useWorkspaceStats();
+  const dispatchQ = useWorkspaceHomeDispatch();
   const addWorkspace = useAddWorkspace();
-  const list = workspaces.data ?? [];
-  const statsByWorkspace = useMemo(
-    () => new Map((statsQ.data ?? []).map((s) => [s.workspace_id, s])),
-    [statsQ.data],
-  );
-  const rows = list.map((workspace) => ({
-    workspace,
-    stats: statsByWorkspace.get(workspace.id) ?? null,
-  }));
-  const totals = useMemo(() => summarize(rows), [rows]);
+  const activeWorkspace = useActiveWorkspace();
+  const clearActiveWorkspace = useClearActiveWorkspace();
+  const search = useSearch({ from: indexRoute.id }) as HomeSearch;
+  const data = dispatchQ.data ?? emptyDispatch;
+
+  useEffect(() => {
+    if (!activeWorkspace.data || clearActiveWorkspace.isPending) return;
+    clearActiveWorkspace.mutate();
+  }, [activeWorkspace.data, clearActiveWorkspace]);
+
+  const needsAttention = useMemo(() => {
+    if (search.view !== "awaiting_review") return data.needs_attention;
+    return data.needs_attention.filter((task) =>
+      task.attention_kind?.startsWith("auditor_"),
+    );
+  }, [data.needs_attention, search.view]);
 
   const onAddWorkspace = async () => {
     const selected = await open({ directory: true });
@@ -53,244 +59,219 @@ function HomePage() {
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-6">
-      <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-5">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight">Workspaces</h1>
-          <p className="text-muted-foreground mt-1 max-w-2xl text-sm">
-            Track active plans, running tasks, review queues, and completed work
-            across your registered repos.
+    <div className="scrollbar-styled h-full overflow-auto">
+      <main className="mx-auto flex w-full max-w-[var(--content-max-width)] flex-col gap-6 px-5 py-5">
+        <header className="flex items-start justify-between gap-4 border-b pb-5">
+          <p
+            className={cn(
+              "min-w-0 text-[18px] leading-7 tracking-tight",
+              data.awaiting_review_count > 0 && "font-medium",
+            )}
+          >
+            Welcome back.{" "}
+            {data.awaiting_review_count > 0 ? (
+              <Link
+                to="/"
+                search={{ view: "awaiting_review" }}
+                className="text-warning underline-offset-4 hover:underline"
+              >
+                {data.awaiting_review_count} tasks
+              </Link>
+            ) : (
+              <span>0 tasks</span>
+            )}{" "}
+            awaiting your review across {data.awaiting_review_workspace_count}{" "}
+            {data.awaiting_review_workspace_count === 1
+              ? "workspace"
+              : "workspaces"}
+            .
           </p>
-        </div>
-        <Button
-          type="button"
-          size="sm"
-          onClick={onAddWorkspace}
-          disabled={addWorkspace.isPending}
-        >
-          <FolderPlus className="size-3.5" />
-          Add workspace
-        </Button>
-      </header>
+          <Button
+            type="button"
+            size="sm"
+            onClick={onAddWorkspace}
+            disabled={addWorkspace.isPending}
+            className="shrink-0"
+          >
+            <FolderPlus className="size-3.5" />
+            Add workspace
+          </Button>
+        </header>
 
-      {list.length === 0 ? (
-        <EmptyState />
-      ) : (
-        <>
-          <OverviewStats totals={totals} />
-          <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
-            <div className="min-w-0 space-y-3">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-medium">Workspace activity</h2>
-                {statsQ.isFetching && (
-                  <span className="text-muted-foreground text-xs">
-                    Refreshing
-                  </span>
-                )}
+        {dispatchQ.isLoading ? (
+          <p className="text-muted-foreground text-sm">Loading workspaces…</p>
+        ) : data.plan_count === 0 ? (
+          <GettingStarted />
+        ) : (
+          <>
+            {search.view === "awaiting_review" && (
+              <div className="flex items-center justify-between border px-3 py-2">
+                <span className="text-sm">Awaiting-review tasks</span>
+                <Link
+                  to="/"
+                  search={{ view: "all" }}
+                  className="text-muted-foreground hover:text-foreground text-xs underline-offset-2 hover:underline"
+                >
+                  Show all
+                </Link>
               </div>
-              <div className="divide-border overflow-hidden rounded-md border">
-                {rows.map((row) => (
-                  <WorkspaceSummaryRow key={row.workspace.id} row={row} />
-                ))}
-              </div>
-            </div>
-            <GettingStarted />
-          </section>
-        </>
-      )}
+            )}
+            {needsAttention.length > 0 && (
+              <TaskSection
+                id="needs-attention"
+                title="Needs your attention"
+                tasks={needsAttention}
+                renderMeta={(task) => whatToDo(task)}
+              />
+            )}
+            {search.view === "all" && data.in_flight.length > 0 && (
+              <TaskSection
+                title="In flight"
+                tasks={data.in_flight}
+                monoMeta
+                renderMeta={(task) =>
+                  `${phaseLabel(task.phase)} running for ${elapsedTime(
+                    task.phase_started_at,
+                  )}`
+                }
+              />
+            )}
+            {search.view === "all" && data.recent_activity.length > 0 && (
+              <TaskSection
+                title="Recent activity"
+                tasks={data.recent_activity}
+                showStatus
+                monoMeta
+                renderMeta={(task) => formatRelativeTime(task.updated_at)}
+              />
+            )}
+            {search.view === "all" && data.workspaces.length > 0 && (
+              <WorkspacesSection workspaces={data.workspaces} />
+            )}
+          </>
+        )}
+      </main>
     </div>
   );
 }
 
-function EmptyState() {
-  return (
-    <div className="grid min-h-[420px] place-items-center border border-dashed">
-      <div className="max-w-md space-y-5 px-6 text-center">
-        <div className="mx-auto flex size-10 items-center justify-center border">
-          <FolderPlus className="size-5" />
-        </div>
-        <div>
-          <h2 className="text-base font-medium">Add a git repo to begin</h2>
-          <p className="text-muted-foreground mt-2 text-sm">
-            Orca stores plans, tasks, phase runs, and review state per
-            workspace. Once a repo is added, this page becomes your overview.
-          </p>
-        </div>
-        <GettingStarted compact />
-      </div>
-    </div>
-  );
-}
-
-function OverviewStats({
-  totals,
+function TaskSection({
+  id,
+  title,
+  tasks,
+  renderMeta,
+  showStatus = false,
+  monoMeta = false,
 }: {
-  totals: ReturnType<typeof summarize>;
+  id?: string;
+  title: string;
+  tasks: WorkspaceHomeTask[];
+  renderMeta: (task: WorkspaceHomeTask) => string;
+  showStatus?: boolean;
+  monoMeta?: boolean;
 }) {
   return (
-    <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-      <StatTile
-        label="Workspaces"
-        value={totals.workspaceCount}
-        icon={<ListChecks className="size-3.5" />}
-      />
-      <StatTile
-        label="Active plans"
-        value={totals.activePlans}
-        icon={<Pulse className="size-3.5" />}
-      />
-      <StatTile
-        label="Running tasks"
-        value={totals.runningTasks}
-        icon={<ClockCounterClockwise className="size-3.5" />}
-        tone={totals.runningTasks > 0 ? "success" : "default"}
-      />
-      <StatTile
-        label="Awaiting review"
-        value={totals.awaitingReview}
-        icon={<Warning className="size-3.5" />}
-        tone={totals.awaitingReview > 0 ? "warning" : "default"}
-      />
-      <StatTile
-        label="Merged"
-        value={totals.mergedTasks}
-        icon={<GitMerge className="size-3.5" />}
-      />
+    <section id={id} className="space-y-2">
+      <h2 className="text-muted-foreground/80 font-mono text-[10px] font-medium uppercase tracking-[0.08em]">
+        {title}
+      </h2>
+      <div className="divide-border border">
+        {tasks.map((task) => (
+          <Link
+            key={`${title}-${task.workspace_id}-${task.task_id}`}
+            to="/workspace/$workspaceId/plan/$planId/task/$taskId"
+            params={{
+              workspaceId: task.workspace_id,
+              planId: task.plan_id,
+              taskId: task.task_id,
+            }}
+            className="hover:bg-muted/50 flex min-w-0 items-center gap-3 border-b px-3 py-2.5 transition-colors last:border-b-0"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm">
+                <span className="text-foreground/40 font-mono">
+                  {task.workspace_name}
+                </span>
+                <span className="text-muted-foreground mx-1.5">·</span>
+                <span>{task.plan_title}</span>
+                <span className="text-muted-foreground mx-1.5">·</span>
+                <span className="font-medium">{task.task_title}</span>
+              </div>
+              <div className="text-muted-foreground mt-1 flex min-w-0 items-center gap-2 text-xs">
+                <span
+                  className={cn(
+                    "truncate",
+                    monoMeta && "font-mono tabular-nums",
+                  )}
+                >
+                  {renderMeta(task)}
+                </span>
+                {showStatus && <TaskStatusBadge status={task.task_status} />}
+              </div>
+            </div>
+            <ArrowRight className="text-muted-foreground size-3.5 shrink-0" />
+          </Link>
+        ))}
+      </div>
     </section>
   );
 }
 
-function StatTile({
-  label,
-  value,
-  icon,
-  tone = "default",
+function WorkspacesSection({
+  workspaces,
 }: {
-  label: string;
-  value: number;
-  icon: React.ReactNode;
-  tone?: "default" | "success" | "warning";
+  workspaces: WorkspaceHomeWorkspace[];
 }) {
   return (
-    <div
-      className={cn(
-        "flex min-h-[72px] items-center justify-between border px-3 py-2",
-        tone === "success" && "border-success/30 bg-success/5",
-        tone === "warning" && "border-warning/35 bg-warning/5",
-      )}
-    >
-      <div>
-        <div className="text-muted-foreground text-xs">{label}</div>
-        <div className="mt-1 font-mono text-2xl tabular-nums">{value}</div>
+    <section className="space-y-2">
+      <h2 className="text-muted-foreground/80 font-mono text-[10px] font-medium uppercase tracking-[0.08em]">
+        Workspaces
+      </h2>
+      <div className="divide-border border">
+        {workspaces.map((workspace) => (
+          <Link
+            key={workspace.workspace_id}
+            to="/workspace/$workspaceId/plans"
+            params={{ workspaceId: workspace.workspace_id }}
+            search={{ status: "active", q: "" }}
+            className="hover:bg-muted/50 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b px-3 py-2.5 transition-colors last:border-b-0"
+          >
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium">
+                {workspace.name}
+              </div>
+              <div className="text-muted-foreground mt-1 truncate font-mono text-[11px]">
+                {workspace.path}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground font-mono text-[11px] tabular-nums">
+                {formatRelativeTime(workspace.last_activity_at)}
+              </span>
+              <ArrowRight className="text-muted-foreground size-3.5" />
+            </div>
+          </Link>
+        ))}
       </div>
-      <span className="text-muted-foreground">{icon}</span>
-    </div>
+    </section>
   );
 }
 
-function WorkspaceSummaryRow({ row }: { row: WorkspaceRow }) {
-  const { workspace, stats } = row;
-  const updatedAt = stats?.updated_at ?? workspace.updated_at;
-  const hasAttention =
-    (stats?.running_task_count ?? 0) > 0 ||
-    (stats?.awaiting_review_task_count ?? 0) > 0 ||
-    (stats?.failed_task_count ?? 0) > 0;
-
-  return (
-    <Link
-      to="/workspace/$workspaceId/plans"
-      params={{ workspaceId: workspace.id }}
-      search={{ status: "active", q: "" }}
-      className="hover:bg-muted/60 grid gap-3 px-4 py-3 transition-colors md:grid-cols-[minmax(180px,1fr)_auto]"
-    >
-      <div className="min-w-0">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-sm font-medium">{workspace.name}</span>
-          {stats?.error && (
-            <Badge variant="destructive" className="h-4 px-1.5 text-[10px]">
-              stats unavailable
-            </Badge>
-          )}
-          {hasAttention && !stats?.error && (
-            <Badge variant="outline" className="h-4 px-1.5 text-[10px]">
-              active
-            </Badge>
-          )}
-        </div>
-        <div className="text-muted-foreground mt-1 truncate font-mono text-[11px]">
-          {workspace.path}
-        </div>
-        <div className="text-muted-foreground mt-1 text-[11px]">
-          Updated {formatRelativeTime(updatedAt)}
-        </div>
-      </div>
-      <div className="flex flex-wrap items-center gap-2 md:justify-end">
-        <Metric label="plans" value={stats?.plan_count ?? null} />
-        <Metric label="tasks" value={stats?.task_count ?? null} />
-        <Metric
-          label="running"
-          value={stats?.running_task_count ?? null}
-          emphasize={(stats?.running_task_count ?? 0) > 0}
-        />
-        <Metric
-          label="review"
-          value={stats?.awaiting_review_task_count ?? null}
-          emphasize={(stats?.awaiting_review_task_count ?? 0) > 0}
-        />
-        <Metric
-          label="failed"
-          value={stats?.failed_task_count ?? null}
-          destructive={(stats?.failed_task_count ?? 0) > 0}
-        />
-        <ArrowRight className="text-muted-foreground size-3.5" />
-      </div>
-    </Link>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  emphasize,
-  destructive,
-}: {
-  label: string;
-  value: number | null;
-  emphasize?: boolean;
-  destructive?: boolean;
-}) {
-  return (
-    <span
-      className={cn(
-        "inline-flex h-7 min-w-[58px] flex-col justify-center border px-2 text-right",
-        emphasize && "border-success/30 bg-success/5 text-success",
-        destructive && "border-destructive/30 bg-destructive/5 text-destructive",
-      )}
-    >
-      <span className="font-mono text-xs tabular-nums">{value ?? "..."}</span>
-      <span className="text-muted-foreground text-[9px] uppercase">{label}</span>
-    </span>
-  );
-}
-
-function GettingStarted({ compact = false }: { compact?: boolean }) {
+function GettingStarted() {
   const steps = [
     "Add a git repository as a workspace.",
-    "Open Plans and create a plan from a brief, PRD, or manual scope.",
-    "Break the plan into tasks, run the pipeline, then review and merge.",
+    "Create a plan from a briefing or manual scope.",
+    "Run tasks, review auditor verdicts, then merge.",
   ];
-
   return (
-    <aside
-      className={cn(
-        "border px-4 py-3",
-        compact ? "text-left" : "self-start",
-      )}
-    >
-      <h2 className="text-sm font-medium">Getting started</h2>
-      <ol className="mt-3 space-y-2">
+    <section className="border border-dashed px-4 py-5">
+      <div className="flex items-center gap-2">
+        <FilePlus className="size-4" />
+        <h2 className="text-sm font-medium">Getting started</h2>
+      </div>
+      <ol className="mt-4 space-y-2">
         {steps.map((step, index) => (
-          <li key={step} className="flex gap-2 text-sm">
+          <li key={step} className="flex gap-3 text-sm">
             <span className="text-muted-foreground font-mono text-xs">
               {String(index + 1).padStart(2, "0")}
             </span>
@@ -298,43 +279,58 @@ function GettingStarted({ compact = false }: { compact?: boolean }) {
           </li>
         ))}
       </ol>
-      {!compact && (
-        <div className="text-muted-foreground mt-4 flex items-start gap-2 border-t pt-3 text-xs">
-          <CheckCircle className="mt-0.5 size-3.5 shrink-0" />
-          <span>
-            Stats are read from each workspace&apos;s local Orca event store, so
-            switching workspaces is no longer required just to compare activity.
-          </span>
-        </div>
-      )}
-    </aside>
+    </section>
   );
 }
 
-function summarize(rows: WorkspaceRow[]) {
-  return rows.reduce(
-    (acc, row) => {
-      const stats = row.stats;
-      acc.workspaceCount += 1;
-      if (!stats || stats.error) return acc;
-      acc.activePlans += stats.active_plan_count;
-      acc.runningTasks += stats.running_task_count;
-      acc.awaitingReview += stats.awaiting_review_task_count;
-      acc.mergedTasks += stats.merged_task_count;
-      return acc;
-    },
-    {
-      workspaceCount: 0,
-      activePlans: 0,
-      runningTasks: 0,
-      awaitingReview: 0,
-      mergedTasks: 0,
-    },
-  );
+function whatToDo(task: WorkspaceHomeTask): string {
+  if (task.attention_kind === "phase_failed") {
+    return `${phaseLabel(task.phase)} failed${
+      task.error_message ? `: ${task.error_message}` : ". Review and retry."
+    }`;
+  }
+  if (task.verdict === "approve") return "Auditor approved. Review and merge.";
+  if (task.verdict === "reject")
+    return "Auditor rejected. Reject or pass back.";
+  if (task.verdict === "revise")
+    return "Auditor requested revision. Pass back with notes.";
+  return "Review the task and choose the next action.";
 }
+
+function phaseLabel(phase: string | null): string {
+  if (!phase) return "Phase";
+  return PHASE_LABEL[phase] ?? phase.replace(/_/g, " ");
+}
+
+function elapsedTime(startedAt: number | null): string {
+  if (!startedAt) return "a moment";
+  const seconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+const emptyDispatch: WorkspaceHomeDispatch = {
+  workspace_count: 0,
+  plan_count: 0,
+  in_flight_count: 0,
+  failed_count: 0,
+  merged_count: 0,
+  awaiting_review_count: 0,
+  awaiting_review_workspace_count: 0,
+  most_recent_workspace_id: null,
+  needs_attention: [],
+  in_flight: [],
+  recent_activity: [],
+  workspaces: [],
+};
 
 export const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  validateSearch: homeSearchSchema,
   component: HomePage,
 });

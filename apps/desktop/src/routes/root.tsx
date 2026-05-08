@@ -1,11 +1,20 @@
-import { Outlet, createRootRoute } from "@tanstack/react-router";
+import { Link, Outlet, createRootRoute } from "@tanstack/react-router";
 import type { CSSProperties } from "react";
 import { WorkspacesSidebar } from "@/components/layout/sidebar";
 import { StatusBar } from "@/components/layout/status-bar";
 import { TitleBar, TitleBarItem } from "@/components/layout/titlebar";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { OrbitDot } from "@/components/ui/mini-loaders";
 import { useProjectionInvalidation } from "@/features/events/hooks";
 import { QuickTaskShortcut } from "@/features/quick-task/quick-task-shortcut";
+import { useWorkspaceHomeDispatch } from "@/features/workspaces/hooks";
+import type { WorkspaceHomeTask } from "@/features/workspaces/types";
 
 function RootLayout() {
   useProjectionInvalidation();
@@ -28,6 +37,10 @@ function RootLayout() {
               className="size-6 rounded-none border-0 text-muted-foreground hover:text-foreground"
             />
           </TitleBarItem>
+          <div className="flex-1" />
+          <TitleBarItem>
+            <AppProgressIndicator />
+          </TitleBarItem>
         </TitleBar>
         <div className="flex min-h-0 flex-1">
           <WorkspacesSidebar />
@@ -41,6 +54,71 @@ function RootLayout() {
         </div>
       </SidebarProvider>
     </div>
+  );
+}
+
+function AppProgressIndicator() {
+  const dispatchQ = useWorkspaceHomeDispatch();
+  const inFlight = dispatchQ.data?.in_flight ?? [];
+  const inFlightCount = dispatchQ.data?.in_flight_count ?? inFlight.length;
+  if (inFlightCount === 0) return null;
+
+  const label =
+    inFlightCount === 1
+      ? "1 task in progress"
+      : `${inFlightCount} tasks in progress`;
+
+  return (
+    <TooltipProvider delay={150}>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              className="text-warning hover:bg-muted/60 flex h-6 items-center gap-1.5 border-none px-2 text-[11px] transition-colors"
+              aria-label={label}
+            >
+              <OrbitDot />
+              <span className="font-mono tabular-nums">{inFlightCount}</span>
+            </button>
+          }
+        />
+        <TooltipContent side="bottom" align="end" className="max-w-sm">
+          <div className="space-y-1.5">
+            <p className="font-medium">{label}</p>
+            <div className="space-y-1">
+              {inFlight.slice(0, 4).map((task) => (
+                <ProgressTooltipRow
+                  key={task.phase_run_id ?? task.task_id}
+                  task={task}
+                />
+              ))}
+              {inFlightCount > 4 && (
+                <p className="text-background/75">
+                  +{inFlightCount - 4} more running
+                </p>
+              )}
+            </div>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+function ProgressTooltipRow({ task }: { task: WorkspaceHomeTask }) {
+  return (
+    <Link
+      to="/workspace/$workspaceId/plan/$planId/task/$taskId"
+      params={{
+        workspaceId: task.workspace_id,
+        planId: task.plan_id,
+        taskId: task.task_id,
+      }}
+      className="block max-w-xs truncate text-background/90 underline-offset-2 hover:text-background hover:underline"
+    >
+      {task.workspace_name} · {task.plan_title} · {task.task_title}
+    </Link>
   );
 }
 

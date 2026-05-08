@@ -155,6 +155,56 @@ pub struct WorkspaceStats {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct WorkspaceHomeTask {
+    pub workspace_id: String,
+    pub workspace_name: String,
+    pub workspace_path: String,
+    pub plan_id: String,
+    pub plan_title: String,
+    pub task_id: String,
+    pub task_title: String,
+    pub task_status: String,
+    pub updated_at: i64,
+    pub attention_kind: Option<String>,
+    pub verdict: Option<String>,
+    pub phase: Option<String>,
+    pub phase_status: Option<String>,
+    pub phase_run_id: Option<String>,
+    pub phase_started_at: Option<i64>,
+    pub phase_updated_at: Option<i64>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkspaceHomeWorkspace {
+    pub workspace_id: String,
+    pub name: String,
+    pub path: String,
+    pub last_activity_at: i64,
+    pub awaiting_review_count: i64,
+    pub in_flight_count: i64,
+    pub failed_count: i64,
+    pub merged_count: i64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkspaceHomeDispatch {
+    pub workspace_count: i64,
+    pub plan_count: i64,
+    pub in_flight_count: i64,
+    pub failed_count: i64,
+    pub merged_count: i64,
+    pub awaiting_review_count: i64,
+    pub awaiting_review_workspace_count: i64,
+    pub most_recent_workspace_id: Option<String>,
+    pub needs_attention: Vec<WorkspaceHomeTask>,
+    pub in_flight: Vec<WorkspaceHomeTask>,
+    pub recent_activity: Vec<WorkspaceHomeTask>,
+    pub workspaces: Vec<WorkspaceHomeWorkspace>,
+}
+
 fn workspace_stats_for(ws: &projections::WorkspaceProjection) -> WorkspaceStats {
     let empty = || WorkspaceStats {
         workspace_id: ws.id.clone(),
@@ -279,6 +329,302 @@ pub fn list_workspace_stats(state: State<'_, GlobalDb>) -> Result<Vec<WorkspaceS
         projections::list_active_workspaces(&conn).map_err(|e| e.to_string())?
     };
     Ok(workspaces.iter().map(workspace_stats_for).collect())
+}
+
+fn merge_updated_at(current: Option<i64>, next: Option<i64>) -> Option<i64> {
+    match (current, next) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (None, Some(b)) => Some(b),
+        (Some(a), None) => Some(a),
+        (None, None) => None,
+    }
+}
+
+fn workspace_home_tasks_for(
+    conn: &rusqlite::Connection,
+    ws: &projections::WorkspaceProjection,
+    sql: &str,
+) -> rusqlite::Result<Vec<WorkspaceHomeTask>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map([], |r| {
+        Ok(WorkspaceHomeTask {
+            workspace_id: ws.id.clone(),
+            workspace_name: ws.name.clone(),
+            workspace_path: ws.path.clone(),
+            plan_id: r.get(0)?,
+            plan_title: r.get(1)?,
+            task_id: r.get(2)?,
+            task_title: r.get(3)?,
+            task_status: r.get(4)?,
+            updated_at: r.get(5)?,
+            attention_kind: r.get(6)?,
+            verdict: r.get(7)?,
+            phase: r.get(8)?,
+            phase_status: r.get(9)?,
+            phase_run_id: r.get(10)?,
+            phase_started_at: r.get(11)?,
+            phase_updated_at: r.get(12)?,
+            error_message: r.get(13)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn get_workspace_home_dispatch(
+    state: State<'_, GlobalDb>,
+) -> Result<WorkspaceHomeDispatch, String> {
+    let workspaces = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        projections::list_active_workspaces(&conn).map_err(|e| e.to_string())?
+    };
+
+    let mut plan_count = 0i64;
+    let mut in_flight_count = 0i64;
+    let mut failed_count = 0i64;
+    let mut merged_count = 0i64;
+    let mut awaiting_review_count = 0i64;
+    let mut awaiting_review_workspace_count = 0i64;
+    let mut most_recent_workspace_id: Option<String> = None;
+    let mut most_recent_workspace_at: Option<i64> = None;
+    let mut needs_attention = Vec::new();
+    let mut in_flight = Vec::new();
+    let mut recent_activity = Vec::new();
+    let mut workspace_rows = Vec::new();
+
+    let attention_sql = "
+        SELECT
+            t.plan_id,
+            p.title AS plan_title,
+            t.id,
+            t.title,
+            t.status,
+            COALESCE(av.created_at, pr.updated_at, t.updated_at) AS updated_at,
+            CASE
+                WHEN pr.status = 'failed' THEN 'phase_failed'
+                WHEN pr.phase = 'auditor' AND pr.status = 'completed' AND av.verdict = 'approve' THEN 'auditor_approved'
+                WHEN pr.phase = 'auditor' AND pr.status = 'completed' AND av.verdict IN ('revise', 'reject') THEN 'auditor_returned'
+                ELSE NULL
+            END AS attention_kind,
+            av.verdict,
+            pr.phase,
+            pr.status AS phase_status,
+            pr.id AS phase_run_id,
+            pr.started_at,
+            pr.updated_at AS phase_updated_at,
+            pr.error_message
+        FROM task_projection t
+        JOIN plan_projection p ON p.id = t.plan_id
+        LEFT JOIN phase_run_projection pr ON pr.id = t.latest_phase_run_id
+        LEFT JOIN auditor_verdict_projection av ON av.phase_run_id = t.latest_phase_run_id
+        WHERE t.status NOT IN ('merged', 'cancelled', 'archived', 'approved')
+          AND (
+            pr.status = 'failed'
+            OR (pr.phase = 'auditor' AND pr.status = 'completed' AND av.verdict IS NOT NULL)
+          )
+        ORDER BY updated_at DESC
+        LIMIT 25";
+
+    let in_flight_sql = "
+        SELECT
+            t.plan_id,
+            p.title AS plan_title,
+            t.id,
+            t.title,
+            t.status,
+            pr.updated_at AS updated_at,
+            NULL AS attention_kind,
+            NULL AS verdict,
+            pr.phase,
+            pr.status AS phase_status,
+            pr.id AS phase_run_id,
+            pr.started_at,
+            pr.updated_at AS phase_updated_at,
+            pr.error_message
+        FROM phase_run_projection pr
+        JOIN task_projection t ON t.id = pr.task_id
+        JOIN plan_projection p ON p.id = t.plan_id
+        WHERE pr.status = 'running'
+          AND t.status NOT IN ('merged', 'cancelled', 'archived')
+        ORDER BY pr.started_at DESC
+        LIMIT 25";
+
+    let recent_sql = "
+        SELECT
+            t.plan_id,
+            p.title AS plan_title,
+            t.id,
+            t.title,
+            t.status,
+            t.updated_at,
+            NULL AS attention_kind,
+            av.verdict,
+            pr.phase,
+            pr.status AS phase_status,
+            pr.id AS phase_run_id,
+            pr.started_at,
+            pr.updated_at AS phase_updated_at,
+            pr.error_message
+        FROM task_projection t
+        JOIN plan_projection p ON p.id = t.plan_id
+        LEFT JOIN phase_run_projection pr ON pr.id = t.latest_phase_run_id
+        LEFT JOIN auditor_verdict_projection av ON av.phase_run_id = t.latest_phase_run_id
+        WHERE t.status != 'archived'
+        ORDER BY t.updated_at DESC
+        LIMIT 10";
+
+    for ws in &workspaces {
+        let db_path = events_db_path(&ws.path);
+        if !db_path.exists() {
+            workspace_rows.push(WorkspaceHomeWorkspace {
+                workspace_id: ws.id.clone(),
+                name: ws.name.clone(),
+                path: ws.path.clone(),
+                last_activity_at: ws.updated_at,
+                awaiting_review_count: 0,
+                in_flight_count: 0,
+                failed_count: 0,
+                merged_count: 0,
+                error: None,
+            });
+            most_recent_workspace_at =
+                merge_updated_at(most_recent_workspace_at, Some(ws.updated_at));
+            if most_recent_workspace_at == Some(ws.updated_at) {
+                most_recent_workspace_id = Some(ws.id.clone());
+            }
+            continue;
+        }
+
+        let conn =
+            match rusqlite::Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            {
+                Ok(conn) => conn,
+                Err(err) => {
+                    workspace_rows.push(WorkspaceHomeWorkspace {
+                        workspace_id: ws.id.clone(),
+                        name: ws.name.clone(),
+                        path: ws.path.clone(),
+                        last_activity_at: ws.updated_at,
+                        awaiting_review_count: 0,
+                        in_flight_count: 0,
+                        failed_count: 0,
+                        merged_count: 0,
+                        error: Some(err.to_string()),
+                    });
+                    continue;
+                }
+            };
+
+        let counts: (i64, i64, i64, i64, i64, Option<i64>) = conn
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM plan_projection),
+                    (SELECT COUNT(*)
+                     FROM phase_run_projection pr
+                     JOIN task_projection t ON t.id = pr.task_id
+                     WHERE pr.status = 'running'
+                       AND t.status NOT IN ('merged', 'cancelled', 'archived')),
+                    (SELECT COUNT(*)
+                     FROM task_projection t
+                     JOIN phase_run_projection pr ON pr.id = t.latest_phase_run_id
+                     JOIN auditor_verdict_projection av ON av.phase_run_id = t.latest_phase_run_id
+                     WHERE t.status NOT IN ('merged', 'cancelled', 'archived', 'approved')
+                       AND pr.phase = 'auditor'
+                       AND pr.status = 'completed'),
+                    (SELECT COUNT(*)
+                     FROM task_projection t
+                     JOIN phase_run_projection pr ON pr.id = t.latest_phase_run_id
+                     WHERE t.status NOT IN ('merged', 'cancelled', 'archived', 'approved')
+                       AND pr.status = 'failed'),
+                    (SELECT COUNT(*)
+                     FROM task_projection
+                     WHERE status = 'merged'),
+                    (SELECT MAX(updated_at) FROM (
+                        SELECT updated_at FROM plan_projection
+                        UNION ALL
+                        SELECT updated_at FROM task_projection
+                        UNION ALL
+                        SELECT updated_at FROM phase_run_projection
+                    ))
+                ",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .map_err(|e| e.to_string())?;
+
+        plan_count += counts.0;
+        in_flight_count += counts.1;
+        awaiting_review_count += counts.2;
+        failed_count += counts.3;
+        merged_count += counts.4;
+        if counts.2 > 0 {
+            awaiting_review_workspace_count += 1;
+        }
+        let last_activity_at = counts.5.unwrap_or(ws.updated_at).max(ws.updated_at);
+        if most_recent_workspace_at.is_none_or(|current| last_activity_at > current) {
+            most_recent_workspace_at = Some(last_activity_at);
+            most_recent_workspace_id = Some(ws.id.clone());
+        }
+
+        workspace_rows.push(WorkspaceHomeWorkspace {
+            workspace_id: ws.id.clone(),
+            name: ws.name.clone(),
+            path: ws.path.clone(),
+            last_activity_at,
+            awaiting_review_count: counts.2,
+            in_flight_count: counts.1,
+            failed_count: counts.3,
+            merged_count: counts.4,
+            error: None,
+        });
+
+        needs_attention
+            .extend(workspace_home_tasks_for(&conn, ws, attention_sql).map_err(|e| e.to_string())?);
+        in_flight
+            .extend(workspace_home_tasks_for(&conn, ws, in_flight_sql).map_err(|e| e.to_string())?);
+        recent_activity
+            .extend(workspace_home_tasks_for(&conn, ws, recent_sql).map_err(|e| e.to_string())?);
+    }
+
+    needs_attention.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    needs_attention.truncate(10);
+    in_flight.sort_by(|a, b| {
+        b.phase_started_at
+            .unwrap_or(b.updated_at)
+            .cmp(&a.phase_started_at.unwrap_or(a.updated_at))
+    });
+    in_flight.truncate(10);
+    recent_activity.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    recent_activity.truncate(10);
+    workspace_rows.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
+
+    Ok(WorkspaceHomeDispatch {
+        workspace_count: workspaces.len() as i64,
+        plan_count,
+        in_flight_count,
+        failed_count,
+        merged_count,
+        awaiting_review_count,
+        awaiting_review_workspace_count,
+        most_recent_workspace_id,
+        needs_attention,
+        in_flight,
+        recent_activity,
+        workspaces: workspace_rows,
+    })
 }
 
 #[tauri::command]
@@ -806,6 +1152,13 @@ pub fn get_active_workspace(
         id: a.id.clone(),
         path: a.path.clone(),
     }))
+}
+
+#[tauri::command]
+pub fn clear_active_workspace(active: State<'_, ActiveWorkspaceState>) -> Result<(), String> {
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    *guard = None;
+    Ok(())
 }
 
 // ======================================================================
