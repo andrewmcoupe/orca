@@ -77,8 +77,8 @@ export function WorkspacesSidebar() {
 
   return (
     <Sidebar collapsible="icon" className="top-9 h-[calc(100svh-2.25rem)]">
-      <SidebarHeader className="gap-0 border-b p-0">
-        <div className="flex h-7 items-center justify-between pr-1 pl-2 font-body text-sm group-data-[collapsible=icon]:hidden">
+      <SidebarHeader className="gap-0 border-b p-2 h-11">
+        <div className="flex items-center justify-between font-body text-sm group-data-[collapsible=icon]:hidden">
           <span className="text-muted-foreground text-xs font-mono lowercase font-thin">
             Workspaces
           </span>
@@ -88,42 +88,31 @@ export function WorkspacesSidebar() {
               activeOptions={{ exact: true }}
               aria-label="Home"
               title="Home"
-              className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-4 items-center justify-center border border-border bg-background transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
+              className="border text-muted-foreground hover:bg-sidebar-accent rounded-sm hover:text-foreground inline-flex items-center justify-center bg-transparent p-1 transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
             >
-              <House className="size-2.5" />
+              <House className="size-4" />
             </Link>
-            <Button
-              variant={"outline"}
+            <button
               type="button"
               onClick={onAdd}
               aria-label="Add workspace"
               title="Add workspace"
-              className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-4 items-center justify-center rounded-none p-0"
+              className="border text-muted-foreground hover:bg-sidebar-accent rounded-sm hover:text-foreground inline-flex items-center justify-center p-1 bg-transparent"
             >
-              <Plus className="size-2 text-foreground" />
-            </Button>
+              <Plus className="size-4" />
+            </button>
           </div>
         </div>
-        <div className="hidden h-16 flex-col items-center justify-center gap-1 group-data-[collapsible=icon]:flex">
+        <div className="hidden items-center justify-center gap-1 group-data-[collapsible=icon]:flex h-full">
           <Link
             to="/"
             activeOptions={{ exact: true }}
             aria-label="Home"
             title="Home"
-            className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-8 items-center justify-center transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
+            className="h-full text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex items-center justify-center transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground rounded-sm p-1"
           >
             <House className="size-4" />
           </Link>
-          <Button
-            variant={"ghost"}
-            type="button"
-            onClick={onAdd}
-            aria-label="Add workspace"
-            title="Add workspace"
-            className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-8 items-center justify-center rounded-none p-0"
-          >
-            <Plus className="size-4 text-foreground" />
-          </Button>
         </div>
       </SidebarHeader>
       <SidebarContent className="scrollbar-styled">
@@ -293,8 +282,8 @@ function CollapsedWorkspaceLink({
       aria-label={label}
       title={label}
       className={cn(
-        "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex size-8 items-center justify-center text-[10px] font-medium transition-colors",
-        isActive && "bg-sidebar-accent text-foreground",
+        "border text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex size-8 p-1 rounded-sm items-center justify-center text-[10px] font-medium transition-colors",
+        isActive && "bg-sidebar-accent text-foreground border-primary border",
       )}
     >
       {initials || label[0].toUpperCase()}

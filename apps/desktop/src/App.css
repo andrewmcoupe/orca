@@ -138,8 +138,9 @@
   --radius-xl: calc(var(--radius) + 4px);
   --font-heading: var(--font-body);
   --font-body: "IBM Plex Sans Variable", "IBM Plex Sans", system-ui, sans-serif;
-  --font-serif: "IBM Plex Serif", ui-serif, Georgia, Cambria, "Times New Roman",
-    Times, serif;
+  --font-serif:
+    "IBM Plex Serif", ui-serif, Georgia, Cambria, "Times New Roman", Times,
+    serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -197,6 +198,35 @@ body {
 }
 .scrollbar-styled::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+/* Reusable crisp surface treatment. Override `--crisp-gradient-border-fill`
+ * on a consumer when the inner fill should differ from the default muted wash. */
+.crisp-gradient-border {
+  --crisp-gradient-border-fill: color-mix(
+    in oklab,
+    var(--muted) 90%,
+    transparent
+  );
+  --crisp-gradient-border-edge: color-mix(
+    in oklab,
+    var(--foreground) 12%,
+    transparent
+  );
+
+  background-image:
+    linear-gradient(
+      var(--crisp-gradient-border-fill),
+      var(--crisp-gradient-border-fill)
+    ),
+    linear-gradient(170deg, var(--crisp-gradient-border-edge), transparent);
+  background-clip: padding-box, border-box;
+  background-origin: padding-box, border-box;
+  border: 1px solid transparent;
+}
+
+.dark .crisp-gradient-border {
+  --crisp-gradient-border-edge: color-mix(in oklab, #fff 20%, transparent);
 }
 
 /* Tauri custom title bar. The bar itself is draggable; interactive children

@@ -61,12 +61,13 @@ export function TaskRow({
     <Link
       to="/workspace/$workspaceId/plan/$planId/task/$taskId"
       params={{ workspaceId, planId: task.plan_id, taskId: task.id }}
-      className="hover:bg-muted/40 group flex items-center gap-3 border-b px-3 py-2 transition-colors last:border-b-0 bg-muted"
+      className="hover:bg-muted/60 group flex items-center gap-3 px-3 py-2 transition-colors last:border-b-0 bg-muted/40"
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate text-xs font-light">{task.title}</span>
           <TaskStatusBadge status={task.status} />
+
           {initRunning && (
             <span
               className="text-muted-foreground inline-flex items-center gap-1 text-[10px]"
@@ -127,7 +128,10 @@ export function TaskRow({
                 ·
               </span>
               <span className="text-muted-foreground/70 hidden items-center gap-1 md:inline-flex">
-                <ProviderLogo provider={activeRun.provider} className="size-2.5" />
+                <ProviderLogo
+                  provider={activeRun.provider}
+                  className="size-2.5"
+                />
                 {activeRun.provider}
               </span>
             </span>
@@ -135,7 +139,7 @@ export function TaskRow({
         </div>
       </div>
       <span
-        className="text-muted-foreground text-xs tabular-nums"
+        className="text-muted-foreground/40 text-xs tabular-nums"
         title={new Date(task.updated_at).toLocaleString()}
       >
         {formatRelativeTime(task.updated_at)}

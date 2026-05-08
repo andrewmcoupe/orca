@@ -178,7 +178,7 @@ function PhaseRow({
   const showEditor = status !== "running";
 
   return (
-    <li className="space-y-1">
+    <li className="crisp-gradient-border space-y-1 rounded-sm p-2">
       <div className="flex items-center gap-2">
         <StatusIndicator status={status} />
         <span className="text-foreground flex-1 truncate text-[12px] font-medium">

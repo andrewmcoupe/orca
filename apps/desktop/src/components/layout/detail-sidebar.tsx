@@ -45,7 +45,7 @@ export function DetailSidebar({
       )}
       aria-label="Reference information"
     >
-      <div className="flex flex-col gap-7 px-4 pt-4 pb-4">
+      <div className="flex flex-col gap-7 p-4">
         {visible.map((s) => (
           <DetailSidebarSectionView key={s.key} section={s} />
         ))}

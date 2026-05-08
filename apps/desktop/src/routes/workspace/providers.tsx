@@ -26,8 +26,8 @@ function ProvidersPage() {
       <ul className="space-y-2">
         {(providers.data ?? []).map((p) => (
           <li key={p.id}>
-            <Card>
-              <CardHeader className="pb-2">
+            <div className="crisp-gradient-border p-2 rounded-sm px-1">
+              <CardHeader className="pb-2 px-2">
                 <CardTitle className="flex items-center gap-2 text-sm">
                   {p.installed && p.authenticated ? (
                     <CheckCircle className="text-emerald-600" weight="fill" />
@@ -76,7 +76,7 @@ function ProvidersPage() {
                   </div>
                 )}
               </CardContent>
-            </Card>
+            </div>
           </li>
         ))}
       </ul>

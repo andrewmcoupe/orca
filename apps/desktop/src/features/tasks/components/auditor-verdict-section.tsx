@@ -44,7 +44,7 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
       <ContentColumn className="overflow-hidden rounded-lg border bg-card">
         <div
           className={cn(
-            "flex flex-wrap items-center gap-2 border-b px-[14px] py-2.5",
+            "flex flex-wrap items-center gap-2 px-[14px] py-2.5",
             VERDICT_TINT_CLASSES[kind] ?? VERDICT_TINT_CLASSES.revise,
           )}
         >
