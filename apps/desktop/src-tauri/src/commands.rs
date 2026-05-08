@@ -599,7 +599,7 @@ pub fn get_workspace_home_dispatch(
             .extend(workspace_home_tasks_for(&conn, ws, recent_sql).map_err(|e| e.to_string())?);
     }
 
-    needs_attention.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    needs_attention.sort_by_key(|task| std::cmp::Reverse(task.updated_at));
     needs_attention.truncate(10);
     in_flight.sort_by(|a, b| {
         b.phase_started_at
@@ -607,9 +607,9 @@ pub fn get_workspace_home_dispatch(
             .cmp(&a.phase_started_at.unwrap_or(a.updated_at))
     });
     in_flight.truncate(10);
-    recent_activity.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    recent_activity.sort_by_key(|task| std::cmp::Reverse(task.updated_at));
     recent_activity.truncate(10);
-    workspace_rows.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
+    workspace_rows.sort_by_key(|workspace| std::cmp::Reverse(workspace.last_activity_at));
 
     Ok(WorkspaceHomeDispatch {
         workspace_count: workspaces.len() as i64,
