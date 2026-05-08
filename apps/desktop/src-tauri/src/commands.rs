@@ -3105,7 +3105,7 @@ fn launch_preferred_editor(path: &std::path::Path, line: u32) -> std::io::Result
     #[cfg(target_os = "macos")]
     {
         Command::new("open").arg(path).spawn()?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
