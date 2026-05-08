@@ -2719,12 +2719,70 @@ pub fn open_in_editor(
             .ok_or_else(|| "task has no worktree".to_string())?
     };
     let abs = std::path::PathBuf::from(&worktree_path).join(&path);
-    Command::new("code")
-        .arg("--goto")
-        .arg(format!("{}:{}", abs.to_string_lossy(), line))
-        .spawn()
-        .map_err(|e| format!("failed to launch editor: {}", e))?;
+    launch_preferred_editor(&abs, line).map_err(|e| format!("failed to launch editor: {}", e))?;
     Ok(())
+}
+
+fn launch_preferred_editor(path: &std::path::Path, line: u32) -> std::io::Result<()> {
+    let editor = std::env::var("ORCA_EDITOR")
+        .ok()
+        .or_else(|| std::env::var("VISUAL").ok())
+        .or_else(|| std::env::var("EDITOR").ok());
+
+    if let Some(editor) = editor {
+        let parts: Vec<&str> = editor.split_whitespace().collect();
+        if let Some((program, configured_args)) = parts.split_first() {
+            let mut cmd = Command::new(program);
+            cmd.args(configured_args);
+            add_editor_target_args(&mut cmd, program, path, line);
+            cmd.spawn()?;
+            return Ok(());
+        }
+    }
+
+    if Command::new("code")
+        .arg("--goto")
+        .arg(format!("{}:{}", path.to_string_lossy(), line))
+        .spawn()
+        .is_ok()
+    {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(path).spawn()?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Command::new("xdg-open").arg(path).spawn()?;
+        Ok(())
+    }
+}
+
+fn add_editor_target_args(cmd: &mut Command, program: &str, path: &std::path::Path, line: u32) {
+    let name = std::path::Path::new(program)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(program);
+    let path_line = format!("{}:{}", path.to_string_lossy(), line);
+
+    match name {
+        "code" | "code-insiders" | "cursor" | "windsurf" => {
+            cmd.arg("--goto").arg(path_line);
+        }
+        "zed" => {
+            cmd.arg(path_line);
+        }
+        "vim" | "nvim" | "vi" => {
+            cmd.arg(format!("+{}", line)).arg(path);
+        }
+        _ => {
+            cmd.arg(path);
+        }
+    }
 }
 
 #[tauri::command]

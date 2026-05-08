@@ -25,7 +25,7 @@ function RootLayout() {
           <TitleBarItem>
             <SidebarTrigger
               title="Toggle workspace sidebar"
-              className="size-6 rounded-none text-muted-foreground hover:text-foreground"
+              className="size-6 rounded-none border-0 text-muted-foreground hover:text-foreground"
             />
           </TitleBarItem>
         </TitleBar>

@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ContentColumn } from "@/components/layout/content-column";
 import { cn } from "@/lib/utils";
 import { diffModalController } from "@/features/diff/modal-controller";
@@ -11,10 +12,9 @@ const VERDICT_BADGE_STYLES: Record<string, string> = {
   reject: "bg-destructive/15 text-destructive border-destructive/40",
 };
 
-// The card surface itself picks up a tinted wash via these utility classes
-// (defined in App.css). The mix is against `--background`, so the same rule
-// produces a barely-tinted pale wash in light mode and a subtle deepening
-// of the surface in dark mode.
+// The verdict header picks up a tinted wash via these utility classes
+// (defined in App.css). The body stays on the regular surface so longer
+// feedback remains easy to read.
 const VERDICT_TINT_CLASSES: Record<string, string> = {
   approve: "verdict-tint-success",
   revise: "verdict-tint-warning",
@@ -22,8 +22,8 @@ const VERDICT_TINT_CLASSES: Record<string, string> = {
 };
 
 const SEVERITY_STYLES: Record<string, string> = {
-  blocking: "bg-destructive/15 text-destructive border-destructive/40",
-  advisory: "bg-muted text-muted-foreground border-border",
+  blocking: "text-destructive border-destructive/40",
+  advisory: "border-none text-muted-foreground",
 };
 
 /**
@@ -41,13 +41,13 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
   return (
     <section className="space-y-2">
       <h2 className="text-muted-foreground font-medium">Auditor verdict</h2>
-      <ContentColumn
-        className={cn(
-          "space-y-2.5 border p-[14px]",
-          VERDICT_TINT_CLASSES[kind] ?? VERDICT_TINT_CLASSES.revise,
-        )}
-      >
-        <div className="flex flex-wrap items-center gap-2">
+      <ContentColumn className="overflow-hidden rounded-lg border bg-card">
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-2 border-b px-[14px] py-2.5",
+            VERDICT_TINT_CLASSES[kind] ?? VERDICT_TINT_CLASSES.revise,
+          )}
+        >
           <Badge
             variant="outline"
             className={cn(
@@ -62,20 +62,26 @@ export function AuditorVerdictSection({ taskId }: { taskId: string }) {
             <span className="font-mono">{Math.round(v.confidence * 100)}%</span>
           </span>
         </div>
-        {v.summary.trim() && (
-          <p className="text-[13px] leading-[1.5]">{v.summary}</p>
-        )}
-        {v.concerns.length > 0 && (
-          <ul className="space-y-1.5">
-            {v.concerns.map((c, idx) => (
-              <ConcernRow
-                key={idx}
-                taskId={taskId}
-                concernIndex={idx}
-                concern={c}
-              />
-            ))}
-          </ul>
+        {(v.summary.trim() || v.concerns.length > 0) && (
+          <div className="space-y-2.5 p-[14px]">
+            {v.summary.trim() && (
+              <p className="text-[13px] leading-[1.5] font-serif text-muted-foreground">
+                {v.summary}
+              </p>
+            )}
+            {v.concerns.length > 0 && (
+              <ul className="space-y-4">
+                {v.concerns.map((c, idx) => (
+                  <ConcernRow
+                    key={idx}
+                    taskId={taskId}
+                    concernIndex={idx}
+                    concern={c}
+                  />
+                ))}
+              </ul>
+            )}
+          </div>
         )}
       </ContentColumn>
     </section>
@@ -99,31 +105,34 @@ function ConcernRow({
   };
   return (
     <li className="flex items-start gap-2">
-      <Badge
-        variant="outline"
-        className={cn(
-          "mt-[3px] h-[16px] shrink-0 rounded-sm border px-1.5 text-[10px] font-medium uppercase tracking-[0.06em]",
-          SEVERITY_STYLES[concern.severity] ?? SEVERITY_STYLES.advisory,
-        )}
-      >
-        {concern.severity}
-      </Badge>
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-baseline gap-x-2">
-          <span className="text-[12px] font-medium">{concern.category}</span>
-          {concern.anchor && (
-            <button
-              type="button"
-              onClick={onOpen}
-              className="text-primary/80 hover:text-primary font-mono text-[11px] underline-offset-2 hover:underline"
-            >
-              {concern.anchor.path}:{concern.anchor.line}
-            </button>
-          )}
+        <div className="flex flex-wrap items-baseline gap-x-1">
+          <p
+            className={cn(
+              "shrink-0 text-[12px] font-medium tracking-[0.06em]",
+              SEVERITY_STYLES[concern.severity] ?? SEVERITY_STYLES.advisory,
+            )}
+          >
+            {concern.severity}
+          </p>
+          &middot;
+          <span className="text-[12px] font-medium text-muted-foreground">
+            {concern.category}
+          </span>
         </div>
-        <p className="text-muted-foreground text-[12px] leading-[1.5]">
+        <p className="text-muted-foreground text-[12px] leading-[1.5] font-serif">
           {concern.rationale}
         </p>
+        {concern.anchor && (
+          <Button
+            variant="ghost"
+            type="button"
+            onClick={onOpen}
+            className="h-auto rounded-sm border-0 px-0 py-0 font-mono text-[11px] font-normal text-primary/80 underline-offset-2 hover:bg-transparent hover:text-primary hover:underline"
+          >
+            {concern.anchor.path}:{concern.anchor.line}
+          </Button>
+        )}
       </div>
     </li>
   );
