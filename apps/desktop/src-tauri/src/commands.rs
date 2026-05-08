@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::sync::Arc;
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -21,7 +21,7 @@ use crate::providers::{self, KnownModel, OptionDecl, ProviderCache, ProviderStat
 use crate::recent_events::{self, RecentEventRow};
 use crate::settings::{self, PermissionMode, PhaseConfig, PhaseType};
 use crate::subprocess::{ChildTracker, StreamOptions};
-use crate::workspace_db::open_workspace_db;
+use crate::workspace_db::{events_db_path, open_workspace_db};
 use crate::{ActiveWorkspace, ActiveWorkspaceState, GlobalDb};
 
 #[derive(Debug, Serialize, Clone)]
@@ -135,6 +135,150 @@ pub fn list_workspaces(
 ) -> Result<Vec<projections::WorkspaceProjection>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     projections::list_active_workspaces(&conn).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkspaceStats {
+    pub workspace_id: String,
+    pub plan_count: i64,
+    pub active_plan_count: i64,
+    pub paused_plan_count: i64,
+    pub completed_plan_count: i64,
+    pub task_count: i64,
+    pub running_task_count: i64,
+    pub awaiting_review_task_count: i64,
+    pub queued_task_count: i64,
+    pub blocked_task_count: i64,
+    pub merged_task_count: i64,
+    pub failed_task_count: i64,
+    pub updated_at: Option<i64>,
+    pub error: Option<String>,
+}
+
+fn workspace_stats_for(ws: &projections::WorkspaceProjection) -> WorkspaceStats {
+    let empty = || WorkspaceStats {
+        workspace_id: ws.id.clone(),
+        plan_count: 0,
+        active_plan_count: 0,
+        paused_plan_count: 0,
+        completed_plan_count: 0,
+        task_count: 0,
+        running_task_count: 0,
+        awaiting_review_task_count: 0,
+        queued_task_count: 0,
+        blocked_task_count: 0,
+        merged_task_count: 0,
+        failed_task_count: 0,
+        updated_at: None,
+        error: None,
+    };
+
+    let db_path = events_db_path(&ws.path);
+    if !db_path.exists() {
+        return empty();
+    }
+
+    let conn =
+        match rusqlite::Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+            Ok(conn) => conn,
+            Err(err) => {
+                let mut stats = empty();
+                stats.error = Some(err.to_string());
+                return stats;
+            }
+        };
+
+    let mut stats = empty();
+
+    let plans = conn.query_row(
+        "SELECT
+            COUNT(*),
+            COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status = 'paused' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(running_task_count), 0),
+            MAX(updated_at)
+         FROM plan_projection",
+        [],
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+            ))
+        },
+    );
+
+    match plans {
+        Ok((plan_count, active, paused, completed, running, updated_at)) => {
+            stats.plan_count = plan_count;
+            stats.active_plan_count = active;
+            stats.paused_plan_count = paused;
+            stats.completed_plan_count = completed;
+            stats.running_task_count = running;
+            stats.updated_at = updated_at;
+        }
+        Err(err) => {
+            stats.error = Some(err.to_string());
+            return stats;
+        }
+    }
+
+    let tasks = conn.query_row(
+        "SELECT
+            COUNT(*),
+            COALESCE(SUM(CASE WHEN status = 'awaiting_review' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN is_queued = 1 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN is_blocked = 1 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status = 'merged' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+            MAX(updated_at)
+         FROM task_projection",
+        [],
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Option<i64>>(6)?,
+            ))
+        },
+    );
+
+    match tasks {
+        Ok((task_count, review, queued, blocked, merged, failed, updated_at)) => {
+            stats.task_count = task_count;
+            stats.awaiting_review_task_count = review;
+            stats.queued_task_count = queued;
+            stats.blocked_task_count = blocked;
+            stats.merged_task_count = merged;
+            stats.failed_task_count = failed;
+            stats.updated_at = match (stats.updated_at, updated_at) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (None, Some(b)) => Some(b),
+                (Some(a), None) => Some(a),
+                (None, None) => None,
+            };
+        }
+        Err(err) => stats.error = Some(err.to_string()),
+    }
+
+    stats
+}
+
+#[tauri::command]
+pub fn list_workspace_stats(state: State<'_, GlobalDb>) -> Result<Vec<WorkspaceStats>, String> {
+    let workspaces = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        projections::list_active_workspaces(&conn).map_err(|e| e.to_string())?
+    };
+    Ok(workspaces.iter().map(workspace_stats_for).collect())
 }
 
 #[tauri::command]
@@ -368,10 +512,89 @@ pub fn set_active_workspace(
         }
     }
 
+    // Restart-recovery sweep for phase runs. A previous app process can die
+    // after `PhaseRunStarted` but before `PhaseRunCompleted` / `PhaseRunFailed`,
+    // leaving plan counters and task rails permanently "running". If no live
+    // in-memory runner owns the id in this process, synthesize a failure so the
+    // projection becomes terminal and the user can retry.
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        if let Some(aw) = guard.as_mut() {
+            match sweep_stale_phase_runs_on_activation(&app, &mut aw.conn, &ws.id) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!(
+                        "workspace {}: cleared {n} stale running phase run(s) on activation",
+                        ws.id
+                    );
+                }
+                Err(e) => {
+                    eprintln!("workspace {}: stale phase-run sweep failed: {}", ws.id, e);
+                }
+            }
+        }
+    }
+
     Ok(ActiveWorkspaceInfo {
         id: ws.id,
         path: ws.path,
     })
+}
+
+fn sweep_stale_phase_runs_on_activation(
+    app: &AppHandle,
+    conn: &mut rusqlite::Connection,
+    workspace_id: &str,
+) -> Result<usize, String> {
+    let inflight = app.state::<InflightRuns>();
+    let live: std::collections::HashSet<String> = inflight.snapshot_ids().into_iter().collect();
+
+    let running: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT pr.id
+                 FROM phase_run_projection pr
+                 JOIN task_projection t ON t.id = pr.task_id
+                 WHERE t.workspace_id = ?1 AND pr.status = 'running'",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![workspace_id], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        out
+    };
+
+    let mut count = 0;
+    for phase_run_id in running {
+        if live.contains(&phase_run_id) {
+            continue;
+        }
+        let seq = phases::runtime::current_seq(conn, "phase_run", &phase_run_id)?;
+        phases::runtime::append_phase_run_step(
+            conn,
+            app,
+            workspace_id,
+            &phase_run_id,
+            seq,
+            NewEvent {
+                event_type: "PhaseRunFailed".into(),
+                version: 1,
+                payload: json!({
+                    "error_kind": "app_interrupted",
+                    "error_message": "Interrupted by app shutdown or crash. The previous process did not record a terminal phase result."
+                })
+                .to_string(),
+            },
+            &make_metadata("system:phase_recovery"),
+        )?;
+        count += 1;
+    }
+
+    Ok(count)
 }
 
 /// Read the current branch of the workspace's main worktree. Returns `None`

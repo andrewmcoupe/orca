@@ -105,8 +105,14 @@ impl ChildTracker {
 #[cfg(unix)]
 fn kill_pid(pid: u32) {
     unsafe {
-        // SIGKILL — shutdown is best-effort; we don't wait for graceful exit.
-        libc::kill(pid as i32, libc::SIGKILL);
+        // SIGKILL the process group first. `run_streaming` starts each child in
+        // its own session on Unix, so this also catches grandchildren such as
+        // shell-spawned test servers. Fall back to the direct PID for legacy
+        // children that predate the process-group setup.
+        let pgid = -(pid as i32);
+        if libc::kill(pgid, libc::SIGKILL) != 0 {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
     }
 }
 
@@ -185,6 +191,18 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+
+    #[cfg(unix)]
+    {
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
 
     // Defaults first, then per-call overrides — caller wins on conflict.
     for (k, v) in default_env() {

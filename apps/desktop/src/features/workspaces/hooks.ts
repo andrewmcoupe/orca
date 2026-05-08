@@ -4,6 +4,7 @@ import { workspacesApi } from "./api";
 import type {
   ActiveWorkspaceInfo,
   Workspace,
+  WorkspaceStats,
   WorkspaceSettings,
 } from "./types";
 
@@ -14,6 +15,13 @@ export function useWorkspaces() {
   return useQuery<Workspace[]>({
     queryKey: WORKSPACE_LIST_KEY,
     queryFn: workspacesApi.list,
+  });
+}
+
+export function useWorkspaceStats() {
+  return useQuery<WorkspaceStats[]>({
+    queryKey: ["workspace_stats"],
+    queryFn: workspacesApi.listStats,
   });
 }
 

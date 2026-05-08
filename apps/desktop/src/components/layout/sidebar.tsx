@@ -9,7 +9,7 @@ import { useProviders } from "@/features/providers/hooks";
 import { useAddWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
 import type { Workspace } from "@/features/workspaces/types";
 import { cn } from "@/lib/utils";
-import { Plus } from "@phosphor-icons/react";
+import { House, Plus } from "@phosphor-icons/react";
 import { Link, useMatches } from "@tanstack/react-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -76,16 +76,27 @@ export function WorkspacesSidebar() {
         <span className="text-muted-foreground text-xs font-mono lowercase font-thin">
           Workspaces
         </span>
-        <Button
-          variant={"outline"}
-          type="button"
-          onClick={onAdd}
-          aria-label="Add workspace"
-          title="Add workspace"
-          className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-4 items-center justify-center rounded-none p-0"
-        >
-          <Plus className="size-2 text-foreground" />
-        </Button>
+        <div className="flex items-center gap-1">
+          <Link
+            to="/"
+            activeOptions={{ exact: true }}
+            aria-label="Home"
+            title="Home"
+            className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-4 items-center justify-center border border-border bg-background transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
+          >
+            <House className="size-2.5" />
+          </Link>
+          <Button
+            variant={"outline"}
+            type="button"
+            onClick={onAdd}
+            aria-label="Add workspace"
+            title="Add workspace"
+            className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-4 items-center justify-center rounded-none p-0"
+          >
+            <Plus className="size-2 text-foreground" />
+          </Button>
+        </div>
       </div>
       <div className="scrollbar-styled flex-1 overflow-y-auto">
         {list.length === 0 ? (

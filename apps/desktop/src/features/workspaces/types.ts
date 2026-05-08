@@ -13,6 +13,23 @@ export type ActiveWorkspaceInfo = {
   path: string;
 };
 
+export type WorkspaceStats = {
+  workspace_id: string;
+  plan_count: number;
+  active_plan_count: number;
+  paused_plan_count: number;
+  completed_plan_count: number;
+  task_count: number;
+  running_task_count: number;
+  awaiting_review_task_count: number;
+  queued_task_count: number;
+  blocked_task_count: number;
+  merged_task_count: number;
+  failed_task_count: number;
+  updated_at: number | null;
+  error: string | null;
+};
+
 export type PhaseType = "test_author" | "implementer" | "auditor";
 
 export type ModelChoice = {

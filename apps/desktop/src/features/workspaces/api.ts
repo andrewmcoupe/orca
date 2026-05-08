@@ -2,11 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   ActiveWorkspaceInfo,
   Workspace,
+  WorkspaceStats,
   WorkspaceSettings,
 } from "./types";
 
 export const workspacesApi = {
   list: () => invoke<Workspace[]>("list_workspaces"),
+  listStats: () => invoke<WorkspaceStats[]>("list_workspace_stats"),
   add: (path: string) => invoke<Workspace>("add_workspace", { path }),
   remove: (id: string) => invoke<void>("remove_workspace", { id }),
   setActive: (id: string) =>
