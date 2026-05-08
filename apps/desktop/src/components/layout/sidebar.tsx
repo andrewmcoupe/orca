@@ -19,7 +19,6 @@ import { House, Plus } from "@phosphor-icons/react";
 import { Link, useMatches } from "@tanstack/react-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
-import { Button } from "../ui/button";
 
 const EXPANSION_KEY = "orca:sidebar:expanded-workspaces";
 

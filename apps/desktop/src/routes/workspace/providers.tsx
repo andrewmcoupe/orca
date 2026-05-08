@@ -1,9 +1,9 @@
-import { createRoute } from "@tanstack/react-router";
-import { ArrowSquareOut, CheckCircle, XCircle } from "@phosphor-icons/react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ContentColumn } from "@/components/layout/content-column";
+import { Button } from "@/components/ui/button";
+import { CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useProviders, useRefreshProviders } from "@/features/providers/hooks";
+import { ArrowSquareOut, CheckCircle, XCircle } from "@phosphor-icons/react";
+import { createRoute } from "@tanstack/react-router";
 import { workspaceLayoutRoute } from "./layout";
 
 function ProvidersPage() {
