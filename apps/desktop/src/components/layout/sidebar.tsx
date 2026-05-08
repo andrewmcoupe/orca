@@ -4,6 +4,12 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarHeader,
+  SidebarRail,
+} from "@/components/ui/sidebar";
 import { usePlans } from "@/features/plans/hooks";
 import { useProviders } from "@/features/providers/hooks";
 import { useAddWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
@@ -71,58 +77,94 @@ export function WorkspacesSidebar() {
   const list = workspaces.data ?? [];
 
   return (
-    <aside className="bg-muted text-sidebar-foreground flex w-[220px] flex-shrink-0 flex-col border-r">
-      <div className="flex h-7 items-center justify-between pr-1 pl-2 font-body text-sm">
-        <span className="text-muted-foreground text-xs font-mono lowercase font-thin">
-          Workspaces
-        </span>
-        <div className="flex items-center gap-1">
+    <Sidebar collapsible="icon" className="top-9 h-[calc(100svh-2.25rem)]">
+      <SidebarHeader className="gap-0 border-b p-0">
+        <div className="flex h-7 items-center justify-between pr-1 pl-2 font-body text-sm group-data-[collapsible=icon]:hidden">
+          <span className="text-muted-foreground text-xs font-mono lowercase font-thin">
+            Workspaces
+          </span>
+          <div className="flex items-center gap-1 group-data-[collapsible=icon]:hidden">
+            <Link
+              to="/"
+              activeOptions={{ exact: true }}
+              aria-label="Home"
+              title="Home"
+              className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-4 items-center justify-center border border-border bg-background transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
+            >
+              <House className="size-2.5" />
+            </Link>
+            <Button
+              variant={"outline"}
+              type="button"
+              onClick={onAdd}
+              aria-label="Add workspace"
+              title="Add workspace"
+              className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-4 items-center justify-center rounded-none p-0"
+            >
+              <Plus className="size-2 text-foreground" />
+            </Button>
+          </div>
+        </div>
+        <div className="hidden h-16 flex-col items-center justify-center gap-1 group-data-[collapsible=icon]:flex">
           <Link
             to="/"
             activeOptions={{ exact: true }}
             aria-label="Home"
             title="Home"
-            className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-4 items-center justify-center border border-border bg-background transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
+            className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-8 items-center justify-center transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
           >
-            <House className="size-2.5" />
+            <House className="size-4" />
           </Link>
           <Button
-            variant={"outline"}
+            variant={"ghost"}
             type="button"
             onClick={onAdd}
             aria-label="Add workspace"
             title="Add workspace"
-            className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-4 items-center justify-center rounded-none p-0"
+            className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground inline-flex size-8 items-center justify-center rounded-none p-0"
           >
-            <Plus className="size-2 text-foreground" />
+            <Plus className="size-4 text-foreground" />
           </Button>
         </div>
-      </div>
-      <div className="scrollbar-styled flex-1 overflow-y-auto">
+      </SidebarHeader>
+      <SidebarContent className="scrollbar-styled">
         {list.length === 0 ? (
           <p className="text-muted-foreground px-2 py-2 text-[11px]">
             No workspaces yet. Click + to add one.
           </p>
         ) : (
-          <Accordion
-            value={expansion.open}
-            className={"bg-background border-b"}
-            onValueChange={(v) =>
-              expansion.setOpen(Array.isArray(v) ? (v as string[]) : [])
-            }
-          >
-            {list.map((ws) => (
-              <WorkspaceItem
-                key={ws.id}
-                workspace={ws}
-                isActive={ws.id === activeId}
-                onNavigate={() => expansion.ensureOpen(ws.id)}
-              />
-            ))}
-          </Accordion>
+          <>
+            <Accordion
+              value={expansion.open}
+              className="bg-background border-b group-data-[collapsible=icon]:hidden"
+              onValueChange={(v) =>
+                expansion.setOpen(Array.isArray(v) ? (v as string[]) : [])
+              }
+            >
+              {list.map((ws) => (
+                <WorkspaceItem
+                  key={ws.id}
+                  workspace={ws}
+                  isActive={ws.id === activeId}
+                  onNavigate={() => expansion.ensureOpen(ws.id)}
+                />
+              ))}
+            </Accordion>
+            <div className="hidden flex-col items-center gap-1 py-1 group-data-[collapsible=icon]:flex">
+              {list.map((ws) => (
+                <CollapsedWorkspaceLink
+                  key={ws.id}
+                  workspace={ws}
+                  isActive={ws.id === activeId}
+                  onNavigate={() => expansion.ensureOpen(ws.id)}
+                />
+              ))}
+            </div>
+          </>
         )}
-      </div>
-    </aside>
+      </SidebarContent>
+      <SidebarRail />
+    </Sidebar>
   );
 }
 
@@ -239,5 +281,40 @@ function NavRowContent({
         </span>
       )}
     </>
+  );
+}
+
+function CollapsedWorkspaceLink({
+  workspace,
+  isActive,
+  onNavigate,
+}: {
+  workspace: Workspace;
+  isActive: boolean;
+  onNavigate: () => void;
+}) {
+  const label = workspace.name.trim() || "Workspace";
+  const initials = label
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
+
+  return (
+    <Link
+      to="/workspace/$workspaceId/plans"
+      params={{ workspaceId: workspace.id }}
+      search={{ status: "active", q: "" }}
+      onClick={onNavigate}
+      aria-label={label}
+      title={label}
+      className={cn(
+        "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex size-8 items-center justify-center text-[10px] font-medium transition-colors",
+        isActive && "bg-sidebar-accent text-foreground",
+      )}
+    >
+      {initials || label[0].toUpperCase()}
+    </Link>
   );
 }
