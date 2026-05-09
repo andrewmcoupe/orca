@@ -18,6 +18,7 @@ import {
 } from "../hooks";
 import {
   emptyEdits,
+  type AmbiguityItem,
   type Briefing,
   type BriefingDraft,
   type BriefingEdits,
@@ -35,6 +36,7 @@ import {
 
 function mergeDraft(draft: BriefingDraft, edits: BriefingEdits): BriefingDraft {
   const out: BriefingDraft = {
+    ...draft,
     title: edits.title ?? draft.title,
     description: edits.description ?? draft.description,
     assumptions: draft.assumptions, // edits don't mutate assumptions; pushbacks are separate
@@ -89,6 +91,16 @@ export function BriefingReviewScreen({
   }, [briefing.generation_count]);
 
   const merged = useMemo(() => mergeDraft(draft, edits), [draft, edits]);
+  const requiredUnresolved = useMemo(
+    () =>
+      (merged.ambiguity_ledger ?? []).filter(
+        (item) =>
+          item.user_input_required &&
+          item.status !== "assumed" &&
+          item.status !== "user_resolved",
+      ),
+    [merged.ambiguity_ledger],
+  );
 
   const validationMap = useMemo(() => {
     const m = new Map<string, boolean>();
@@ -117,6 +129,8 @@ export function BriefingReviewScreen({
   const [working, setWorking] = useState<"idle" | "accepting" | "cancelling">(
     "idle",
   );
+  const [acceptRecommendedAssumptions, setAcceptRecommendedAssumptions] =
+    useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Live elapsed counter while the projection says we're generating. Anchors
@@ -316,7 +330,10 @@ export function BriefingReviewScreen({
     setWorking("accepting");
     try {
       await persistEditsIfAny();
-      const plan = await accept.mutateAsync(briefing.id);
+      const plan = await accept.mutateAsync({
+        briefingId: briefing.id,
+        acceptAssumptions: acceptRecommendedAssumptions,
+      });
       onAccepted(plan.id);
     } catch (e) {
       setErrorMsg(String(e));
@@ -340,7 +357,10 @@ export function BriefingReviewScreen({
   // draft would land on top, silently swapping out the work they're about to
   // commit. The action bar surfaces this via the disabled state.
   const acceptDisabled =
-    merged.tasks.length === 0 || working !== "idle" || isRefining;
+    merged.tasks.length === 0 ||
+    working !== "idle" ||
+    isRefining ||
+    (requiredUnresolved.length > 0 && !acceptRecommendedAssumptions);
 
   // ------------------------------------------------------------------ render
 
@@ -352,7 +372,16 @@ export function BriefingReviewScreen({
         generationCount={briefing.generation_count}
         provider={briefing.provider}
         model={briefing.model}
+        briefingDepth={briefing.briefing_depth}
         importedSources={briefing.imported_sources}
+      />
+
+      <ConfirmationSummary
+        draft={merged}
+        selectedDepth={briefing.briefing_depth}
+        requiredUnresolved={requiredUnresolved}
+        acceptRecommendedAssumptions={acceptRecommendedAssumptions}
+        onAcceptRecommendedAssumptionsChange={setAcceptRecommendedAssumptions}
       />
 
       <Section label="Description">
@@ -363,6 +392,8 @@ export function BriefingReviewScreen({
           className="text-sm leading-relaxed"
         />
       </Section>
+
+      <DistillationWorkbench draft={merged} />
 
       <Section
         label="Assumptions"
@@ -500,6 +531,7 @@ function Header({
   generationCount,
   provider,
   model,
+  briefingDepth,
   importedSources,
 }: {
   title: string;
@@ -507,6 +539,7 @@ function Header({
   generationCount: number;
   provider: string;
   model: string;
+  briefingDepth: string;
   importedSources: ImportedBriefingSource[];
 }) {
   const [editing, setEditing] = useState(false);
@@ -539,6 +572,10 @@ function Header({
           <span>·</span>
           <Badge variant="secondary" className="font-mono text-[10px]">
             {provider}:{model}
+          </Badge>
+          <span>·</span>
+          <Badge variant="outline" className="font-mono text-[10px]">
+            {briefingDepth}
           </Badge>
           {importedSources.length > 0 && (
             <>
@@ -592,6 +629,215 @@ function Section({
       </div>
       {children}
     </section>
+  );
+}
+
+function ConfirmationSummary({
+  draft,
+  selectedDepth,
+  requiredUnresolved,
+  acceptRecommendedAssumptions,
+  onAcceptRecommendedAssumptionsChange,
+}: {
+  draft: BriefingDraft;
+  selectedDepth: string;
+  requiredUnresolved: AmbiguityItem[];
+  acceptRecommendedAssumptions: boolean;
+  onAcceptRecommendedAssumptionsChange: (next: boolean) => void;
+}) {
+  const approved = draft.approved_assumptions ?? draft.assumptions.map((a) => a.statement);
+  const risks = draft.structured_brief?.risks ?? [];
+  return (
+    <section className="rounded-md border bg-muted/20 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <Label className="text-sm font-semibold">
+            Here&apos;s what I think you want…
+          </Label>
+          <p className="text-sm text-muted-foreground">
+            {draft.structured_brief?.goal || draft.description}
+          </p>
+        </div>
+        <Badge
+          variant={
+            draft.readiness_status === "blocked_needs_user_input"
+              ? "destructive"
+              : "secondary"
+          }
+          className="font-mono text-[10px]"
+        >
+          {draft.readiness_status ?? "ready_with_assumptions"}
+        </Badge>
+      </div>
+      <dl className="mt-3 grid gap-2 text-xs md:grid-cols-3">
+        <SummaryItem label="Recommended depth" value={draft.recommended_depth ?? selectedDepth} />
+        <SummaryItem label="Task count" value={String(draft.tasks.length)} />
+        <SummaryItem
+          label="Confidence"
+          value={
+            typeof draft.confidence_score === "number"
+              ? `${Math.round(draft.confidence_score * 100)}%`
+              : "Unknown"
+          }
+        />
+        <SummaryItem label="Approved assumptions" value={String(approved.length)} />
+        <SummaryItem label="Unresolved questions" value={String(requiredUnresolved.length)} />
+        <SummaryItem label="Notable risks" value={String(risks.length)} />
+      </dl>
+      {requiredUnresolved.length > 0 && (
+        <label className="mt-3 flex items-start gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={acceptRecommendedAssumptions}
+            onChange={(e) =>
+              onAcceptRecommendedAssumptionsChange(e.currentTarget.checked)
+            }
+            className="mt-0.5"
+          />
+          <span className="text-muted-foreground">
+            Accept recommended assumptions for unresolved required questions and
+            allow task creation.
+          </span>
+        </label>
+      )}
+    </section>
+  );
+}
+
+function SummaryItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="font-medium">{value}</dd>
+    </div>
+  );
+}
+
+function DistillationWorkbench({ draft }: { draft: BriefingDraft }) {
+  const classification = draft.classification;
+  const budget = draft.budget_estimate;
+  const structured = draft.structured_brief;
+  const hasDistillation =
+    classification ||
+    budget ||
+    (draft.ambiguity_ledger ?? []).length > 0 ||
+    structured ||
+    (draft.persona_model_mapping ?? []).length > 0;
+  if (!hasDistillation) return null;
+
+  return (
+    <Section
+      label="Distillation lab"
+      hint="Structured model outputs used to decide whether this brief is ready for tasks."
+    >
+      <div className="grid gap-3">
+        {(classification || budget) && (
+          <Card className="grid gap-3 p-4 md:grid-cols-2">
+            {classification && (
+              <div className="space-y-2">
+                <Label className="text-muted-foreground text-xs uppercase tracking-wide">
+                  Request classification
+                </Label>
+                <div className="flex flex-wrap gap-1.5">
+                  <Badge variant="outline">complexity: {classification.complexity}</Badge>
+                  <Badge variant="outline">ambiguity: {classification.ambiguity}</Badge>
+                  <Badge variant="outline">risk: {classification.risk}</Badge>
+                </div>
+                {classification.likely_touched_areas?.length > 0 && (
+                  <p className="text-muted-foreground text-xs">
+                    Areas: {classification.likely_touched_areas.join(", ")}
+                  </p>
+                )}
+              </div>
+            )}
+            {budget && (
+              <div className="space-y-2">
+                <Label className="text-muted-foreground text-xs uppercase tracking-wide">
+                  Budget tradeoff
+                </Label>
+                <p className="text-sm">{budget.token_strategy}</p>
+                <p className="text-muted-foreground text-xs">
+                  {budget.cost_level} cost · {budget.risk_level} risk ·{" "}
+                  {Math.round((budget.confidence ?? 0) * 100)}% confidence
+                </p>
+              </div>
+            )}
+          </Card>
+        )}
+
+        {(draft.ambiguity_ledger ?? []).length > 0 && (
+          <Card className="space-y-3 p-4">
+            <Label className="text-muted-foreground text-xs uppercase tracking-wide">
+              Ambiguity ledger
+            </Label>
+            {(draft.ambiguity_ledger ?? []).map((item) => (
+              <div key={item.id} className="rounded-sm border p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-medium text-sm">{item.question}</p>
+                  <Badge variant={item.user_input_required ? "destructive" : "secondary"}>
+                    {item.status}
+                  </Badge>
+                </div>
+                <p className="mt-1 text-muted-foreground text-xs">
+                  {item.why_it_matters}
+                </p>
+                <p className="mt-2 text-xs">
+                  Default: {item.recommended_default_assumption}
+                </p>
+              </div>
+            ))}
+          </Card>
+        )}
+
+        {structured && (
+          <Card className="grid gap-3 p-4 md:grid-cols-2">
+            <BriefList title="Required behavior" items={structured.required_behavior} />
+            <BriefList title="UX requirements" items={structured.ux_requirements} />
+            <BriefList title="Data/API" items={structured.data_api_requirements} />
+            <BriefList title="Tests required" items={structured.tests_required} />
+            <BriefList title="Risks" items={structured.risks} />
+            <BriefList title="Acceptance criteria" items={structured.acceptance_criteria} />
+          </Card>
+        )}
+
+        {(draft.persona_model_mapping ?? []).length > 0 && (
+          <Card className="space-y-2 p-4">
+            <Label className="text-muted-foreground text-xs uppercase tracking-wide">
+              Persona model mapping
+            </Label>
+            <div className="grid gap-2 md:grid-cols-2">
+              {(draft.persona_model_mapping ?? []).map((m) => (
+                <div key={m.persona} className="text-xs">
+                  <span className="font-medium">{m.persona}</span>{" "}
+                  <span className="text-muted-foreground font-mono">
+                    {m.provider}:{m.model}
+                  </span>
+                  {m.warning && (
+                    <span className="text-amber-600"> · {m.warning}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+function BriefList({ title, items }: { title: string; items?: string[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="space-y-1">
+      <Label className="text-muted-foreground text-xs uppercase tracking-wide">
+        {title}
+      </Label>
+      <ul className="list-disc space-y-1 pl-4 text-sm">
+        {items.map((item, i) => (
+          <li key={`${title}-${i}`}>{item}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

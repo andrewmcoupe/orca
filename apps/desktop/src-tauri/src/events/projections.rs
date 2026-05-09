@@ -315,6 +315,10 @@ CREATE TABLE IF NOT EXISTS briefing_projection (
     imported_sources_json   TEXT NOT NULL DEFAULT '[]',
     provider                TEXT NOT NULL,
     model                   TEXT NOT NULL,
+    briefing_depth          TEXT NOT NULL DEFAULT 'guided',
+    persona_config_json     TEXT,
+    persona_artifacts_json  TEXT NOT NULL DEFAULT '[]',
+    active_persona_json     TEXT,
     current_draft_json      TEXT,                     -- BriefingDraft JSON, NULL until first draft lands
     pending_edits_json      TEXT,                     -- BriefingEdits JSON, NULL when no edits pending
     validation_results_json TEXT,                     -- PathValidationResult[] JSON, NULL until first draft
@@ -389,6 +393,10 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
         // Stored separately from `initial_description` so imported context remains
         // traceable even after the prompt text is refined or summarized.
         "ALTER TABLE briefing_projection ADD COLUMN imported_sources_json TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE briefing_projection ADD COLUMN briefing_depth TEXT NOT NULL DEFAULT 'guided'",
+        "ALTER TABLE briefing_projection ADD COLUMN persona_config_json TEXT",
+        "ALTER TABLE briefing_projection ADD COLUMN persona_artifacts_json TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE briefing_projection ADD COLUMN active_persona_json TEXT",
     ];
     for sql in migrations {
         match conn.execute(sql, []) {
@@ -1817,6 +1825,10 @@ pub struct BriefingProjection {
     pub imported_sources: serde_json::Value,
     pub provider: String,
     pub model: String,
+    pub briefing_depth: String,
+    pub persona_config: Option<serde_json::Value>,
+    pub persona_artifacts: serde_json::Value,
+    pub active_persona: Option<serde_json::Value>,
     pub current_draft: Option<serde_json::Value>,
     pub pending_edits: Option<serde_json::Value>,
     pub validation_results: Option<serde_json::Value>,
@@ -1848,6 +1860,14 @@ struct BriefingStartedPayload {
     imported_sources: serde_json::Value,
     provider: String,
     model: String,
+    #[serde(default = "default_briefing_depth")]
+    briefing_depth: String,
+    #[serde(default)]
+    persona_config: Option<serde_json::Value>,
+}
+
+fn default_briefing_depth() -> String {
+    "guided".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1862,6 +1882,19 @@ struct BriefingDraftProducedPayload {
     duration_ms: Option<i64>,
     #[serde(default)]
     validation_results: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BriefingPersonaStartedPayload {
+    persona_id: String,
+    persona_label: String,
+    provider: String,
+    model: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BriefingPersonaArtifactProducedPayload {
+    artifact: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1910,8 +1943,9 @@ pub fn apply_briefing_event(
             tx.execute(
                 "INSERT INTO briefing_projection
                     (id, workspace_id, status, initial_description, imported_sources_json, provider, model,
+                     briefing_depth, persona_config_json,
                      generation_count, created_at, updated_at)
-                 VALUES (?1, ?2, 'active', ?3, ?4, ?5, ?6, 0, ?7, ?7)",
+                 VALUES (?1, ?2, 'active', ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?9)",
                 params![
                     event.aggregate_id,
                     p.workspace_id,
@@ -1919,28 +1953,38 @@ pub fn apply_briefing_event(
                     p.imported_sources.to_string(),
                     p.provider,
                     p.model,
+                    p.briefing_depth,
+                    p.persona_config.as_ref().map(|v| v.to_string()),
                     event.created_at,
                 ],
             )?;
         }
         "BriefingDraftProduced" => {
             let p: BriefingDraftProducedPayload = serde_json::from_str(&event.payload)?;
+            let persona_artifacts = p
+                .draft
+                .get("persona_artifacts")
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
             // Terminal-success transition: clear the in-flight flags and any prior
             // failure reason so the UI shows a clean "draft is ready" state.
             tx.execute(
                 "UPDATE briefing_projection
                  SET current_draft_json = ?1,
                      validation_results_json = ?2,
+                     persona_artifacts_json = ?3,
+                     active_persona_json = NULL,
                      pending_edits_json = NULL,
-                     generation_count = ?3,
+                     generation_count = ?4,
                      is_generating = 0,
                      generation_kind = NULL,
                      last_generation_error = NULL,
-                     updated_at = ?4
-                 WHERE id = ?5",
+                     updated_at = ?5
+                 WHERE id = ?6",
                 params![
                     p.draft.to_string(),
                     p.validation_results.as_ref().map(|v| v.to_string()),
+                    persona_artifacts.to_string(),
                     p.generation_index,
                     event.created_at,
                     event.aggregate_id,
@@ -1957,9 +2001,60 @@ pub fn apply_briefing_event(
                  SET is_generating = 1,
                      generation_kind = ?1,
                      last_generation_error = NULL,
+                     active_persona_json = NULL,
                      updated_at = ?2
                  WHERE id = ?3",
                 params![p.kind, event.created_at, event.aggregate_id],
+            )?;
+        }
+        "BriefingPersonaStarted" => {
+            let p: BriefingPersonaStartedPayload = serde_json::from_str(&event.payload)?;
+            let active = serde_json::json!({
+                "persona_id": p.persona_id,
+                "persona_label": p.persona_label,
+                "provider": p.provider,
+                "model": p.model,
+            });
+            tx.execute(
+                "UPDATE briefing_projection
+                 SET active_persona_json = ?1, updated_at = ?2
+                 WHERE id = ?3",
+                params![active.to_string(), event.created_at, event.aggregate_id],
+            )?;
+        }
+        "BriefingPersonaArtifactProduced" => {
+            let p: BriefingPersonaArtifactProducedPayload = serde_json::from_str(&event.payload)?;
+            let current: String = tx
+                .query_row(
+                    "SELECT persona_artifacts_json FROM briefing_projection WHERE id = ?1",
+                    params![event.aggregate_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|_| "[]".to_string());
+            let mut artifacts =
+                serde_json::from_str::<Vec<serde_json::Value>>(&current).unwrap_or_default();
+            let persona_id = p
+                .artifact
+                .get("persona_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            if let Some(persona_id) = persona_id {
+                artifacts.retain(|artifact| {
+                    artifact.get("persona_id").and_then(|v| v.as_str()) != Some(persona_id.as_str())
+                });
+            }
+            artifacts.push(p.artifact);
+            tx.execute(
+                "UPDATE briefing_projection
+                 SET persona_artifacts_json = ?1,
+                     active_persona_json = NULL,
+                     updated_at = ?2
+                 WHERE id = ?3",
+                params![
+                    serde_json::Value::Array(artifacts).to_string(),
+                    event.created_at,
+                    event.aggregate_id,
+                ],
             )?;
         }
         "BriefingGenerationFailed" => {
@@ -1970,6 +2065,7 @@ pub fn apply_briefing_event(
                 "UPDATE briefing_projection
                  SET is_generating = 0,
                      generation_kind = NULL,
+                     active_persona_json = NULL,
                      last_generation_error = ?1,
                      updated_at = ?2
                  WHERE id = ?3",
@@ -1984,6 +2080,7 @@ pub fn apply_briefing_event(
                 "UPDATE briefing_projection
                  SET is_generating = 0,
                      generation_kind = NULL,
+                     active_persona_json = NULL,
                      last_generation_error = NULL,
                      updated_at = ?1
                  WHERE id = ?2",
@@ -2038,6 +2135,7 @@ pub fn apply_briefing_event(
                      cancel_reason = ?1,
                      is_generating = 0,
                      generation_kind = NULL,
+                     active_persona_json = NULL,
                      updated_at = ?2
                  WHERE id = ?3",
                 params![p.reason, event.created_at, event.aggregate_id],
@@ -2048,14 +2146,17 @@ pub fn apply_briefing_event(
     Ok(())
 }
 
-const BRIEFING_COLUMNS: &str = "id, workspace_id, status, initial_description, imported_sources_json, provider, model, current_draft_json, pending_edits_json, validation_results_json, generation_count, is_generating, generation_kind, last_generation_error, final_plan_id, cancel_reason, created_at, updated_at";
+const BRIEFING_COLUMNS: &str = "id, workspace_id, status, initial_description, imported_sources_json, provider, model, briefing_depth, persona_config_json, persona_artifacts_json, active_persona_json, current_draft_json, pending_edits_json, validation_results_json, generation_count, is_generating, generation_kind, last_generation_error, final_plan_id, cancel_reason, created_at, updated_at";
 
 fn read_briefing(r: &rusqlite::Row) -> rusqlite::Result<BriefingProjection> {
     let imported_sources_str: String = r.get(4)?;
-    let current_draft_str: Option<String> = r.get(7)?;
-    let pending_edits_str: Option<String> = r.get(8)?;
-    let validation_results_str: Option<String> = r.get(9)?;
-    let is_generating_int: i64 = r.get(11)?;
+    let persona_config_str: Option<String> = r.get(8)?;
+    let persona_artifacts_str: String = r.get(9)?;
+    let active_persona_str: Option<String> = r.get(10)?;
+    let current_draft_str: Option<String> = r.get(11)?;
+    let pending_edits_str: Option<String> = r.get(12)?;
+    let validation_results_str: Option<String> = r.get(13)?;
+    let is_generating_int: i64 = r.get(15)?;
     Ok(BriefingProjection {
         id: r.get(0)?,
         workspace_id: r.get(1)?,
@@ -2065,6 +2166,15 @@ fn read_briefing(r: &rusqlite::Row) -> rusqlite::Result<BriefingProjection> {
             .unwrap_or_else(|_| serde_json::Value::Array(Vec::new())),
         provider: r.get(5)?,
         model: r.get(6)?,
+        briefing_depth: r.get(7)?,
+        persona_config: persona_config_str
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
+        persona_artifacts: serde_json::from_str(&persona_artifacts_str)
+            .unwrap_or_else(|_| serde_json::Value::Array(Vec::new())),
+        active_persona: active_persona_str
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
         current_draft: current_draft_str
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok()),
@@ -2074,14 +2184,14 @@ fn read_briefing(r: &rusqlite::Row) -> rusqlite::Result<BriefingProjection> {
         validation_results: validation_results_str
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok()),
-        generation_count: r.get(10)?,
+        generation_count: r.get(14)?,
         is_generating: is_generating_int != 0,
-        generation_kind: r.get(12)?,
-        last_generation_error: r.get(13)?,
-        final_plan_id: r.get(14)?,
-        cancel_reason: r.get(15)?,
-        created_at: r.get(16)?,
-        updated_at: r.get(17)?,
+        generation_kind: r.get(16)?,
+        last_generation_error: r.get(17)?,
+        final_plan_id: r.get(18)?,
+        cancel_reason: r.get(19)?,
+        created_at: r.get(20)?,
+        updated_at: r.get(21)?,
     })
 }
 

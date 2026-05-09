@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { X } from "@phosphor-icons/react";
+import { Info, X } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import { ContentColumn } from "@/components/layout/content-column";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +15,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useProviderModels, useProviders } from "@/features/providers/hooks";
+import {
+  useActiveWorkspace,
+  useWorkspaceSettings,
+} from "@/features/workspaces/hooks";
 import { LinearImportDialog } from "@/features/integrations/linear/components/linear-import-dialog";
 import { LinearLogo } from "@/features/integrations/linear/components/linear-logo";
 import {
@@ -21,7 +27,67 @@ import {
 } from "@/features/integrations/linear/briefing-markdown";
 import type { LinearIssue } from "@/features/integrations/linear/types";
 import { useGenerateBriefingDraft, useStartBriefing } from "../hooks";
-import type { Briefing } from "../types";
+import type { Briefing, BriefingDepth } from "../types";
+
+const DEPTH_OPTIONS: Array<{
+  value: BriefingDepth;
+  label: string;
+  help: string;
+}> = [
+  {
+    value: "quick",
+    label: "Quick",
+    help: "Minimal processing for simple, low-risk changes.",
+  },
+  {
+    value: "guided",
+    label: "Guided",
+    help: "Adds ambiguity detection and implementation planning.",
+  },
+  {
+    value: "thorough",
+    label: "Thorough",
+    help: "Adds targeted codebase context retrieval.",
+  },
+  {
+    value: "adversarial",
+    label: "Adversarial",
+    help: "Adds skeptic review for risky or ambiguous work.",
+  },
+];
+
+const PERSONA_SUMMARY = [
+  {
+    name: "Intent Extractor",
+    depths: "Quick+",
+    description: "turns the raw feature request into product intent.",
+  },
+  {
+    name: "Ambiguity Hunter",
+    depths: "Guided+",
+    description: "finds unclear decisions and proposes default assumptions.",
+  },
+  {
+    name: "Implementation Planner",
+    depths: "Guided+",
+    description: "turns the brief into a task graph and test plan.",
+  },
+  {
+    name: "Codebase Cartographer",
+    depths: "Thorough+",
+    description: "retrieves targeted repo context and relevant files.",
+  },
+  {
+    name: "Skeptic",
+    depths: "Adversarial",
+    description: "reviews risks, missing requirements, and test gaps.",
+  },
+  {
+    name: "Final Synthesizer",
+    depths: "All",
+    description: "reconciles the outputs into the editable brief.",
+  },
+];
 
 export function BriefingSetupScreen({
   onCancel,
@@ -40,6 +106,9 @@ export function BriefingSetupScreen({
   const [importedIssues, setImportedIssues] = useState<LinearIssue[]>([]);
   const [providerId, setProviderId] = useState<string>("");
   const [model, setModel] = useState<string>("");
+  const [briefingDepth, setBriefingDepth] = useState<BriefingDepth>("guided");
+  const activeWorkspace = useActiveWorkspace();
+  const workspaceSettings = useWorkspaceSettings(activeWorkspace.data?.id);
 
   // Default the provider to the first installed one once detection lands.
   useEffect(() => {
@@ -87,6 +156,26 @@ export function BriefingSetupScreen({
   const canSubmit =
     finalDescription.trim().length > 10 && !!providerId && !!model && !submitting;
 
+  const budgetPreview = useMemo(() => {
+    const chars = finalDescription.trim().length;
+    const imported = importedSources.length > 0;
+    const base =
+      chars > 1800 || imported
+        ? "medium"
+        : chars > 800
+          ? "low-medium"
+          : "low";
+    const expensive =
+      briefingDepth === "thorough"
+        ? "targeted repo retrieval"
+        : briefingDepth === "adversarial"
+          ? "targeted repo retrieval and red-team review"
+          : briefingDepth === "guided"
+            ? "ambiguity/planning personas"
+            : "intent extraction only";
+    return `${base} token spend; ${expensive}.`;
+  }, [briefingDepth, finalDescription, importedSources.length]);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
@@ -97,6 +186,12 @@ export function BriefingSetupScreen({
         imported_sources: importedSources,
         provider: providerId,
         model,
+        briefing_depth: briefingDepth,
+        persona_config:
+          workspaceSettings.data?.briefing_personas &&
+          Object.keys(workspaceSettings.data.briefing_personas).length > 0
+            ? (workspaceSettings.data.briefing_personas as Record<string, unknown>)
+            : null,
       });
       // Fire the initial generation. The mutation resolves once the backend
       // has spawned the worker — the actual draft lands asynchronously and
@@ -124,6 +219,8 @@ export function BriefingSetupScreen({
           review and refine before any tasks are created.
         </p>
       </header>
+
+      <BriefingProcessInfo />
 
       <form onSubmit={submit} className="space-y-5">
         <div className="space-y-1.5">
@@ -203,6 +300,29 @@ export function BriefingSetupScreen({
 
         <div className="grid gap-4">
           <div className="space-y-1.5">
+            <Label>Briefing depth</Label>
+            <Select
+              value={briefingDepth}
+              onValueChange={(v) => setBriefingDepth(v as BriefingDepth)}
+              disabled={submitting}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {DEPTH_OPTIONS.map((d) => (
+                  <SelectItem key={d.value} value={d.value}>
+                    {d.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-muted-foreground text-xs">
+              {DEPTH_OPTIONS.find((d) => d.value === briefingDepth)?.help}{" "}
+              Estimated budget: {budgetPreview}
+            </p>
+          </div>
+          <div className="space-y-1.5">
             <Label>Provider</Label>
             <Select
               value={providerId}
@@ -276,5 +396,102 @@ export function BriefingSetupScreen({
         </div>
       </form>
     </ContentColumn>
+  );
+}
+
+function BriefingProcessInfo() {
+  return (
+    <Card className="bg-muted/20 p-4">
+      <div className="flex items-start gap-3">
+        <div className="border-border bg-background mt-0.5 flex size-7 shrink-0 items-center justify-center border">
+          <Info className="size-4 text-muted-foreground" />
+        </div>
+        <div className="min-w-0 flex-1 space-y-4">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold">How briefing works</h2>
+              <Badge variant="outline" className="font-mono text-[10px]">
+                no chat
+              </Badge>
+            </div>
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              Orca turns your feature description into a structured workbench.
+              You review the brief, edit fields, approve assumptions, resolve
+              required questions, then create tasks.
+            </p>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <ProcessStep
+              step="1"
+              title="Classify"
+              body="Complexity, ambiguity, risk, likely touched areas, and the cheapest useful depth."
+            />
+            <ProcessStep
+              step="2"
+              title="Distill"
+              body="Specialist personas produce structured artifacts, not conversational replies."
+            />
+            <ProcessStep
+              step="3"
+              title="Confirm"
+              body="Task creation waits until required ambiguities are resolved or assumptions are accepted."
+            />
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-2">
+            {PERSONA_SUMMARY.map((persona) => (
+              <div
+                key={persona.name}
+                className="border-border/70 bg-background/60 flex items-start justify-between gap-3 border px-3 py-2"
+              >
+                <div>
+                  <p className="text-xs font-medium">{persona.name}</p>
+                  <p className="text-muted-foreground text-[11px] leading-relaxed">
+                    {persona.description}
+                  </p>
+                </div>
+                <Badge
+                  variant="secondary"
+                  className="mt-0.5 shrink-0 font-mono text-[10px]"
+                >
+                  {persona.depths}
+                </Badge>
+              </div>
+            ))}
+          </div>
+
+          <p className="text-muted-foreground text-[11px] leading-relaxed">
+            Quick stays cheap. Guided adds ambiguity and planning. Thorough
+            retrieves targeted codebase context. Adversarial adds red-team
+            review when risk or uncertainty justifies the extra spend.
+          </p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function ProcessStep({
+  step,
+  title,
+  body,
+}: {
+  step: string;
+  title: string;
+  body: string;
+}) {
+  return (
+    <div className="border-border/70 bg-background/60 border p-3">
+      <div className="flex items-center gap-2">
+        <span className="border-border flex size-5 items-center justify-center border font-mono text-[10px] text-muted-foreground">
+          {step}
+        </span>
+        <p className="text-xs font-medium">{title}</p>
+      </div>
+      <p className="text-muted-foreground mt-2 text-[11px] leading-relaxed">
+        {body}
+      </p>
+    </div>
   );
 }

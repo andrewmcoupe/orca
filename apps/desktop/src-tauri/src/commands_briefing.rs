@@ -8,12 +8,14 @@ use std::sync::Arc;
 
 use rusqlite::{params, Connection};
 use serde_json::json;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use crate::briefing::{self, BriefingDraft, BriefingEdits, BriefingError, PathValidationResult};
+use crate::briefing::{
+    self, BriefingDraft, BriefingEdits, BriefingError, PathValidationResult, PersonaArtifact,
+};
 use crate::briefing_inflight::{GenerationKind, Inflight, InflightBriefings, InflightGuard};
 use crate::commands::{emit_projection_updated, make_metadata_for};
 use crate::events::append::append_events_in_tx;
@@ -24,6 +26,7 @@ use crate::events::projections::{
 use crate::events::types::NewEvent;
 use crate::providers::{self, ProviderCache};
 use crate::recent_events;
+use crate::settings::{BriefingPersonaConfig, ModelChoice};
 use crate::subprocess::ChildTracker;
 use crate::workspace_db::open_workspace_db;
 use crate::{ActiveWorkspaceState, GlobalDb};
@@ -106,6 +109,8 @@ pub async fn start_briefing(
     imported_sources: Option<serde_json::Value>,
     provider: String,
     model: String,
+    briefing_depth: Option<String>,
+    persona_config: Option<serde_json::Value>,
 ) -> Result<BriefingProjection, String> {
     let (workspace_id, _workspace_path) = {
         let active = app.state::<ActiveWorkspaceState>();
@@ -130,6 +135,8 @@ pub async fn start_briefing(
             "imported_sources": imported_sources.unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
             "provider": provider,
             "model": model,
+            "briefing_depth": briefing_depth.unwrap_or_else(|| "guided".to_string()),
+            "persona_config": persona_config.unwrap_or(serde_json::Value::Null),
         });
         append_briefing_event(
             &mut aw.conn,
@@ -168,9 +175,12 @@ struct GenerationInputs {
     workspace_path: String,
     provider_id: String,
     model: String,
+    briefing_depth: String,
+    persona_config: Option<serde_json::Value>,
     user_description: String,
     previous_draft: Option<BriefingDraft>,
     user_feedback: Option<BriefingEdits>,
+    persona_artifacts: Vec<PersonaArtifact>,
 }
 
 /// Read the briefing projection on `conn` and assemble [`GenerationInputs`].
@@ -202,14 +212,20 @@ fn load_generation_inputs_from_conn(
         .pending_edits
         .as_ref()
         .and_then(|v| serde_json::from_value::<BriefingEdits>(v.clone()).ok());
+    let persona_artifacts =
+        serde_json::from_value::<Vec<PersonaArtifact>>(briefing.persona_artifacts.clone())
+            .unwrap_or_default();
     Ok(GenerationInputs {
         workspace_id: workspace_id.to_string(),
         workspace_path: workspace_path.to_string(),
         provider_id: briefing.provider,
         model: briefing.model,
+        briefing_depth: briefing.briefing_depth,
+        persona_config: briefing.persona_config,
         user_description: briefing.initial_description,
         previous_draft,
         user_feedback,
+        persona_artifacts,
     })
 }
 
@@ -405,51 +421,15 @@ async fn execute_generation_task(
     let workspace_id = inputs.workspace_id.clone();
     let workspace_path = inputs.workspace_path.clone();
 
-    // Resolve provider lazily — it can fail (cache miss, cli no longer on
-    // PATH) and we want that surfaced via `BriefingGenerationFailed` rather
-    // than as a panic in the spawned task.
-    let provider_path = match resolve_provider_path(&app, &inputs.provider_id) {
-        Ok(p) => p,
-        Err(e) => {
-            land_terminal_event(
-                &app,
-                &workspace_id,
-                &workspace_path,
-                &briefing_id,
-                TerminalOutcome::Failed { reason: e },
-            );
-            return;
-        }
-    };
-    let provider = match providers::get(&inputs.provider_id) {
-        Some(p) => p,
-        None => {
-            land_terminal_event(
-                &app,
-                &workspace_id,
-                &workspace_path,
-                &briefing_id,
-                TerminalOutcome::Failed {
-                    reason: format!("unknown provider: {}", inputs.provider_id),
-                },
-            );
-            return;
-        }
-    };
-
     let tracker = app.state::<Arc<ChildTracker>>().inner().clone();
     let workspace_path_buf = std::path::PathBuf::from(&workspace_path);
-    let result = briefing::run_briefing_generation(
+    let result = run_persona_orchestration(
+        &app,
+        &briefing_id,
+        &inputs,
         &workspace_path_buf,
-        &provider_path,
-        provider.as_ref(),
-        &inputs.model,
-        &inputs.user_description,
-        inputs.previous_draft.as_ref(),
-        inputs.user_feedback.as_ref(),
         tracker,
         cancel.clone(),
-        Some((app.clone(), briefing_id.clone())),
     )
     .await;
 
@@ -607,6 +587,401 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedPersonaModel {
+    persona_id: String,
+    provider_id: String,
+    model: String,
+    fallback_used: bool,
+    warning: Option<String>,
+}
+
+fn parse_persona_config(value: Option<&serde_json::Value>) -> BriefingPersonaConfig {
+    value
+        .and_then(|v| serde_json::from_value::<BriefingPersonaConfig>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+fn choice_for_persona(
+    persona_id: &str,
+    default_provider: &str,
+    default_model: &str,
+    config: &BriefingPersonaConfig,
+) -> ModelChoice {
+    config
+        .personas
+        .get(persona_id)
+        .and_then(|choice| choice.clone())
+        .or_else(|| config.global_default.clone())
+        .unwrap_or_else(|| ModelChoice {
+            provider: default_provider.to_string(),
+            model: default_model.to_string(),
+        })
+}
+
+fn resolve_persona_model(
+    app: &AppHandle,
+    persona_id: &str,
+    default_provider: &str,
+    default_model: &str,
+    config: &BriefingPersonaConfig,
+) -> ResolvedPersonaModel {
+    let preferred = choice_for_persona(persona_id, default_provider, default_model, config);
+    match resolve_provider_path(app, &preferred.provider) {
+        Ok(_) if providers::get(&preferred.provider).is_some() => ResolvedPersonaModel {
+            persona_id: persona_id.to_string(),
+            provider_id: preferred.provider,
+            model: preferred.model,
+            fallback_used: false,
+            warning: None,
+        },
+        Ok(_) => ResolvedPersonaModel {
+            persona_id: persona_id.to_string(),
+            provider_id: default_provider.to_string(),
+            model: default_model.to_string(),
+            fallback_used: true,
+            warning: Some(format!(
+                "configured provider '{}' is unknown; fell back to briefing default",
+                preferred.provider
+            )),
+        },
+        Err(e) => ResolvedPersonaModel {
+            persona_id: persona_id.to_string(),
+            provider_id: default_provider.to_string(),
+            model: default_model.to_string(),
+            fallback_used: true,
+            warning: Some(format!(
+                "configured provider '{}' unavailable: {}; fell back to briefing default",
+                preferred.provider, e
+            )),
+        },
+    }
+}
+
+fn emit_briefing_note(app: &AppHandle, briefing_id: &str, text: impl Into<String>) {
+    let _ = app.emit(
+        briefing::BRIEFING_CHUNK_EVENT,
+        briefing::BriefingChunkPayload {
+            briefing_id: briefing_id.to_string(),
+            text: text.into(),
+        },
+    );
+}
+
+fn append_briefing_event_for_workspace(
+    app: &AppHandle,
+    workspace_id: &str,
+    workspace_path: &Path,
+    briefing_id: &str,
+    event_type: &str,
+    payload: serde_json::Value,
+    actor: &str,
+) {
+    let workspace_path_str = workspace_path.to_string_lossy();
+    let mut conn = match open_workspace_db(&workspace_path_str) {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!(
+                "briefing {}: failed to open workspace db for {}: {}",
+                briefing_id, event_type, e
+            );
+            return;
+        }
+    };
+    if let Err(e) = append_briefing_event(&mut conn, briefing_id, event_type, payload, actor) {
+        eprintln!(
+            "briefing {}: failed to append {}: {}",
+            briefing_id, event_type, e
+        );
+        return;
+    }
+    emit_projection_updated(app, Some(workspace_id), BRIEFING_AGGREGATE, briefing_id);
+}
+
+fn parse_briefing_draft_from_value(
+    value: serde_json::Value,
+) -> Result<BriefingDraft, BriefingError> {
+    serde_json::from_value(value.clone()).map_err(|e| BriefingError::ParseFailed {
+        last_output: value.to_string(),
+        last_error: e.to_string(),
+    })
+}
+
+fn apply_persona_runtime_metadata(
+    draft: &mut BriefingDraft,
+    artifacts: &[PersonaArtifact],
+    final_resolved: &ResolvedPersonaModel,
+    briefing_depth: &str,
+) {
+    draft.persona_model_mapping = artifacts.iter().map(PersonaArtifact::mapping).collect();
+    draft
+        .persona_model_mapping
+        .push(briefing::PersonaModelMapping {
+            persona: briefing::persona_label(briefing::PERSONA_FINAL_SYNTHESIZER).to_string(),
+            provider: final_resolved.provider_id.clone(),
+            model: final_resolved.model.clone(),
+            fallback_used: final_resolved.fallback_used,
+            warning: final_resolved.warning.clone(),
+        });
+    draft.persona_artifacts = artifacts
+        .iter()
+        .map(|artifact| serde_json::to_value(artifact).unwrap_or_else(|_| json!({})))
+        .collect();
+    if draft.recommended_depth.is_none() {
+        draft.recommended_depth = Some(briefing_depth.to_string());
+    }
+    briefing::ensure_draft_ids(draft);
+}
+
+async fn run_persona_orchestration(
+    app: &AppHandle,
+    briefing_id: &str,
+    inputs: &GenerationInputs,
+    workspace_path: &Path,
+    tracker: Arc<ChildTracker>,
+    cancel: CancellationToken,
+) -> Result<briefing::GenerationOutcome, BriefingError> {
+    let config = parse_persona_config(inputs.persona_config.as_ref());
+    let mut artifacts: Vec<PersonaArtifact> = if inputs.previous_draft.is_none() {
+        inputs.persona_artifacts.clone()
+    } else {
+        Vec::new()
+    };
+    let persona_ids = briefing::personas_for_depth(&inputs.briefing_depth);
+
+    emit_briefing_note(
+        app,
+        briefing_id,
+        format!(
+            "\n\nRequirements Distillation Lab: running {} specialist persona{} for {} mode.\n",
+            persona_ids.len(),
+            if persona_ids.len() == 1 { "" } else { "s" },
+            inputs.briefing_depth
+        ),
+    );
+
+    for persona_id in persona_ids {
+        if artifacts
+            .iter()
+            .any(|artifact| artifact.persona_id == persona_id)
+        {
+            emit_briefing_note(
+                app,
+                briefing_id,
+                format!(
+                    "\n→ {} already completed; reusing artifact from previous attempt.\n",
+                    briefing::persona_label(persona_id)
+                ),
+            );
+            continue;
+        }
+        if cancel.is_cancelled() {
+            return Err(BriefingError::CliInvocationFailed(
+                "briefing generation cancelled".into(),
+            ));
+        }
+        let resolved =
+            resolve_persona_model(app, persona_id, &inputs.provider_id, &inputs.model, &config);
+        let provider_path = resolve_provider_path(app, &resolved.provider_id)
+            .map_err(BriefingError::CliInvocationFailed)?;
+        let provider = providers::get(&resolved.provider_id).ok_or_else(|| {
+            BriefingError::CliInvocationFailed(format!(
+                "unknown provider: {}",
+                resolved.provider_id
+            ))
+        })?;
+        emit_briefing_note(
+            app,
+            briefing_id,
+            format!(
+                "\n→ {} using {}:{}\n",
+                briefing::persona_label(persona_id),
+                resolved.provider_id,
+                resolved.model
+            ),
+        );
+        append_briefing_event_for_workspace(
+            app,
+            &inputs.workspace_id,
+            workspace_path,
+            briefing_id,
+            "BriefingPersonaStarted",
+            json!({
+                "persona_id": persona_id,
+                "persona_label": briefing::persona_label(persona_id),
+                "provider": resolved.provider_id,
+                "model": resolved.model,
+            }),
+            "system:briefing",
+        );
+        let prompt = briefing::render_persona_prompt(
+            persona_id,
+            &inputs.user_description,
+            &inputs.briefing_depth,
+            inputs.previous_draft.as_ref(),
+            inputs.user_feedback.as_ref(),
+            &artifacts,
+        );
+        let outcome = briefing::run_prompt_for_json(
+            workspace_path,
+            &provider_path,
+            provider.as_ref(),
+            &resolved.model,
+            &prompt,
+            None,
+            Arc::clone(&tracker),
+            cancel.clone(),
+            Some((app.clone(), briefing_id.to_string())),
+        )
+        .await?;
+        let artifact = PersonaArtifact {
+            persona_id: resolved.persona_id,
+            persona_label: briefing::persona_label(persona_id).to_string(),
+            provider: resolved.provider_id,
+            model: resolved.model,
+            output: outcome.json,
+            fallback_used: resolved.fallback_used,
+            warning: resolved.warning,
+            duration_ms: outcome.duration_ms,
+        };
+        append_briefing_event_for_workspace(
+            app,
+            &inputs.workspace_id,
+            workspace_path,
+            briefing_id,
+            "BriefingPersonaArtifactProduced",
+            json!({ "artifact": &artifact }),
+            "system:briefing",
+        );
+        artifacts.push(artifact);
+    }
+
+    let final_resolved = resolve_persona_model(
+        app,
+        briefing::PERSONA_FINAL_SYNTHESIZER,
+        &inputs.provider_id,
+        &inputs.model,
+        &config,
+    );
+    let final_provider_path = resolve_provider_path(app, &final_resolved.provider_id)
+        .map_err(BriefingError::CliInvocationFailed)?;
+    let final_provider = providers::get(&final_resolved.provider_id).ok_or_else(|| {
+        BriefingError::CliInvocationFailed(format!(
+            "unknown provider: {}",
+            final_resolved.provider_id
+        ))
+    })?;
+
+    emit_briefing_note(
+        app,
+        briefing_id,
+        format!(
+            "\n→ {} using {}:{}\n",
+            briefing::persona_label(briefing::PERSONA_FINAL_SYNTHESIZER),
+            final_resolved.provider_id,
+            final_resolved.model
+        ),
+    );
+    append_briefing_event_for_workspace(
+        app,
+        &inputs.workspace_id,
+        workspace_path,
+        briefing_id,
+        "BriefingPersonaStarted",
+        json!({
+            "persona_id": briefing::PERSONA_FINAL_SYNTHESIZER,
+            "persona_label": briefing::persona_label(briefing::PERSONA_FINAL_SYNTHESIZER),
+            "provider": final_resolved.provider_id,
+            "model": final_resolved.model,
+        }),
+        "system:briefing",
+    );
+    let final_prompt = briefing::render_final_synthesis_prompt(
+        &inputs.user_description,
+        &inputs.briefing_depth,
+        inputs.persona_config.as_ref(),
+        inputs.previous_draft.as_ref(),
+        inputs.user_feedback.as_ref(),
+        &artifacts,
+    );
+    let final_outcome = briefing::run_prompt_for_json(
+        workspace_path,
+        &final_provider_path,
+        final_provider.as_ref(),
+        &final_resolved.model,
+        &final_prompt,
+        Some(briefing::briefing_draft_schema()),
+        Arc::clone(&tracker),
+        cancel.clone(),
+        Some((app.clone(), briefing_id.to_string())),
+    )
+    .await?;
+    let mut draft = parse_briefing_draft_from_value(final_outcome.json.clone())?;
+    apply_persona_runtime_metadata(
+        &mut draft,
+        &artifacts,
+        &final_resolved,
+        &inputs.briefing_depth,
+    );
+
+    let mut total_duration_ms =
+        artifacts.iter().map(|a| a.duration_ms).sum::<u64>() + final_outcome.duration_ms;
+    let quality_issues = briefing::validate_task_quality(&draft, &inputs.briefing_depth);
+    if !quality_issues.is_empty() {
+        emit_briefing_note(
+            app,
+            briefing_id,
+            format!(
+                "\n→ Task quality check found {} issue{}; asking {} to repair the task details.\n",
+                quality_issues.len(),
+                if quality_issues.len() == 1 { "" } else { "s" },
+                briefing::persona_label(briefing::PERSONA_FINAL_SYNTHESIZER),
+            ),
+        );
+
+        let repair_prompt = briefing::render_task_repair_prompt(
+            &inputs.user_description,
+            &inputs.briefing_depth,
+            &draft,
+            &quality_issues,
+            &artifacts,
+        );
+        let repair_outcome = briefing::run_prompt_for_json(
+            workspace_path,
+            &final_provider_path,
+            final_provider.as_ref(),
+            &final_resolved.model,
+            &repair_prompt,
+            Some(briefing::briefing_draft_schema()),
+            tracker,
+            cancel,
+            Some((app.clone(), briefing_id.to_string())),
+        )
+        .await?;
+        total_duration_ms += repair_outcome.duration_ms;
+
+        draft = parse_briefing_draft_from_value(repair_outcome.json.clone())?;
+        apply_persona_runtime_metadata(
+            &mut draft,
+            &artifacts,
+            &final_resolved,
+            &inputs.briefing_depth,
+        );
+        let remaining_issues = briefing::validate_task_quality(&draft, &inputs.briefing_depth);
+        if !remaining_issues.is_empty() {
+            return Err(BriefingError::TaskQualityFailed(
+                briefing::format_task_quality_issues(&remaining_issues),
+            ));
+        }
+    }
+
+    Ok(briefing::GenerationOutcome {
+        draft,
+        rendered_prompt: final_prompt,
+        duration_ms: total_duration_ms,
+    })
+}
+
 #[tauri::command]
 pub fn generate_briefing_draft(
     app: AppHandle,
@@ -747,6 +1122,7 @@ fn apply_edits_to_draft(draft: &BriefingDraft, edits: &BriefingEdits) -> Briefin
 pub fn accept_briefing(
     app: AppHandle,
     briefing_id: String,
+    accept_assumptions: Option<bool>,
     global: State<'_, GlobalDb>,
 ) -> Result<PlanProjection, String> {
     let (workspace_id, default_phase_config) = {
@@ -801,6 +1177,22 @@ pub fn accept_briefing(
         };
         if final_draft.tasks.is_empty() {
             return Err("cannot accept a briefing with no tasks".into());
+        }
+        let required_unresolved = final_draft
+            .ambiguity_ledger
+            .iter()
+            .filter(|item| {
+                item.user_input_required
+                    && item.status != "assumed"
+                    && item.status != "user_resolved"
+            })
+            .count();
+        if required_unresolved > 0 && !accept_assumptions.unwrap_or(false) {
+            return Err(format!(
+                "cannot create tasks: {} required ambiguity item{} unresolved. Accept recommended assumptions to proceed.",
+                required_unresolved,
+                if required_unresolved == 1 { "" } else { "s" }
+            ));
         }
         (
             final_draft,
@@ -1165,6 +1557,7 @@ mod tests {
                 id: "a1".into(),
                 statement: "x".into(),
             }],
+            ..Default::default()
         }
     }
 

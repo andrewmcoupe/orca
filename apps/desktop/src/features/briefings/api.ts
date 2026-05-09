@@ -21,12 +21,16 @@ export const briefingsApi = {
     imported_sources?: ImportedBriefingSource[];
     provider: string;
     model: string;
+    briefing_depth: string;
+    persona_config?: Record<string, unknown> | null;
   }) =>
     invoke<Briefing>("start_briefing", {
       initialDescription: input.initial_description,
       importedSources: input.imported_sources ?? [],
       provider: input.provider,
       model: input.model,
+      briefingDepth: input.briefing_depth,
+      personaConfig: input.persona_config ?? null,
     }),
   /**
    * Kick off the initial draft. Returns the briefing projection with
@@ -41,8 +45,8 @@ export const briefingsApi = {
   /** Same fire-and-forget contract as `generate`, but for subsequent drafts. */
   refine: (briefingId: string) =>
     invoke<Briefing>("refine_briefing", { briefingId }),
-  accept: (briefingId: string) =>
-    invoke<Plan>("accept_briefing", { briefingId }),
+  accept: (briefingId: string, acceptAssumptions = false) =>
+    invoke<Plan>("accept_briefing", { briefingId, acceptAssumptions }),
   /**
    * Cancel only the in-flight generation. The briefing remains active and
    * can be regenerated. Idempotent: succeeds silently if nothing is running.

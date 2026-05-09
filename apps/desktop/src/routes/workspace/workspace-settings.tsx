@@ -8,6 +8,7 @@ import { eventsApi } from "@/features/events/api";
 import { useRemoveWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
 import { PhaseConfigPanel } from "@/features/workspaces/components/phase-config-panel";
 import { DefaultPhaseSettingsPanel } from "@/features/workspaces/components/default-phase-settings-panel";
+import { BriefingPersonaSettingsPanel } from "@/features/workspaces/components/briefing-persona-settings-panel";
 import { QuickTaskPreviewToggle } from "@/features/workspaces/components/quick-task-preview-toggle";
 import { GateConfigPanel } from "@/features/workspaces/components/gate-config-panel";
 import { PromptsPanel } from "@/features/workspaces/components/prompts-panel";
@@ -56,6 +57,13 @@ function WorkspaceSettingsPage() {
         description="Per-phase default model and permission mode. New tasks inherit these; tasks can override per-phase from the preview screen before starting."
       >
         <DefaultPhaseSettingsPanel workspaceId={ws.id} />
+      </SettingsSection>
+
+      <SettingsSection
+        title="Briefing personas"
+        description="Provider and model defaults for the specialist reviewers used by the briefing workbench."
+      >
+        <BriefingPersonaSettingsPanel workspaceId={ws.id} />
       </SettingsSection>
 
       <SettingsSection

@@ -42,6 +42,14 @@ pub struct ModelChoice {
     pub model: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BriefingPersonaConfig {
+    #[serde(default)]
+    pub global_default: Option<ModelChoice>,
+    #[serde(default)]
+    pub personas: HashMap<String, Option<ModelChoice>>,
+}
+
 /// How much trust the underlying provider CLI extends to the agent. Three modes are
 /// exposed; the CLI's `default` ("prompt for every action") is intentionally absent
 /// because it deadlocks our non-interactive subprocess harness.
@@ -320,6 +328,8 @@ pub struct WorkspaceSettings {
     pub subprocess: SubprocessSettings,
     #[serde(default)]
     pub preview_server: PreviewServerSettings,
+    #[serde(default)]
+    pub briefing_personas: BriefingPersonaConfig,
 }
 
 impl Default for WorkspaceSettings {
@@ -335,6 +345,7 @@ impl Default for WorkspaceSettings {
             phase_timeouts: PhaseTimeoutSettings::default(),
             subprocess: SubprocessSettings::default(),
             preview_server: PreviewServerSettings::default(),
+            briefing_personas: BriefingPersonaConfig::default(),
         }
     }
 }
