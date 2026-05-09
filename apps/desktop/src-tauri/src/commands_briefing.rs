@@ -44,12 +44,17 @@ fn current_seq(conn: &Connection, aggregate_type: &str, aggregate_id: &str) -> R
 
 fn append_briefing_event(
     conn: &mut Connection,
+    workspace_id: &str,
     briefing_id: &str,
     event_type: &str,
     payload: serde_json::Value,
     actor: &str,
 ) -> Result<(), String> {
     let seq = current_seq(conn, BRIEFING_AGGREGATE, briefing_id)?;
+    let writer = crate::write_lock::workspace_writer(workspace_id);
+    let _wguard = writer
+        .lock()
+        .map_err(|_| "workspace writer poisoned".to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let outcome = append_events_in_tx(
         &tx,
@@ -140,6 +145,7 @@ pub async fn start_briefing(
         });
         append_briefing_event(
             &mut aw.conn,
+            &workspace_id,
             &briefing_id,
             "BriefingStarted",
             payload,
@@ -361,6 +367,7 @@ fn start_generation_internal(
         if matches!(kind, GenerationKind::Refine) {
             if let Err(e) = append_briefing_event(
                 &mut aw.conn,
+                &workspace_id,
                 briefing_id,
                 "BriefingRefineRequested",
                 json!({}),
@@ -372,6 +379,7 @@ fn start_generation_internal(
         }
         if let Err(e) = append_briefing_event(
             &mut aw.conn,
+            &workspace_id,
             briefing_id,
             "BriefingGenerationStarted",
             json!({ "kind": kind.as_str() }),
@@ -533,6 +541,7 @@ fn land_terminal_event(
             };
             append_briefing_event(
                 &mut conn,
+                workspace_id,
                 briefing_id,
                 "BriefingDraftProduced",
                 json!({
@@ -547,6 +556,7 @@ fn land_terminal_event(
         }
         TerminalOutcome::Failed { reason } => append_briefing_event(
             &mut conn,
+            workspace_id,
             briefing_id,
             "BriefingGenerationFailed",
             json!({ "reason": reason }),
@@ -554,6 +564,7 @@ fn land_terminal_event(
         ),
         TerminalOutcome::Cancelled => append_briefing_event(
             &mut conn,
+            workspace_id,
             briefing_id,
             "BriefingGenerationCancelled",
             json!({}),
@@ -688,7 +699,14 @@ fn append_briefing_event_for_workspace(
             return;
         }
     };
-    if let Err(e) = append_briefing_event(&mut conn, briefing_id, event_type, payload, actor) {
+    if let Err(e) = append_briefing_event(
+        &mut conn,
+        workspace_id,
+        briefing_id,
+        event_type,
+        payload,
+        actor,
+    ) {
         eprintln!(
             "briefing {}: failed to append {}: {}",
             briefing_id, event_type, e
@@ -1036,6 +1054,7 @@ pub fn apply_briefing_edits(
         // Emit BriefingDraftEdited carrying the full edit snapshot.
         append_briefing_event(
             &mut aw.conn,
+            &workspace_id,
             &briefing_id,
             "BriefingDraftEdited",
             json!({ "edits": &parsed }),
@@ -1049,6 +1068,7 @@ pub fn apply_briefing_edits(
         for pb in &parsed.assumption_pushbacks {
             append_briefing_event(
                 &mut aw.conn,
+                &workspace_id,
                 &briefing_id,
                 "BriefingPushedBack",
                 json!({
@@ -1225,6 +1245,10 @@ pub fn accept_briefing(
             .ok_or_else(|| "no active workspace".to_string())?;
         // Plan aggregate.
         let seq = current_seq(&aw.conn, "plan", &plan_id)?;
+        let writer = crate::write_lock::workspace_writer(&workspace_id);
+        let _wguard = writer
+            .lock()
+            .map_err(|_| "workspace writer poisoned".to_string())?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
         let outcome = append_events_in_tx(
             &tx,
@@ -1283,6 +1307,10 @@ pub fn accept_briefing(
         let aw = guard
             .as_mut()
             .ok_or_else(|| "no active workspace".to_string())?;
+        let writer = crate::write_lock::workspace_writer(&workspace_id);
+        let _wguard = writer
+            .lock()
+            .map_err(|_| "workspace writer poisoned".to_string())?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
         let outcome = append_events_in_tx(
             &tx,
@@ -1313,6 +1341,7 @@ pub fn accept_briefing(
             .ok_or_else(|| "no active workspace".to_string())?;
         append_briefing_event(
             &mut aw.conn,
+            &workspace_id,
             &briefing_id,
             "BriefingCompleted",
             json!({
@@ -1368,6 +1397,7 @@ pub fn cancel_briefing(app: AppHandle, briefing_id: String) -> Result<(), String
         let workspace_id = aw.id.clone();
         append_briefing_event(
             &mut aw.conn,
+            &workspace_id,
             &briefing_id,
             "BriefingCancelled",
             json!({ "reason": "user_cancelled" }),
@@ -1488,6 +1518,7 @@ pub fn sweep_stale_inflight_on_activation(
         }
         if let Err(e) = append_briefing_event(
             conn,
+            workspace_id,
             &b.id,
             "BriefingGenerationFailed",
             json!({ "reason": "interrupted by app restart" }),

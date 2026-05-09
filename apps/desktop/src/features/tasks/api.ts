@@ -51,6 +51,7 @@ export const tasksApi = {
     }),
   cancel: (taskId: string, reason: string) =>
     invoke<void>("cancel_task", { taskId, reason }),
+  delete: (taskId: string) => invoke<void>("delete_task", { taskId }),
   deleteWorktree: (taskId: string, force: boolean) =>
     invoke<void>("delete_worktree", { taskId, force }),
   passBackToImplementer: (taskId: string, userFeedback: string | null) =>

@@ -132,6 +132,40 @@ pub fn create_worktree(
     })
 }
 
+/// Best-effort cleanup of any leftover branch / worktree dir / worktree registration for
+/// a task whose projection no longer claims an active worktree. Used to recover from a
+/// crash between `git worktree add` and the `WorktreeCreated` event commit — symptom is
+/// a subsequent `create_worktree` call returning `BranchExists` even though the task's
+/// projection looks fresh.
+///
+/// All steps are independent and tolerant: if the dir / registration / branch is absent,
+/// we silently move on. Returns `Ok(())` whenever cleanup left the repo in a state where
+/// `create_worktree(repo_root, task_id, _)` should succeed.
+pub fn cleanup_orphan_for_task(repo_root: &Path, task_id: &str) -> Result<(), WorktreeError> {
+    let worktree_dir = worktree_path_for(repo_root, task_id);
+    let branch_name = branch_name_for(task_id);
+    let internal_name = worktree_internal_name(task_id);
+
+    if worktree_dir.exists() {
+        let _ = std::fs::remove_dir_all(&worktree_dir);
+    }
+
+    let repo = Repository::open(repo_root)
+        .map_err(|e| WorktreeError::RemovalFailed(format!("open repo: {}", e.message())))?;
+
+    if let Ok(wt) = repo.find_worktree(&internal_name) {
+        let mut opts = WorktreePruneOptions::new();
+        opts.valid(true).working_tree(true);
+        let _ = wt.prune(Some(&mut opts));
+    }
+
+    if let Ok(mut b) = repo.find_branch(&branch_name, BranchType::Local) {
+        let _ = b.delete();
+    }
+
+    Ok(())
+}
+
 /// Remove a worktree: delete its working directory and prune the registration. If `force`
 /// is false and the worktree has uncommitted changes, returns `RepoNotClean`.
 ///
@@ -433,6 +467,31 @@ mod tests {
         let _info = create_worktree(repo.path(), "01DUP", "main").unwrap();
         let err = create_worktree(repo.path(), "01DUP", "main").unwrap_err();
         assert!(matches!(err, WorktreeError::BranchExists(_)));
+    }
+
+    #[test]
+    fn cleanup_orphan_lets_create_succeed_again() {
+        let repo = init_repo();
+        // Simulate the crash: branch + dir + registration exist, but the DB never recorded
+        // them, so a fresh `create_worktree` will trip on `BranchExists`.
+        let _orphan = create_worktree(repo.path(), "01ORPH", "main").unwrap();
+        assert!(matches!(
+            create_worktree(repo.path(), "01ORPH", "main").unwrap_err(),
+            WorktreeError::BranchExists(_)
+        ));
+        cleanup_orphan_for_task(repo.path(), "01ORPH").unwrap();
+        // After cleanup, both create_worktree and the underlying refs are gone.
+        let recovered = create_worktree(repo.path(), "01ORPH", "main").unwrap();
+        assert!(recovered.path.exists());
+    }
+
+    #[test]
+    fn cleanup_orphan_is_noop_when_nothing_exists() {
+        let repo = init_repo();
+        cleanup_orphan_for_task(repo.path(), "01NONE").unwrap();
+        // And a subsequent create still works.
+        let info = create_worktree(repo.path(), "01NONE", "main").unwrap();
+        assert!(info.path.exists());
     }
 
     #[test]
