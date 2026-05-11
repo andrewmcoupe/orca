@@ -1,5 +1,6 @@
 use std::process::Command;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,13 @@ fn new_command_id() -> String {
 
 fn make_metadata(actor: &str) -> EventMetadata {
     make_metadata_for(actor)
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 pub(crate) fn make_metadata_for(actor: &str) -> EventMetadata {
@@ -687,15 +695,23 @@ pub fn get_workspace_settings(
     state: State<'_, GlobalDb>,
 ) -> Result<crate::settings::WorkspaceSettings, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let settings_json: String = conn
+    let workspace_settings_json: String = conn
         .query_row(
             "SELECT settings_json FROM workspace_projection WHERE id = ?1",
             params![workspace_id],
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    Ok(crate::settings::WorkspaceSettings::from_json_str(
-        &settings_json,
+    let app_settings_json: String = conn
+        .query_row(
+            "SELECT settings_json FROM app_settings WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|_| "{}".to_string());
+    Ok(crate::settings::WorkspaceSettings::from_layered_json(
+        &app_settings_json,
+        &workspace_settings_json,
     ))
 }
 
@@ -741,6 +757,41 @@ pub fn update_workspace_settings(
 }
 
 #[tauri::command]
+pub fn get_app_settings(
+    state: State<'_, GlobalDb>,
+) -> Result<crate::settings::WorkspaceSettings, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let settings_json: String = conn
+        .query_row(
+            "SELECT settings_json FROM app_settings WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|_| "{}".to_string());
+    Ok(crate::settings::WorkspaceSettings::from_json_str(
+        &settings_json,
+    ))
+}
+
+#[tauri::command]
+pub fn update_app_settings(
+    settings: crate::settings::WorkspaceSettings,
+    state: State<'_, GlobalDb>,
+) -> Result<crate::settings::WorkspaceSettings, String> {
+    let settings_json = serde_json::to_string(&settings).map_err(|e| e.to_string())?;
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let now = now_ms();
+    conn.execute(
+        "INSERT INTO app_settings (id, settings_json, updated_at)
+         VALUES (1, ?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET settings_json = excluded.settings_json, updated_at = excluded.updated_at",
+        params![settings_json, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(settings)
+}
+
+#[tauri::command]
 pub async fn start_preview_server(
     task_id: String,
     route_path: String,
@@ -762,14 +813,24 @@ pub async fn start_preview_server(
 
     let settings = {
         let conn = global.0.lock().map_err(|e| e.to_string())?;
-        let settings_json: String = conn
+        let workspace_settings_json: String = conn
             .query_row(
                 "SELECT settings_json FROM workspace_projection WHERE id = ?1",
                 params![workspace_id],
                 |r| r.get(0),
             )
             .map_err(|e| e.to_string())?;
-        crate::settings::WorkspaceSettings::from_json_str(&settings_json)
+        let app_settings_json: String = conn
+            .query_row(
+                "SELECT settings_json FROM app_settings WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "{}".to_string());
+        crate::settings::WorkspaceSettings::from_layered_json(
+            &app_settings_json,
+            &workspace_settings_json,
+        )
     };
 
     preview
@@ -1708,14 +1769,24 @@ pub fn create_task(
                 .id
                 .clone();
             drop(active_guard);
-            let settings_json: String = conn
+            let workspace_settings_json: String = conn
                 .query_row(
                     "SELECT settings_json FROM workspace_projection WHERE id = ?1",
                     params![workspace_id_for_settings],
                     |r| r.get(0),
                 )
                 .unwrap_or_else(|_| "{}".to_string());
-            let settings = crate::settings::WorkspaceSettings::from_json_str(&settings_json);
+            let app_settings_json: String = conn
+                .query_row(
+                    "SELECT settings_json FROM app_settings WHERE id = 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|_| "{}".to_string());
+            let settings = crate::settings::WorkspaceSettings::from_layered_json(
+                &app_settings_json,
+                &workspace_settings_json,
+            );
             serde_json::to_value(settings.default_phase_config).map_err(|e| e.to_string())?
         }
     };

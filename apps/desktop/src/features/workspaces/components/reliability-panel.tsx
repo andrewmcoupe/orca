@@ -5,8 +5,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  useUpdateWorkspaceSettings,
-  useWorkspaceSettings,
+  useSettings,
+  useUpdateSettings,
+  type SettingsScope,
 } from "../hooks";
 import {
   DEFAULT_PHASE_TIMEOUTS,
@@ -104,9 +105,19 @@ function mergeEnvRows(existing: EnvRow[], incoming: EnvRow[]): EnvRow[] {
  * here when their project deviates (custom install command, very long-running
  * tests, project-specific PATH overrides).
  */
-export function ReliabilityPanel({ workspaceId }: { workspaceId: string }) {
-  const settingsQ = useWorkspaceSettings(workspaceId);
-  const update = useUpdateWorkspaceSettings(workspaceId);
+export function ReliabilityPanel({
+  workspaceId,
+  scope,
+}: {
+  workspaceId?: string;
+  scope?: SettingsScope;
+}) {
+  const resolvedScope = scope ?? {
+    type: "workspace" as const,
+    workspaceId: workspaceId ?? "",
+  };
+  const settingsQ = useSettings(workspaceId || scope ? resolvedScope : undefined);
+  const update = useUpdateSettings(resolvedScope);
 
   const [init, setInit] = useState<WorktreeInitSettings>(DEFAULT_WORKTREE_INIT);
   const [timeouts, setTimeouts] = useState<PhaseTimeoutSettings>(

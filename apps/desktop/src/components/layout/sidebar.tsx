@@ -7,6 +7,7 @@ import {
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarHeader,
   SidebarRail,
 } from "@/components/ui/sidebar";
@@ -15,7 +16,7 @@ import { useProviders } from "@/features/providers/hooks";
 import { useAddWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
 import type { Workspace } from "@/features/workspaces/types";
 import { cn } from "@/lib/utils";
-import { House, Plus } from "@phosphor-icons/react";
+import { GearSix, House, Plus } from "@phosphor-icons/react";
 import { Link, useMatches } from "@tanstack/react-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
@@ -150,13 +151,24 @@ export function WorkspacesSidebar() {
           </>
         )}
       </SidebarContent>
+      <SidebarFooter className="border-t p-2">
+        <Link
+          to="/settings"
+          aria-label="Settings"
+          title="Settings"
+          className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-8 items-center gap-2 rounded-sm px-2 text-xs transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground"
+        >
+          <GearSix className="size-4" />
+          <span className="group-data-[collapsible=icon]:hidden">Settings</span>
+        </Link>
+      </SidebarFooter>
       <SidebarRail />
     </Sidebar>
   );
 }
 
 const navLinkClass =
-  "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex h-[20px] items-center gap-2 pl-[14px] pr-2 text-xs transition-colors [&.active]:bg-sidebar-accent [&.active]:text-foreground [&.active]:font-medium";
+  "flex h-[28px] w-full items-center gap-2 rounded-sm px-2 text-left text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground [&.active]:bg-sidebar-accent [&.active]:text-foreground [&.active]:font-medium";
 
 function WorkspaceItem({
   workspace,

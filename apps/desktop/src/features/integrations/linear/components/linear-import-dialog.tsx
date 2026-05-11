@@ -37,9 +37,11 @@ function issueMeta(issue: LinearIssue) {
 export function LinearImportDialog({
   onImport,
   disabled,
+  workspaceId,
 }: {
   onImport: (issues: LinearIssue[]) => void;
   disabled?: boolean;
+  workspaceId?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [apiKey, setApiKey] = useState("");
@@ -49,8 +51,8 @@ export function LinearImportDialog({
   const [selected, setSelected] = useState<Record<string, LinearIssue>>({});
   const [error, setError] = useState<string | null>(null);
 
-  const connection = useLinearConnectionStatus(open);
-  const saveApiKey = useSaveLinearApiKey();
+  const connection = useLinearConnectionStatus(workspaceId, open);
+  const saveApiKey = useSaveLinearApiKey(workspaceId);
   const search = useSearchLinearIssues();
 
   const selectedIssues = useMemo(() => Object.values(selected), [selected]);

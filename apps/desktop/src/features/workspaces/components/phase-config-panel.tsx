@@ -3,7 +3,7 @@ import { CaretRight } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { useUpdateWorkspaceSettings, useWorkspaceSettings } from "../hooks";
+import { useSettings, useUpdateSettings, type SettingsScope } from "../hooks";
 import type { PhaseConfig, PhaseType, WorkspaceSettings } from "../types";
 
 /**
@@ -22,9 +22,19 @@ function buildPhases(
   return out;
 }
 
-export function PhaseConfigPanel({ workspaceId }: { workspaceId: string }) {
-  const settingsQ = useWorkspaceSettings(workspaceId);
-  const update = useUpdateWorkspaceSettings(workspaceId);
+export function PhaseConfigPanel({
+  workspaceId,
+  scope,
+}: {
+  workspaceId?: string;
+  scope?: SettingsScope;
+}) {
+  const resolvedScope = scope ?? {
+    type: "workspace" as const,
+    workspaceId: workspaceId ?? "",
+  };
+  const settingsQ = useSettings(workspaceId || scope ? resolvedScope : undefined);
+  const update = useUpdateSettings(resolvedScope);
 
   const initial = settingsQ.data?.default_phase_config;
   const [includeTestAuthor, setIncludeTestAuthor] = useState(false);

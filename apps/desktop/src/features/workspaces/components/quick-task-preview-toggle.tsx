@@ -1,8 +1,18 @@
-import { useUpdateWorkspaceSettings, useWorkspaceSettings } from "../hooks";
+import { useSettings, useUpdateSettings, type SettingsScope } from "../hooks";
 
-export function QuickTaskPreviewToggle({ workspaceId }: { workspaceId: string }) {
-  const settingsQ = useWorkspaceSettings(workspaceId);
-  const update = useUpdateWorkspaceSettings(workspaceId);
+export function QuickTaskPreviewToggle({
+  workspaceId,
+  scope,
+}: {
+  workspaceId?: string;
+  scope?: SettingsScope;
+}) {
+  const resolvedScope = scope ?? {
+    type: "workspace" as const,
+    workspaceId: workspaceId ?? "",
+  };
+  const settingsQ = useSettings(workspaceId || scope ? resolvedScope : undefined);
+  const update = useUpdateSettings(resolvedScope);
 
   if (!settingsQ.data) {
     return <p className="text-muted-foreground text-sm">Loading…</p>;

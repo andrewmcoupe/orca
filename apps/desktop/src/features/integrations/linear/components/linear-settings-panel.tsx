@@ -11,10 +11,14 @@ import {
 } from "../hooks";
 import { linearApi } from "../api";
 
-export function LinearSettingsPanel() {
-  const status = useLinearConnectionStatus();
-  const save = useSaveLinearApiKey();
-  const disconnect = useDisconnectLinear();
+export function LinearSettingsPanel({
+  workspaceId,
+}: {
+  workspaceId?: string;
+}) {
+  const status = useLinearConnectionStatus(workspaceId);
+  const save = useSaveLinearApiKey(workspaceId);
+  const disconnect = useDisconnectLinear(workspaceId);
   const [apiKey, setApiKey] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
