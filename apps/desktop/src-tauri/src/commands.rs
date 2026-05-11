@@ -3554,6 +3554,69 @@ pub fn list_recent_events(
     recent_events::list_recent(&aw.conn, limit).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn list_task_events(
+    task_id: String,
+    limit: Option<i64>,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<Vec<RecentEventRow>, String> {
+    let limit = limit.unwrap_or(500).clamp(1, 1000);
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    let mut stmt = aw
+        .conn
+        .prepare(
+            "SELECT e.id, e.aggregate_type, e.aggregate_id, e.event_type, e.payload, e.created_at
+             FROM events e
+             WHERE (e.aggregate_type = 'task' AND e.aggregate_id = ?1)
+                OR (
+                  e.aggregate_type = 'phase_run'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM phase_run_projection pr
+                    WHERE pr.id = e.aggregate_id AND pr.task_id = ?1
+                  )
+                )
+             ORDER BY e.created_at DESC, e.id DESC
+             LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![task_id, limit], |r| {
+            let id: String = r.get(0)?;
+            let aggregate_type: String = r.get(1)?;
+            let aggregate_id: String = r.get(2)?;
+            let event_type: String = r.get(3)?;
+            let payload: String = r.get(4)?;
+            let created_at: i64 = r.get(5)?;
+            let event = crate::events::types::AppendedEvent {
+                id: id.clone(),
+                aggregate_type: aggregate_type.clone(),
+                aggregate_id: aggregate_id.clone(),
+                seq: 0,
+                event_type: event_type.clone(),
+                version: 0,
+                payload,
+                metadata: "{}".into(),
+                created_at,
+            };
+            Ok(RecentEventRow {
+                id,
+                aggregate_type,
+                aggregate_id,
+                event_type,
+                summary: recent_events::summarize(&event),
+                created_at,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Serialize)]
 pub struct EventDetail {
     pub id: String,

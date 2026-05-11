@@ -8,6 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PixelRain } from "@/components/ui/mini-loaders";
+import { ProviderModelLabel } from "@/features/providers/components/provider-logo";
 import type { Briefing } from "../types";
 
 /**
@@ -135,7 +136,12 @@ function BriefingRow({
         <p className="truncate text-sm font-medium">{labelFor(briefing)}</p>
         <div className="text-muted-foreground mt-0.5 flex items-center gap-1.5 text-[11px]">
           <Badge variant="secondary" className="font-mono text-[10px]">
-            {briefing.provider}:{briefing.model}
+            <ProviderModelLabel
+              provider={briefing.provider}
+              model={briefing.model}
+              separator="/"
+              logoClassName="size-2.5"
+            />
           </Badge>
           <span>·</span>
           <span>{kindLabel(briefing.generation_kind)}</span>

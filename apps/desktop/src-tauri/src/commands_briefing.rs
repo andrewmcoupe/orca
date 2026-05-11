@@ -922,13 +922,22 @@ async fn run_persona_orchestration(
         inputs.user_feedback.as_ref(),
         &artifacts,
     );
+    // Codex's `--output-schema` path is useful for small auditor payloads, but the
+    // final briefing schema is large and the prompt already includes the exact JSON
+    // shape. Keep final synthesis prompt-only for Codex so schema validation cannot
+    // fail before the model runs.
+    let final_output_schema = if final_provider.id() == "codex" {
+        None
+    } else {
+        Some(briefing::briefing_draft_schema())
+    };
     let final_outcome = briefing::run_prompt_for_json(
         workspace_path,
         &final_provider_path,
         final_provider.as_ref(),
         &final_resolved.model,
         &final_prompt,
-        Some(briefing::briefing_draft_schema()),
+        final_output_schema,
         Arc::clone(&tracker),
         cancel.clone(),
         Some((app.clone(), briefing_id.to_string())),
@@ -970,7 +979,11 @@ async fn run_persona_orchestration(
             final_provider.as_ref(),
             &final_resolved.model,
             &repair_prompt,
-            Some(briefing::briefing_draft_schema()),
+            if final_provider.id() == "codex" {
+                None
+            } else {
+                Some(briefing::briefing_draft_schema())
+            },
             tracker,
             cancel,
             Some((app.clone(), briefing_id.to_string())),
@@ -1134,6 +1147,16 @@ fn apply_edits_to_draft(draft: &BriefingDraft, edits: &BriefingEdits) -> Briefin
         t.depends_on.retain(|id| surviving_ids.contains(id));
         // Also drop self-references in case a model produced one — defensive.
         t.depends_on.retain(|id| id != &t.id);
+    }
+    for answer in &edits.ambiguity_answers {
+        if let Some(item) = out
+            .ambiguity_ledger
+            .iter_mut()
+            .find(|item| item.id == answer.ambiguity_id)
+        {
+            item.user_answer = Some(answer.answer.clone());
+            item.status = "user_resolved".into();
+        }
     }
     out
 }
@@ -1556,8 +1579,8 @@ pub fn validate_briefing_paths(
 mod tests {
     use super::*;
     use crate::briefing::{
-        AssumptionPushback, BriefingDraft, BriefingEdits, DraftAssumption, DraftTask,
-        FileCertainty, RelevantFile, TaskEdit,
+        AmbiguityAnswer, AmbiguityItem, AssumptionPushback, BriefingDraft, BriefingEdits,
+        DraftAssumption, DraftTask, FileCertainty, RelevantFile, TaskEdit,
     };
 
     fn draft_with_two_tasks() -> BriefingDraft {
@@ -1700,5 +1723,33 @@ mod tests {
         let out = apply_edits_to_draft(&d, &e);
         assert_eq!(out.assumptions.len(), 1);
         assert_eq!(out.assumptions[0].id, "a1");
+    }
+
+    #[test]
+    fn apply_edits_marks_ambiguity_answer_user_resolved() {
+        let mut d = draft_with_two_tasks();
+        d.ambiguity_ledger = vec![AmbiguityItem {
+            id: "amb-1".into(),
+            question: "Which default?".into(),
+            why_it_matters: "The task needs a concrete branch.".into(),
+            risk_if_unanswered: "Implementation may pick the wrong default.".into(),
+            recommended_default_assumption: "Use light mode.".into(),
+            user_input_required: true,
+            status: "unresolved".into(),
+            user_answer: None,
+        }];
+        let e = BriefingEdits {
+            ambiguity_answers: vec![AmbiguityAnswer {
+                ambiguity_id: "amb-1".into(),
+                answer: "Use dark mode.".into(),
+            }],
+            ..Default::default()
+        };
+        let out = apply_edits_to_draft(&d, &e);
+        assert_eq!(out.ambiguity_ledger[0].status, "user_resolved");
+        assert_eq!(
+            out.ambiguity_ledger[0].user_answer.as_deref(),
+            Some("Use dark mode.")
+        );
     }
 }

@@ -4,6 +4,8 @@ import type { EventDetail, RecentEvent } from "./types";
 export const eventsApi = {
   listRecent: (limit: number) =>
     invoke<RecentEvent[]>("list_recent_events", { limit }),
+  listTaskEvents: (taskId: string, limit: number) =>
+    invoke<RecentEvent[]>("list_task_events", { taskId, limit }),
   getById: (eventId: string) =>
     invoke<EventDetail | null>("get_event_by_id", { eventId }),
   rebuildProjections: () =>

@@ -1,6 +1,7 @@
 import { Sparkle } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ProviderModelLabel } from "@/features/providers/components/provider-logo";
 import { useActiveBriefings } from "../hooks";
 
 /**
@@ -48,7 +49,12 @@ export function InProgressBriefings({
                 <p className="truncate text-sm font-medium">{title}</p>
                 <div className="text-muted-foreground mt-0.5 flex items-center gap-2 text-[11px]">
                   <Badge variant="secondary" className="font-mono text-[10px]">
-                    {b.provider}:{b.model}
+                    <ProviderModelLabel
+                      provider={b.provider}
+                      model={b.model}
+                      separator="/"
+                      logoClassName="size-2.5"
+                    />
                   </Badge>
                   <span>
                     {b.generation_count > 0

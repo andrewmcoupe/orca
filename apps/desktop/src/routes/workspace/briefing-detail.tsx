@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { ContentColumn } from "@/components/layout/content-column";
 import { useBriefing, useBriefingHistory } from "@/features/briefings/hooks";
 import { BriefingTranscriptView } from "@/features/briefings/components/transcript-view";
+import { ProviderModelLabel } from "@/features/providers/components/provider-logo";
 
 function BriefingDetailPage() {
   const { workspaceId, briefingId } = useParams({
@@ -54,7 +55,12 @@ function BriefingDetailPage() {
         {briefingQ.data && (
           <div className="flex items-center gap-2">
             <Badge variant="secondary" className="font-mono text-[10px]">
-              {briefingQ.data.provider}:{briefingQ.data.model}
+              <ProviderModelLabel
+                provider={briefingQ.data.provider}
+                model={briefingQ.data.model}
+                separator="/"
+                logoClassName="size-2.5"
+              />
             </Badge>
             <StatusBadge status={briefingQ.data.status} />
           </div>

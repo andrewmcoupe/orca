@@ -50,6 +50,9 @@ export function useProjectionInvalidation() {
         } else {
           qc.invalidateQueries({ queryKey: ["recent_events"] });
         }
+        if (aggregate_type === "task" || aggregate_type === "phase_run") {
+          qc.invalidateQueries({ queryKey: ["task_events"] });
+        }
       },
     );
     return () => {
@@ -67,6 +70,18 @@ export function useRecentEvents(workspaceId: string | null, limit = 100) {
     queryKey: ["recent_events", workspaceId, limit],
     queryFn: () => eventsApi.listRecent(limit),
     enabled: !!workspaceId,
+  });
+}
+
+export function useTaskEvents(
+  workspaceId: string | null,
+  taskId: string | null,
+  limit = 500,
+) {
+  return useQuery<RecentEvent[]>({
+    queryKey: ["task_events", workspaceId, taskId, limit],
+    queryFn: () => eventsApi.listTaskEvents(taskId!, limit),
+    enabled: !!workspaceId && !!taskId,
   });
 }
 

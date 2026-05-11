@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { CircleNotch, Eye, LinkSimple } from "@phosphor-icons/react";
+import { CircleNotch, Eye, LinkSimple, Queue } from "@phosphor-icons/react";
 import { TaskStatusBadge } from "@/features/tasks/presentation";
 import { usePhaseRuns } from "@/features/phase-runs/hooks";
 import { ProviderLogo } from "@/features/providers/components/provider-logo";
@@ -57,6 +57,10 @@ export function TaskRow({
     !!lastRun &&
     lastRun.phase === "auditor" &&
     lastRun.status === "completed";
+  const queueDependencyTitles =
+    task.is_queued && task.is_blocked && dependencyTitles
+      ? dependencyTitles
+      : [];
   return (
     <Link
       to="/workspace/$workspaceId/plan/$planId/task/$taskId"
@@ -71,20 +75,44 @@ export function TaskRow({
               <span
                 className={
                   "inline-flex items-center gap-1 text-[10px] " +
-                  (task.is_blocked ? "text-warning" : "text-muted-foreground")
+                  (task.is_blocked || task.is_queued
+                    ? "text-warning"
+                    : "text-muted-foreground")
                 }
                 title={
-                  (task.is_blocked ? "Blocked by: " : "Depends on: ") +
+                  (task.is_queued
+                    ? "Queued behind: "
+                    : task.is_blocked
+                      ? "Blocked by: "
+                      : "Depends on: ") +
                   dependencyTitles.join(", ")
                 }
               >
-                <LinkSimple className="size-3" />
+                {task.is_queued ? (
+                  <Queue className="size-3" />
+                ) : (
+                  <LinkSimple className="size-3" />
+                )}
                 <span>
-                  {task.is_blocked ? "Blocked by " : "Depends on "}
+                  {task.is_queued
+                    ? "Queued behind "
+                    : task.is_blocked
+                      ? "Blocked by "
+                      : "Depends on "}
                   {dependencyTitles.length === 1
                     ? truncate(dependencyTitles[0], 32)
                     : `${dependencyTitles.length} tasks`}
                 </span>
+              </span>
+            )}
+
+            {task.is_queued && queueDependencyTitles.length === 0 && (
+              <span
+                className="inline-flex items-center gap-1 text-[10px] text-warning"
+                title="Queued to start when dependencies are ready"
+              >
+                <Queue className="size-3" />
+                <span>Queued</span>
               </span>
             )}
 
@@ -142,6 +170,19 @@ export function TaskRow({
         </div>
       </div>
       <div className="flex items-center gap-1">
+        {task.is_queued && (
+          <span
+            className="bg-warning/15 text-warning inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px]"
+            title={
+              queueDependencyTitles.length > 0
+                ? `Queued behind: ${queueDependencyTitles.join(", ")}`
+                : "Queued to start when dependencies are ready"
+            }
+          >
+            <Queue className="size-3" />
+            Queued
+          </span>
+        )}
         <TaskStatusBadge status={task.status} />
         <span
           className="text-muted-foreground/40 text-xs tabular-nums"

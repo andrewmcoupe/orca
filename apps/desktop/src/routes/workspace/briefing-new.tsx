@@ -25,6 +25,7 @@ import {
   useCancelBriefingGeneration,
   useGenerateBriefingDraft,
 } from "@/features/briefings/hooks";
+import { ProviderModelLabel } from "@/features/providers/components/provider-logo";
 import type { Briefing } from "@/features/briefings/types";
 
 const briefingNewSearchSchema = z.object({
@@ -256,7 +257,12 @@ function BriefingPreDraftScreen({
           {briefing.initial_description}
         </p>
         <p className="text-muted-foreground mt-2 font-mono text-[11px]">
-          {briefing.provider}:{briefing.model}
+          <ProviderModelLabel
+            provider={briefing.provider}
+            model={briefing.model}
+            separator="/"
+            logoClassName="size-2.5"
+          />
         </p>
       </div>
 

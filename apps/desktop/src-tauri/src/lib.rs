@@ -148,6 +148,7 @@ pub fn run() {
             commands::list_models,
             commands::list_permission_modes,
             commands::list_recent_events,
+            commands::list_task_events,
             commands::get_event_by_id,
             commands::mark_task_merged,
             commands::analyze_task_merge,

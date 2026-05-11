@@ -125,6 +125,11 @@ export type AssumptionPushback = {
   pushback: string;
 };
 
+export type AmbiguityAnswer = {
+  ambiguity_id: string;
+  answer: string;
+};
+
 export type BriefingEdits = {
   title?: string | null;
   description?: string | null;
@@ -132,6 +137,7 @@ export type BriefingEdits = {
   task_additions: DraftTask[];
   task_removals: string[];
   assumption_pushbacks: AssumptionPushback[];
+  ambiguity_answers: AmbiguityAnswer[];
   /** Freeform "anything else" notes for the next refinement. Optional. */
   general_notes?: string | null;
 };
@@ -220,5 +226,6 @@ export const emptyEdits = (): BriefingEdits => ({
   task_additions: [],
   task_removals: [],
   assumption_pushbacks: [],
+  ambiguity_answers: [],
   general_notes: null,
 });

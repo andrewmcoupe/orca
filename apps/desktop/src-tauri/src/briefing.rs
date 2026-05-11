@@ -38,13 +38,26 @@ const BRIEFING_PROMPT_FILENAME: &str = "briefing.md";
 // Domain types
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "PascalCase")]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
 pub enum FileCertainty {
     Confirmed,
     #[default]
     Candidate,
+}
+
+impl<'de> Deserialize<'de> for FileCertainty {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let normalised = value.trim().to_ascii_lowercase();
+        Ok(match normalised.as_str() {
+            "confirmed" | "high" | "certain" | "definite" => Self::Confirmed,
+            "candidate" | "medium" | "low" | "possible" | "unknown" | "" => Self::Candidate,
+            _ => Self::Candidate,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -284,6 +297,12 @@ pub struct AssumptionPushback {
     pub pushback: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AmbiguityAnswer {
+    pub ambiguity_id: String,
+    pub answer: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BriefingEdits {
     #[serde(default)]
@@ -298,6 +317,8 @@ pub struct BriefingEdits {
     pub task_removals: Vec<String>,
     #[serde(default)]
     pub assumption_pushbacks: Vec<AssumptionPushback>,
+    #[serde(default)]
+    pub ambiguity_answers: Vec<AmbiguityAnswer>,
     /// Freeform "anything else" feedback the user wants the model to consider
     /// during refinement. Passed through to the prompt as a dedicated section
     /// so the model treats it as top-level guidance rather than burying it.
@@ -1118,14 +1139,20 @@ pub async fn run_prompt_for_json(
         .await
         .map_err(|e| BriefingError::CliInvocationFailed(e.to_string()))?;
 
+        let raw = collected.lock().map(|g| g.clone()).unwrap_or_default();
         if result.exit_code != 0 {
-            return Err(BriefingError::CliInvocationFailed(format!(
-                "provider exited with code {}",
-                result.exit_code
-            )));
+            let output_tail = provider_failure_tail(&raw);
+            let detail = if output_tail.is_empty() {
+                format!("provider exited with code {}", result.exit_code)
+            } else {
+                format!(
+                    "provider exited with code {}\n{}",
+                    result.exit_code, output_tail
+                )
+            };
+            return Err(BriefingError::CliInvocationFailed(detail));
         }
 
-        let raw = collected.lock().map(|g| g.clone()).unwrap_or_default();
         let visible = collect_text_from_provider_stream(provider, &raw);
         match parse_json_value(&visible) {
             Ok(json) => {
@@ -1318,6 +1345,22 @@ fn collect_text_from_provider_stream(provider: &dyn Provider, raw: &str) -> Stri
         out
     } else {
         raw.to_string()
+    }
+}
+
+fn provider_failure_tail(raw: &str) -> String {
+    const MAX_CHARS: usize = 4000;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let tail_reversed: String = trimmed.chars().rev().take(MAX_CHARS).collect();
+    let tail: String = tail_reversed.chars().rev().collect();
+    if tail.len() < trimmed.len() {
+        format!("…{}", tail)
+    } else {
+        tail
     }
 }
 
@@ -1542,6 +1585,25 @@ mod tests {
         assert_eq!(draft.persona_model_mapping[0].persona, "");
         assert_eq!(draft.persona_model_mapping[0].provider, "codex");
         assert_eq!(draft.persona_model_mapping[0].model, "gpt-5.5");
+    }
+
+    #[test]
+    fn relevant_file_certainty_accepts_model_confidence_words() {
+        let raw = r#"{
+            "path": "src/feature.ts",
+            "certainty": "High",
+            "reason": "Likely touched by the feature"
+        }"#;
+        let file: RelevantFile = serde_json::from_str(raw).unwrap();
+        assert_eq!(file.certainty, FileCertainty::Confirmed);
+
+        let raw = r#"{
+            "path": "src/feature.ts",
+            "certainty": "Medium",
+            "reason": "Possible pattern reference"
+        }"#;
+        let file: RelevantFile = serde_json::from_str(raw).unwrap();
+        assert_eq!(file.certainty, FileCertainty::Candidate);
     }
 
     fn quality_task(spec_markdown: &str, relevant_files: Vec<RelevantFile>) -> DraftTask {

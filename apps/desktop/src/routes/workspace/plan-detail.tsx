@@ -69,7 +69,7 @@ function PlanDetailView({
   ];
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 ">
       <HeaderSlot>
         <PlanActionToolbar plan={plan} />
       </HeaderSlot>

@@ -1,7 +1,5 @@
 import { useState } from "react";
-import { useRecentEvents, useEventDetail } from "@/features/events/hooks";
-import { useActiveWorkspace } from "@/features/workspaces/hooks";
-import { usePhaseRuns } from "@/features/phase-runs/hooks";
+import { useEventDetail, useTaskEvents } from "@/features/events/hooks";
 import {
   Drawer,
   DrawerContent,
@@ -42,12 +40,12 @@ function formatFullTimestamp(ms: number): string {
 }
 
 /**
- * Per-task slice of the workspace event log. We filter the existing
- * `recent_events` rolling buffer client-side by the task ID and the IDs of
- * its phase runs (phase-run events live on their own aggregate). The buffer
- * caps at 200 rows backend-side, so older runs may not be visible — that's
- * acceptable for the in-task audit-trail view; deep history will live in the
- * future Activity view.
+ * Per-task slice of the workspace event log. Phase-run events live on their
+ * own aggregate, so the backend joins through phase_run_projection and returns
+ * both task and phase-run events. This intentionally does not use the
+ * workspace-wide recent_events rolling buffer; a burst of parallel task runs can
+ * push a task's events out of that buffer while the task detail audit trail
+ * still needs to remain complete.
  */
 export function TaskEventList({
   workspaceId,
@@ -56,21 +54,11 @@ export function TaskEventList({
   workspaceId: string;
   taskId: string;
 }) {
-  const active = useActiveWorkspace();
-  const events = useRecentEvents(active.data?.id ?? null);
-  const phaseRuns = usePhaseRuns(workspaceId, taskId);
+  const events = useTaskEvents(workspaceId, taskId);
   const [selected, setSelected] = useState<RecentEvent | null>(null);
 
-  const phaseRunIds = new Set((phaseRuns.data ?? []).map((r) => r.id));
   // Show oldest first to read top-to-bottom as the task progressed.
-  const filtered = (events.data ?? [])
-    .filter(
-      (e) =>
-        (e.aggregate_type === "task" && e.aggregate_id === taskId) ||
-        (e.aggregate_type === "phase_run" && phaseRunIds.has(e.aggregate_id)),
-    )
-    .slice()
-    .reverse();
+  const filtered = (events.data ?? []).slice().reverse();
 
   if (filtered.length === 0) {
     return (
@@ -195,4 +183,3 @@ function DetailRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-
