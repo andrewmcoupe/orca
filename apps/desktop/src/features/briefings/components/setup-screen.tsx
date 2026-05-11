@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { Link } from "@tanstack/react-router";
-import { ArrowRight, CheckSquare, X } from "@phosphor-icons/react";
-import { Button } from "@/components/ui/button";
+import { ContentColumn } from "@/components/layout/content-column";
+import {
+  DetailSidebar,
+  type DetailSidebarSection,
+} from "@/components/layout/detail-sidebar";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -12,13 +13,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { ContentColumn } from "@/components/layout/content-column";
-import {
-  DetailSidebar,
-  type DetailSidebarSection,
-} from "@/components/layout/detail-sidebar";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -26,6 +21,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  linearIssuesToBriefingMarkdown,
+  linearIssuesToBriefingSources,
+} from "@/features/integrations/linear/briefing-markdown";
+import { LinearImportDialog } from "@/features/integrations/linear/components/linear-import-dialog";
+import { LinearLogo } from "@/features/integrations/linear/components/linear-logo";
+import type { LinearIssue } from "@/features/integrations/linear/types";
 import { ModelSelect } from "@/features/providers/components/model-select";
 import { ProviderModelLabel } from "@/features/providers/components/provider-logo";
 import { useProviderModels, useProviders } from "@/features/providers/hooks";
@@ -39,13 +42,10 @@ import type {
   BriefingPersonaConfig,
   ModelChoice,
 } from "@/features/workspaces/types";
-import { LinearImportDialog } from "@/features/integrations/linear/components/linear-import-dialog";
-import { LinearLogo } from "@/features/integrations/linear/components/linear-logo";
-import {
-  linearIssuesToBriefingMarkdown,
-  linearIssuesToBriefingSources,
-} from "@/features/integrations/linear/briefing-markdown";
-import type { LinearIssue } from "@/features/integrations/linear/types";
+import { ArrowRight, CheckSquare, X } from "@phosphor-icons/react";
+import { Link } from "@tanstack/react-router";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { useEffect, useMemo, useState } from "react";
 import { useGenerateBriefingDraft, useStartBriefing } from "../hooks";
 import type { Briefing, BriefingDepth } from "../types";
 
