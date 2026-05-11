@@ -250,22 +250,6 @@ export function BriefingSetupScreen({
     !!model &&
     !submitting;
 
-  const budgetPreview = useMemo(() => {
-    const chars = finalDescription.trim().length;
-    const imported = importedSources.length > 0;
-    const base =
-      chars > 1800 || imported ? "medium" : chars > 800 ? "low-medium" : "low";
-    const expensive =
-      briefingDepth === "thorough"
-        ? "targeted repo retrieval"
-        : briefingDepth === "adversarial"
-          ? "targeted repo retrieval and red-team review"
-          : briefingDepth === "guided"
-            ? "ambiguity/planning personas"
-            : "intent extraction only";
-    return `${base} token spend; ${expensive}.`;
-  }, [briefingDepth, finalDescription, importedSources.length]);
-
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;

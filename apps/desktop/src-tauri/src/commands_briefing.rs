@@ -446,7 +446,7 @@ async fn execute_generation_task(
             let validation_results = briefing::validate_draft_paths(&workspace_path_buf, &o.draft);
             let prompt_hash = crate::prompts::hash(&o.rendered_prompt);
             TerminalOutcome::Produced {
-                draft: o.draft,
+                draft: Box::new(o.draft),
                 duration_ms: o.duration_ms,
                 prompt_hash,
                 validation_results,
@@ -469,7 +469,7 @@ async fn execute_generation_task(
 /// produce.
 enum TerminalOutcome {
     Produced {
-        draft: BriefingDraft,
+        draft: Box<BriefingDraft>,
         duration_ms: u64,
         prompt_hash: String,
         validation_results: Vec<PathValidationResult>,
