@@ -126,6 +126,14 @@ export function BriefingReviewScreen({
   }, [briefing.generation_count]);
 
   const merged = useMemo(() => mergeDraft(draft, edits), [draft, edits]);
+  const invalidInputReason =
+    draft.readiness_status === "blocked_needs_user_input" &&
+    draft.tasks.length === 0
+      ? (draft.ambiguity_ledger ?? []).find(
+          (item) => item.id === "amb-invalid-input",
+        )?.why_it_matters ||
+        "The first briefing persona marked this input as invalid."
+      : null;
   const requiredUnresolved = useMemo(
     () =>
       (merged.ambiguity_ledger ?? []).filter(
@@ -411,9 +419,7 @@ export function BriefingReviewScreen({
   // draft would land on top, silently swapping out the work they're about to
   // commit. The action bar surfaces this via the disabled state.
   const acceptDisabled =
-    merged.tasks.length === 0 ||
-    working !== "idle" ||
-    isRefining;
+    merged.tasks.length === 0 || working !== "idle" || isRefining;
   const pendingChangeCount = countPendingChanges(edits);
 
   const handleConfirmAction = () => {
@@ -433,6 +439,59 @@ export function BriefingReviewScreen({
   };
 
   // ------------------------------------------------------------------ render
+
+  if (invalidInputReason) {
+    return (
+      <ContentColumn className="space-y-4 px-5 py-6 pb-10 mx-auto">
+        <section className="border-destructive/40 bg-destructive/5 rounded-sm border p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 space-y-1">
+              <p className="text-destructive text-sm font-semibold">
+                Briefing stopped
+              </p>
+              <p className="text-destructive/80 text-sm leading-relaxed">
+                {invalidInputReason}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setConfirmAction("cancel")}
+              disabled={working !== "idle"}
+              className="text-destructive hover:text-destructive"
+            >
+              {working === "cancelling" ? "Cancelling..." : "Cancel briefing"}
+            </Button>
+          </div>
+        </section>
+
+        {errorMsg && (
+          <div className="border-destructive/40 bg-destructive/5 rounded-md border p-3">
+            <p className="text-destructive text-sm font-medium">
+              Operation failed
+            </p>
+            <p className="text-destructive/80 mt-1 font-mono text-xs whitespace-pre-wrap">
+              {errorMsg}
+            </p>
+          </div>
+        )}
+
+        <ActionConfirmDialog
+          action={confirmAction}
+          open={confirmAction === "cancel"}
+          onOpenChange={(open) => {
+            if (!open) setConfirmAction(null);
+          }}
+          taskCount={0}
+          pendingChangeCount={0}
+          acceptRecommendedAssumptions={false}
+          requiredUnresolvedCount={0}
+          working={working}
+          onConfirm={handleConfirmAction}
+        />
+      </ContentColumn>
+    );
+  }
 
   return (
     <ContentColumn className="space-y-4 px-5 py-6 pb-10 mx-auto">
@@ -1020,10 +1079,7 @@ function ConfirmationSummary({
         <SummaryItem label="Briefing depth" value={selectedDepth} />
         <SummaryItem label="Task count" value={String(draft.tasks.length)} />
         <SummaryItem label="Model confidence" value={confidenceLabel} />
-        <SummaryItem
-          label="Assumptions"
-          value={String(approved.length)}
-        />
+        <SummaryItem label="Assumptions" value={String(approved.length)} />
         <SummaryItem
           label="Defaulted decisions"
           value={String(requiredUnresolved.length)}
@@ -1151,9 +1207,7 @@ function DistillationWorkbench({ draft }: { draft: BriefingDraft }) {
               <div key={item.id} className="rounded-sm border p-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="font-medium text-sm">{item.question}</p>
-                  <Badge variant="secondary">
-                    {item.status}
-                  </Badge>
+                  <Badge variant="secondary">{item.status}</Badge>
                 </div>
                 <p className="mt-1 text-muted-foreground text-xs">
                   {item.why_it_matters}

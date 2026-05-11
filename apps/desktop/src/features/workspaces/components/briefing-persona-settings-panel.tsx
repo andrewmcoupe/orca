@@ -3,8 +3,9 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { ModelSelect } from "@/features/providers/components/model-select";
 import {
-  useUpdateWorkspaceSettings,
-  useWorkspaceSettings,
+  useSettings,
+  useUpdateSettings,
+  type SettingsScope,
 } from "../hooks";
 import type {
   BriefingPersona,
@@ -68,11 +69,17 @@ function buildDraft(config?: BriefingPersonaConfig): Draft {
 
 export function BriefingPersonaSettingsPanel({
   workspaceId,
+  scope,
 }: {
-  workspaceId: string;
+  workspaceId?: string;
+  scope?: SettingsScope;
 }) {
-  const settingsQ = useWorkspaceSettings(workspaceId);
-  const update = useUpdateWorkspaceSettings(workspaceId);
+  const resolvedScope = scope ?? {
+    type: "workspace" as const,
+    workspaceId: workspaceId ?? "",
+  };
+  const settingsQ = useSettings(workspaceId || scope ? resolvedScope : undefined);
+  const update = useUpdateSettings(resolvedScope);
   const [draft, setDraft] = useState<Draft>(() => buildDraft());
 
   useEffect(() => {

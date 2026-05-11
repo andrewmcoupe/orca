@@ -872,6 +872,30 @@ async fn run_persona_orchestration(
             "system:briefing",
         );
         artifacts.push(artifact);
+
+        if let Some(latest_artifact) = artifacts.last() {
+            if let Some(reason) = briefing::invalid_intent_reason(latest_artifact) {
+                emit_briefing_note(
+                    app,
+                    briefing_id,
+                    format!(
+                        "\n→ {} marked the brief as invalid; stopping before downstream personas.\n",
+                        briefing::persona_label(briefing::PERSONA_INTENT_EXTRACTOR),
+                    ),
+                );
+                let draft = briefing::invalid_intent_draft(
+                    &inputs.user_description,
+                    &inputs.briefing_depth,
+                    latest_artifact,
+                    &reason,
+                );
+                return Ok(briefing::GenerationOutcome {
+                    draft,
+                    rendered_prompt: prompt,
+                    duration_ms: artifacts.iter().map(|a| a.duration_ms).sum(),
+                });
+            }
+        }
     }
 
     let final_resolved = resolve_persona_model(
@@ -1177,14 +1201,24 @@ pub fn accept_briefing(
         let workspace_id = aw.id.clone();
         // Pull workspace settings for the default phase config to stamp on each task.
         let conn = global.0.lock().map_err(|e| e.to_string())?;
-        let settings_json: String = conn
+        let workspace_settings_json: String = conn
             .query_row(
                 "SELECT settings_json FROM workspace_projection WHERE id = ?1",
                 params![workspace_id],
                 |r| r.get(0),
             )
             .unwrap_or_else(|_| "{}".to_string());
-        let settings = crate::settings::WorkspaceSettings::from_json_str(&settings_json);
+        let app_settings_json: String = conn
+            .query_row(
+                "SELECT settings_json FROM app_settings WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "{}".to_string());
+        let settings = crate::settings::WorkspaceSettings::from_layered_json(
+            &app_settings_json,
+            &workspace_settings_json,
+        );
         let pc = serde_json::to_value(settings.default_phase_config).map_err(|e| e.to_string())?;
         (workspace_id, pc)
     };

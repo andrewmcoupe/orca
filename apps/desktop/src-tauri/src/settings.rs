@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -360,6 +361,15 @@ impl WorkspaceSettings {
         serde_json::from_str(s).unwrap_or_default()
     }
 
+    /// Merge app-level defaults with workspace JSON overrides. Object keys are merged
+    /// recursively; arrays/scalars in the workspace JSON replace the global value.
+    pub fn from_layered_json(global: &str, workspace: &str) -> Self {
+        let mut base = parse_json_object(global);
+        let overlay = parse_json_object(workspace);
+        merge_json(&mut base, overlay);
+        serde_json::from_value(base).unwrap_or_default()
+    }
+
     /// The workspace-level default model for `phase`. Prefers the new
     /// `default_phase_settings` entry; falls back to legacy `default_models`. `None`
     /// means "no workspace-level model is set" — the caller should fall through to the
@@ -389,6 +399,36 @@ impl WorkspaceSettings {
         match stored {
             Some(m) if m.is_available_for(phase) => m,
             _ => PermissionMode::bundled_default_for(phase),
+        }
+    }
+}
+
+fn parse_json_object(s: &str) -> Value {
+    if s.trim().is_empty() {
+        return Value::Object(Default::default());
+    }
+    match serde_json::from_str::<Value>(s) {
+        Ok(value @ Value::Object(_)) => value,
+        _ => Value::Object(Default::default()),
+    }
+}
+
+fn merge_json(base: &mut Value, overlay: Value) {
+    match (base, overlay) {
+        (Value::Object(base_map), Value::Object(overlay_map)) => {
+            for (key, value) in overlay_map {
+                match (base_map.get_mut(&key), value) {
+                    (Some(base_value), Value::Object(overlay_object)) => {
+                        merge_json(base_value, Value::Object(overlay_object));
+                    }
+                    (_, next) => {
+                        base_map.insert(key, next);
+                    }
+                }
+            }
+        }
+        (base_value, overlay_value) => {
+            *base_value = overlay_value;
         }
     }
 }
@@ -508,6 +548,28 @@ mod tests {
         // Old-shape settings with unrelated fields — should still parse.
         let s = WorkspaceSettings::from_json_str(r#"{"theme":"dark"}"#);
         assert_eq!(s.default_phase_config.phases.len(), 2);
+    }
+
+    #[test]
+    fn workspace_json_overlays_app_settings() {
+        let app = r#"{
+            "skip_preview_for_quick_tasks": true,
+            "preview_server": {
+                "enabled": true,
+                "command": "pnpm dev",
+                "base_url": "http://127.0.0.1:3000"
+            }
+        }"#;
+        let workspace = r#"{
+            "preview_server": {
+                "base_url": "http://127.0.0.1:5173"
+            }
+        }"#;
+        let s = WorkspaceSettings::from_layered_json(app, workspace);
+        assert!(s.skip_preview_for_quick_tasks);
+        assert!(s.preview_server.enabled);
+        assert_eq!(s.preview_server.command.as_deref(), Some("pnpm dev"));
+        assert_eq!(s.preview_server.base_url, "http://127.0.0.1:5173");
     }
 
     #[test]

@@ -1,4 +1,9 @@
-import { Link, Outlet, createRootRoute } from "@tanstack/react-router";
+import {
+  Link,
+  Outlet,
+  createRootRoute,
+  useRouterState,
+} from "@tanstack/react-router";
 import type { CSSProperties } from "react";
 import { WorkspacesSidebar } from "@/components/layout/sidebar";
 import { StatusBar } from "@/components/layout/status-bar";
@@ -18,6 +23,27 @@ import type { WorkspaceHomeTask } from "@/features/workspaces/types";
 
 function RootLayout() {
   useProjectionInvalidation();
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  });
+  const isGlobalSettings =
+    pathname === "/settings" || pathname.startsWith("/settings/");
+
+  if (isGlobalSettings) {
+    return (
+      <div className="bg-background text-foreground flex h-screen flex-col overflow-hidden">
+        <TitleBar>
+          <div className="flex-1" />
+          <TitleBarItem>
+            <AppProgressIndicator />
+          </TitleBarItem>
+        </TitleBar>
+        <main className="min-h-0 flex-1 overflow-hidden">
+          <Outlet />
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-background text-foreground flex h-screen flex-col overflow-hidden">

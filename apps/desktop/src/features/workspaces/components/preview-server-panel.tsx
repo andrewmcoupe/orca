@@ -3,8 +3,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  useUpdateWorkspaceSettings,
-  useWorkspaceSettings,
+  useSettings,
+  useUpdateSettings,
+  type SettingsScope,
 } from "../hooks";
 import {
   DEFAULT_PREVIEW_SERVER_SETTINGS,
@@ -18,9 +19,19 @@ function withDefaults(
   return { ...DEFAULT_PREVIEW_SERVER_SETTINGS, ...(settings ?? {}) };
 }
 
-export function PreviewServerPanel({ workspaceId }: { workspaceId: string }) {
-  const settingsQ = useWorkspaceSettings(workspaceId);
-  const update = useUpdateWorkspaceSettings(workspaceId);
+export function PreviewServerPanel({
+  workspaceId,
+  scope,
+}: {
+  workspaceId?: string;
+  scope?: SettingsScope;
+}) {
+  const resolvedScope = scope ?? {
+    type: "workspace" as const,
+    workspaceId: workspaceId ?? "",
+  };
+  const settingsQ = useSettings(workspaceId || scope ? resolvedScope : undefined);
+  const update = useUpdateSettings(resolvedScope);
   const [draft, setDraft] = useState<PreviewServerSettings>(
     DEFAULT_PREVIEW_SERVER_SETTINGS,
   );

@@ -703,6 +703,160 @@ pub const PERSONA_AMBIGUITY_HUNTER: &str = "ambiguity_hunter";
 pub const PERSONA_IMPLEMENTATION_PLANNER: &str = "implementation_planner";
 pub const PERSONA_SKEPTIC: &str = "skeptic";
 pub const PERSONA_FINAL_SYNTHESIZER: &str = "final_synthesizer";
+const INVALID_INTENT_REASON_FALLBACK: &str =
+    "The request does not describe a concrete software feature or change.";
+
+fn value_bool(value: &serde_json::Value, keys: &[&str]) -> Option<bool> {
+    keys.iter().find_map(|key| value.get(*key)?.as_bool())
+}
+
+fn value_string<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| value.get(*key)?.as_str())
+}
+
+fn json_value_contains_string(value: &serde_json::Value, needle: &str) -> bool {
+    match value {
+        serde_json::Value::String(text) => text.to_ascii_lowercase().contains(needle),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|item| json_value_contains_string(item, needle)),
+        serde_json::Value::Object(map) => map
+            .values()
+            .any(|item| json_value_contains_string(item, needle)),
+        _ => false,
+    }
+}
+
+fn value_array_contains(value: &serde_json::Value, keys: &[&str], needle: &str) -> bool {
+    keys.iter()
+        .filter_map(|key| value.get(*key))
+        .any(|item| json_value_contains_string(item, needle))
+}
+
+pub fn invalid_intent_reason(artifact: &PersonaArtifact) -> Option<String> {
+    if artifact.persona_id != PERSONA_INTENT_EXTRACTOR {
+        return None;
+    }
+
+    let output = &artifact.output;
+    let explicitly_invalid = value_bool(
+        output,
+        &["input_valid", "is_valid_feature_request", "valid_request"],
+    )
+    .is_some_and(|valid| !valid);
+    let invalid_classification = value_string(
+        output,
+        &[
+            "request_validity",
+            "validity",
+            "input_classification",
+            "request_type",
+        ],
+    )
+    .map(|value| value.to_ascii_lowercase())
+    .is_some_and(|value| {
+        [
+            "invalid",
+            "placeholder",
+            "accidental",
+            "nonsense",
+            "not_a_feature",
+        ]
+        .iter()
+        .any(|marker| value.contains(marker))
+    });
+    let placeholder_assumption =
+        value_array_contains(output, &["assumptions", "non_goals"], "placeholder")
+            || value_array_contains(output, &["assumptions", "non_goals"], "accident");
+
+    if !(explicitly_invalid || invalid_classification || placeholder_assumption) {
+        return None;
+    }
+
+    Some(
+        value_string(
+            output,
+            &[
+                "invalid_reason",
+                "reason",
+                "recommendation_reason",
+                "clarification_needed",
+            ],
+        )
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or(INVALID_INTENT_REASON_FALLBACK)
+        .to_string(),
+    )
+}
+
+pub fn invalid_intent_draft(
+    user_description: &str,
+    briefing_depth: &str,
+    artifact: &PersonaArtifact,
+    reason: &str,
+) -> BriefingDraft {
+    let submitted = user_description.trim();
+    let detail = if submitted.is_empty() {
+        "The submitted brief was empty.".to_string()
+    } else {
+        format!("The submitted brief was: `{}`", submitted)
+    };
+
+    let mut draft = BriefingDraft {
+        title: "Invalid feature brief".into(),
+        description: format!(
+            "Orca could not turn this into a task plan because the first briefing persona marked the input as invalid.\n\n{}\n\nProvide a concrete feature request or change description, then refine the briefing.",
+            detail
+        ),
+        tasks: Vec::new(),
+        assumptions: Vec::new(),
+        classification: Some(RequestClassification {
+            complexity: "unknown".into(),
+            ambiguity: "high".into(),
+            risk: "high".into(),
+            likely_touched_areas: Vec::new(),
+            recommended_depth: "quick".into(),
+            repo_scanning_needed: false,
+            multi_model_critique_justified: false,
+        }),
+        budget_estimate: Some(BriefingBudgetEstimate {
+            depth: briefing_depth.to_string(),
+            cost_level: "low".into(),
+            risk_level: "high".into(),
+            confidence: 1.0,
+            token_strategy: "Stopped after the first persona because the input is not actionable."
+                .into(),
+            expensive_steps: Vec::new(),
+        }),
+        ambiguity_ledger: vec![AmbiguityItem {
+            id: "amb-invalid-input".into(),
+            question: "What feature or code change should Orca brief?".into(),
+            why_it_matters: reason.to_string(),
+            risk_if_unanswered: "Continuing would create invented tasks from invalid input.".into(),
+            recommended_default_assumption: String::new(),
+            user_input_required: true,
+            status: "unresolved".into(),
+            user_answer: None,
+        }],
+        structured_brief: Some(StructuredBrief {
+            goal: "No actionable feature request was provided.".into(),
+            user_value: "Avoid creating a misleading implementation plan from invalid input.".into(),
+            risks: vec!["Generated tasks would be based on invented intent.".into()],
+            open_questions: vec!["Provide the intended feature or change request.".into()],
+            ..StructuredBrief::default()
+        }),
+        open_questions: vec!["Provide the intended feature or change request.".into()],
+        persona_model_mapping: vec![artifact.mapping()],
+        persona_artifacts: vec![serde_json::to_value(artifact).unwrap_or_default()],
+        readiness_status: Some("blocked_needs_user_input".into()),
+        confidence_score: Some(1.0),
+        recommended_depth: Some("quick".into()),
+        ..BriefingDraft::default()
+    };
+    ensure_draft_ids(&mut draft);
+    draft
+}
 
 pub fn persona_label(persona_id: &str) -> &'static str {
     match persona_id {
@@ -984,6 +1138,9 @@ fn persona_output_contract(persona_id: &str) -> &'static str {
     match persona_id {
         PERSONA_INTENT_EXTRACTOR => {
             r#"{
+  "input_valid": true,
+  "request_validity": "valid | invalid | placeholder",
+  "invalid_reason": "string | null",
   "goal": "string",
   "user_value": "string",
   "target_users": ["string"],
@@ -992,7 +1149,10 @@ fn persona_output_contract(persona_id: &str) -> &'static str {
   "implied_requirements": ["string"],
   "non_goals": ["string"],
   "success_criteria": ["string"]
-}"#
+}
+
+If the user input is random strings, accidental text, a placeholder, or otherwise not a concrete software feature/change request, set input_valid to false, request_validity to "invalid" or "placeholder", explain invalid_reason, and leave the other arrays empty.
+"#
         }
         PERSONA_CODEBASE_CARTOGRAPHER => {
             r#"{
@@ -1721,6 +1881,74 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results.iter().any(|r| r.path == "real.txt" && r.exists));
         assert!(results.iter().any(|r| r.path == "missing.txt" && !r.exists));
+    }
+
+    #[test]
+    fn invalid_intent_reason_detects_explicit_invalid_signal() {
+        let artifact = PersonaArtifact {
+            persona_id: PERSONA_INTENT_EXTRACTOR.into(),
+            persona_label: persona_label(PERSONA_INTENT_EXTRACTOR).into(),
+            provider: "codex".into(),
+            model: "gpt-5.5".into(),
+            output: serde_json::json!({
+                "input_valid": false,
+                "request_validity": "placeholder",
+                "invalid_reason": "The input is random strings."
+            }),
+            fallback_used: false,
+            warning: None,
+            duration_ms: 10,
+        };
+
+        assert_eq!(
+            invalid_intent_reason(&artifact).as_deref(),
+            Some("The input is random strings.")
+        );
+    }
+
+    #[test]
+    fn invalid_intent_reason_detects_placeholder_assumption_objects() {
+        let artifact = PersonaArtifact {
+            persona_id: PERSONA_INTENT_EXTRACTOR.into(),
+            persona_label: persona_label(PERSONA_INTENT_EXTRACTOR).into(),
+            provider: "codex".into(),
+            model: "gpt-5.5".into(),
+            output: serde_json::json!({
+                "assumptions": [
+                    { "statement": "The user submitted the input by accident or as a placeholder." }
+                ]
+            }),
+            fallback_used: false,
+            warning: None,
+            duration_ms: 10,
+        };
+
+        assert!(invalid_intent_reason(&artifact).is_some());
+    }
+
+    #[test]
+    fn invalid_intent_draft_blocks_task_creation() {
+        let artifact = PersonaArtifact {
+            persona_id: PERSONA_INTENT_EXTRACTOR.into(),
+            persona_label: persona_label(PERSONA_INTENT_EXTRACTOR).into(),
+            provider: "codex".into(),
+            model: "gpt-5.5".into(),
+            output: serde_json::json!({ "input_valid": false }),
+            fallback_used: false,
+            warning: None,
+            duration_ms: 10,
+        };
+
+        let draft = invalid_intent_draft("asdf qwer zxcv", "guided", &artifact, "Random input");
+
+        assert_eq!(
+            draft.readiness_status.as_deref(),
+            Some("blocked_needs_user_input")
+        );
+        assert!(draft.tasks.is_empty());
+        assert_eq!(draft.ambiguity_ledger.len(), 1);
+        assert!(draft.ambiguity_ledger[0].user_input_required);
+        assert_eq!(draft.persona_artifacts.len(), 1);
     }
 
     #[test]

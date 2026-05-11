@@ -33,6 +33,15 @@ CREATE TABLE IF NOT EXISTS workspace_projection (
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    updated_at    INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT OR IGNORE INTO app_settings (id, settings_json, updated_at)
+VALUES (1, '{}', 0);
 "#;
 
 pub fn apply_workspace_projection_ddl(conn: &Connection) -> rusqlite::Result<()> {

@@ -17,8 +17,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  useUpdateWorkspaceSettings,
-  useWorkspaceSettings,
+  useSettings,
+  useUpdateSettings,
+  type SettingsScope,
 } from "../hooks";
 import {
   bundledDefaultPermissionMode,
@@ -62,11 +63,17 @@ function buildDraft(settings: WorkspaceSettings): Draft {
 
 export function DefaultPhaseSettingsPanel({
   workspaceId,
+  scope,
 }: {
-  workspaceId: string;
+  workspaceId?: string;
+  scope?: SettingsScope;
 }) {
-  const settingsQ = useWorkspaceSettings(workspaceId);
-  const update = useUpdateWorkspaceSettings(workspaceId);
+  const resolvedScope = scope ?? {
+    type: "workspace" as const,
+    workspaceId: workspaceId ?? "",
+  };
+  const settingsQ = useSettings(workspaceId || scope ? resolvedScope : undefined);
+  const update = useUpdateSettings(resolvedScope);
   const [draft, setDraft] = useState<Draft>({});
 
   useEffect(() => {

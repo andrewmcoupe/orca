@@ -349,6 +349,7 @@ export function BriefingSetupScreen({
                 <Label htmlFor="description">Feature description</Label>
                 <LinearImportDialog
                   disabled={submitting}
+                  workspaceId={activeWorkspace.data?.id}
                   onImport={(issues) => {
                     setImportedIssues((prev) => {
                       const next = new Map(

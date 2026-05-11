@@ -112,6 +112,8 @@ pub fn run() {
             commands::list_workspace_stats,
             commands::get_workspace_home_dispatch,
             commands::remove_workspace,
+            commands::get_app_settings,
+            commands::update_app_settings,
             commands::get_workspace_settings,
             commands::update_workspace_settings,
             commands::start_preview_server,

@@ -2,7 +2,6 @@ import { useState } from "react";
 import { createRoute, useParams } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { ContentColumn } from "@/components/layout/content-column";
 import { Separator } from "@/components/ui/separator";
 import { eventsApi } from "@/features/events/api";
 import { useRemoveWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
@@ -15,6 +14,11 @@ import { PromptsPanel } from "@/features/workspaces/components/prompts-panel";
 import { ReliabilityPanel } from "@/features/workspaces/components/reliability-panel";
 import { PreviewServerPanel } from "@/features/workspaces/components/preview-server-panel";
 import { LinearSettingsPanel } from "@/features/integrations/linear/components/linear-settings-panel";
+import {
+  SettingBlock,
+  SettingsFrame,
+  SettingsSection,
+} from "@/routes/global-settings";
 import { workspaceLayoutRoute } from "./layout";
 
 function WorkspaceSettingsPage() {
@@ -32,99 +36,131 @@ function WorkspaceSettingsPage() {
   }
 
   return (
-    <ContentColumn className="space-y-6 px-5 py-4">
-      <header>
-        <h1 className="text-[18px] font-medium tracking-tight">
-          Workspace settings
-        </h1>
-        <dl className="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+    <SettingsFrame
+      title="Workspace settings"
+      showBackLink={false}
+      subtitle={
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
           <dt className="text-muted-foreground">Name</dt>
           <dd>{ws.name}</dd>
           <dt className="text-muted-foreground">Path</dt>
           <dd className="truncate font-mono text-xs">{ws.path}</dd>
         </dl>
-      </header>
-
+      }
+    >
       <SettingsSection
-        title="Default phase config"
-        description="Phases that new tasks inherit. Tasks can override via the Advanced panel on creation."
+        id="workflow"
+        title="Workflow"
+        description="Workspace defaults replace app-level values when tasks are created here."
       >
-        <PhaseConfigPanel workspaceId={ws.id} />
+        <SettingBlock
+          title="Default phase config"
+          description="Phases that new tasks inherit. Tasks can override via the Advanced panel on creation."
+        >
+          <PhaseConfigPanel workspaceId={ws.id} />
+        </SettingBlock>
       </SettingsSection>
 
       <SettingsSection
-        title="Default phase settings"
-        description="Per-phase default model and permission mode. New tasks inherit these; tasks can override per-phase from the preview screen before starting."
+        id="general"
+        title="General"
+        description="Provider, model, permission, and briefing defaults for this workspace."
       >
-        <DefaultPhaseSettingsPanel workspaceId={ws.id} />
+        <div className="space-y-5">
+          <SettingBlock
+            title="Default phase settings"
+            description="Per-phase default model and permission mode for new tasks."
+          >
+            <DefaultPhaseSettingsPanel workspaceId={ws.id} />
+          </SettingBlock>
+          <SettingBlock
+            title="Briefing personas"
+            description="Provider and model defaults for specialist reviewers."
+          >
+            <BriefingPersonaSettingsPanel workspaceId={ws.id} />
+          </SettingBlock>
+        </div>
       </SettingsSection>
 
       <SettingsSection
-        title="Briefing personas"
-        description="Provider and model defaults for the specialist reviewers used by the briefing workbench."
+        id="configuration"
+        title="Configuration"
+        description="Workspace-specific task creation, integration, gates, prompts, and preview settings."
       >
-        <BriefingPersonaSettingsPanel workspaceId={ws.id} />
+        <div className="space-y-5">
+          <SettingBlock
+            title="Task creation"
+            description="Behaviour of the task creation flow."
+          >
+            <QuickTaskPreviewToggle workspaceId={ws.id} />
+          </SettingBlock>
+          <SettingBlock
+            title="Integrations"
+            description="Connect external systems used to import source context."
+          >
+            <LinearSettingsPanel workspaceId={ws.id} />
+          </SettingBlock>
+          <SettingBlock
+            title="Gates"
+            description="Commands run after configured phases."
+          >
+            <GateConfigPanel workspaceId={ws.id} />
+          </SettingBlock>
+          <SettingBlock
+            title="Prompts"
+            description="Saved files override bundled phase prompt templates."
+          >
+            <PromptsPanel workspaceId={ws.id} />
+          </SettingBlock>
+          <SettingBlock
+            title="Preview server"
+            description="Start a frontend dev server from a task worktree."
+          >
+            <PreviewServerPanel workspaceId={ws.id} />
+          </SettingBlock>
+        </div>
       </SettingsSection>
 
       <SettingsSection
-        title="Task creation"
-        description="Behaviour of the task creation flow."
-      >
-        <QuickTaskPreviewToggle workspaceId={ws.id} />
-      </SettingsSection>
-
-      <SettingsSection
-        title="Integrations"
-        description="Connect external systems used to import source context into Orca workflows."
-      >
-        <LinearSettingsPanel />
-      </SettingsSection>
-
-      <SettingsSection
-        title="Gates"
-        description="Commands run after configured phases. A non-zero exit fails the gate and stops the pipeline."
-      >
-        <GateConfigPanel workspaceId={ws.id} />
-      </SettingsSection>
-
-      <SettingsSection
-        title="Prompts"
-        description="Per-phase prompt templates for this workspace. Saved files override the bundled defaults."
-      >
-        <PromptsPanel workspaceId={ws.id} />
-      </SettingsSection>
-
-      <SettingsSection
-        title="Preview server"
-        description="Start a frontend dev server from a task worktree and open a route in the external browser."
-      >
-        <PreviewServerPanel workspaceId={ws.id} />
-      </SettingsSection>
-
-      <SettingsSection
+        id="reliability"
         title="Reliability"
-        description="Worktree initialization, phase timeouts, and additional environment variables. Defaults work for most projects."
+        description="Worktree initialization, phase timeouts, and additional environment variables."
       >
-        <ReliabilityPanel workspaceId={ws.id} />
+        <SettingBlock
+          title="Runtime reliability"
+          description="Defaults work for most projects; override here when this workspace differs."
+        >
+          <ReliabilityPanel workspaceId={ws.id} />
+        </SettingBlock>
       </SettingsSection>
 
       <Separator />
 
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold">Maintenance</h2>
-        <RebuildProjectionsButton />
-        <div>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => remove.mutate(ws.id)}
-            disabled={remove.isPending}
-          >
-            Remove workspace
-          </Button>
-        </div>
-      </section>
-    </ContentColumn>
+      <SettingsSection
+        id="advanced"
+        title="Maintenance"
+        description="Repair projections and remove the workspace registration."
+      >
+        <SettingBlock
+          title="Maintenance"
+          description="Operations that affect this workspace registration."
+        >
+          <div className="space-y-3">
+            <RebuildProjectionsButton />
+            <div>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => remove.mutate(ws.id)}
+                disabled={remove.isPending}
+              >
+                Remove workspace
+              </Button>
+            </div>
+          </div>
+        </SettingBlock>
+      </SettingsSection>
+    </SettingsFrame>
   );
 }
 
@@ -151,7 +187,7 @@ function RebuildProjectionsButton() {
         }}
         disabled={rebuild.isPending}
       >
-        {rebuild.isPending ? "Rebuilding…" : "Rebuild projections"}
+        {rebuild.isPending ? "Rebuilding..." : "Rebuild projections"}
       </Button>
       <p className="text-muted-foreground text-xs">
         Replays the event log into the read-side tables. Safe to run; needed
@@ -162,26 +198,6 @@ function RebuildProjectionsButton() {
         <p className="text-destructive text-xs">{String(rebuild.error)}</p>
       )}
     </div>
-  );
-}
-
-function SettingsSection({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="space-y-3">
-      <div>
-        <h2 className="text-sm font-semibold">{title}</h2>
-        <p className="text-muted-foreground text-xs">{description}</p>
-      </div>
-      <div className="rounded-md crisp-gradient-border p-4">{children}</div>
-    </section>
   );
 }
 

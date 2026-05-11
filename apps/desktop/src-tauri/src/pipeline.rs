@@ -110,14 +110,21 @@ pub fn load_workspace_settings(app: &AppHandle, workspace_id: &str) -> Workspace
         Ok(g) => g,
         Err(_) => return WorkspaceSettings::default(),
     };
-    let json: String = conn
+    let workspace_json: String = conn
         .query_row(
             "SELECT settings_json FROM workspace_projection WHERE id = ?1",
             params![workspace_id],
             |r| r.get(0),
         )
         .unwrap_or_else(|_| "{}".to_string());
-    WorkspaceSettings::from_json_str(&json)
+    let app_json: String = conn
+        .query_row(
+            "SELECT settings_json FROM app_settings WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|_| "{}".to_string());
+    WorkspaceSettings::from_layered_json(&app_json, &workspace_json)
 }
 
 /// Parse a task's stored `phase_config` JSON into the typed `PhaseConfig`. Falls back to

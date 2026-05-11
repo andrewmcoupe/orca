@@ -11,6 +11,7 @@ import type {
 
 const WORKSPACE_LIST_KEY = ["workspace", "list", null] as const;
 const ACTIVE_WORKSPACE_KEY = ["active_workspace"] as const;
+const APP_SETTINGS_KEY = ["app", "settings"] as const;
 
 export function useWorkspaces() {
   return useQuery<Workspace[]>({
@@ -102,6 +103,24 @@ export function useClearActiveWorkspace() {
   });
 }
 
+export function useAppSettings() {
+  return useQuery<WorkspaceSettings>({
+    queryKey: APP_SETTINGS_KEY,
+    queryFn: workspacesApi.getAppSettings,
+  });
+}
+
+export function useUpdateAppSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: workspacesApi.updateAppSettings,
+    onSuccess: (settings) => {
+      qc.setQueryData(APP_SETTINGS_KEY, settings);
+      qc.invalidateQueries({ queryKey: ["workspace"] });
+    },
+  });
+}
+
 /**
  * Ensures the backend's active workspace matches the route param.
  * The route param is the source of truth — switching routes must rebind
@@ -109,6 +128,44 @@ export function useClearActiveWorkspace() {
  */
 export const workspaceSettingsKey = (workspaceId: string) =>
   ["workspace", workspaceId, "settings"] as const;
+
+export type SettingsScope =
+  | { type: "app" }
+  | { type: "workspace"; workspaceId: string };
+
+export function useSettings(scope: SettingsScope | undefined) {
+  return useQuery<WorkspaceSettings>({
+    queryKey:
+      scope?.type === "app"
+        ? APP_SETTINGS_KEY
+        : scope?.type === "workspace"
+          ? workspaceSettingsKey(scope.workspaceId)
+          : ["settings", "__pending__"],
+    queryFn: () =>
+      scope?.type === "app"
+        ? workspacesApi.getAppSettings()
+        : workspacesApi.getSettings(scope!.workspaceId),
+    enabled: !!scope,
+  });
+}
+
+export function useUpdateSettings(scope: SettingsScope) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (settings: WorkspaceSettings) =>
+      scope.type === "app"
+        ? workspacesApi.updateAppSettings(settings)
+        : workspacesApi.updateSettings(scope.workspaceId, settings),
+    onSuccess: (settings) => {
+      if (scope.type === "app") {
+        qc.setQueryData(APP_SETTINGS_KEY, settings);
+        qc.invalidateQueries({ queryKey: ["workspace"] });
+      } else {
+        qc.setQueryData(workspaceSettingsKey(scope.workspaceId), settings);
+      }
+    },
+  });
+}
 
 export function useWorkspaceSettings(workspaceId: string | undefined) {
   return useQuery<WorkspaceSettings>({

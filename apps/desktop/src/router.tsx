@@ -1,7 +1,11 @@
 import { createRouter } from "@tanstack/react-router";
 import { rootRoute } from "./routes/root";
 import { indexRoute } from "./routes/index";
-import { globalSettingsRoute } from "./routes/global-settings";
+import {
+  globalSettingsBriefingRoute,
+  globalSettingsIndexRoute,
+  globalSettingsRoute,
+} from "./routes/global-settings";
 import { workspaceLayoutRoute } from "./routes/workspace/layout";
 import { workspaceIndexRoute } from "./routes/workspace/redirect";
 import { plansListRoute } from "./routes/workspace/plans-list";
@@ -23,9 +27,14 @@ const workspaceTree = workspaceLayoutRoute.addChildren([
   briefingDetailRoute,
 ]);
 
+const globalSettingsTree = globalSettingsRoute.addChildren([
+  globalSettingsIndexRoute,
+  globalSettingsBriefingRoute,
+]);
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
-  globalSettingsRoute,
+  globalSettingsTree,
   workspaceTree,
 ]);
 

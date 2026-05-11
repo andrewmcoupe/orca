@@ -8,6 +8,9 @@ import type {
 } from "./types";
 
 export const workspacesApi = {
+  getAppSettings: () => invoke<WorkspaceSettings>("get_app_settings"),
+  updateAppSettings: (settings: WorkspaceSettings) =>
+    invoke<WorkspaceSettings>("update_app_settings", { settings }),
   list: () => invoke<Workspace[]>("list_workspaces"),
   listStats: () => invoke<WorkspaceStats[]>("list_workspace_stats"),
   getHomeDispatch: () =>
