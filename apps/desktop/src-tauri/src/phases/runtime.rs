@@ -106,6 +106,10 @@ pub fn append_phase_run_step(
     new_event: NewEvent,
     metadata: &EventMetadata,
 ) -> Result<i64, String> {
+    let writer = crate::write_lock::workspace_writer(workspace_id);
+    let _wguard = writer
+        .lock()
+        .map_err(|_| "workspace writer poisoned".to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let outcome = append_events_in_tx(
         &tx,
@@ -221,6 +225,10 @@ pub fn append_task_step(
     new_event: NewEvent,
     metadata: &EventMetadata,
 ) -> Result<i64, String> {
+    let writer = crate::write_lock::workspace_writer(workspace_id);
+    let _wguard = writer
+        .lock()
+        .map_err(|_| "workspace writer poisoned".to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let outcome = append_events_in_tx(
         &tx,

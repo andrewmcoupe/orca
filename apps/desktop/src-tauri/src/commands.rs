@@ -1103,6 +1103,10 @@ fn reconcile_worktrees(
             "reason": "cleanup_orphan",
         })
         .to_string();
+        let writer = crate::write_lock::workspace_writer(workspace_id);
+        let _wguard = writer
+            .lock()
+            .map_err(|_| "workspace writer poisoned".to_string())?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
         let outcome = append_events_in_tx(
             &tx,
@@ -1276,6 +1280,10 @@ fn append_plan_event(
     actor: &str,
 ) -> Result<(), String> {
     let seq = current_plan_seq(&aw.conn, plan_id)?;
+    let writer = crate::write_lock::workspace_writer(&aw.id);
+    let _wguard = writer
+        .lock()
+        .map_err(|_| "workspace writer poisoned".to_string())?;
     let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
     let outcome = append_events_in_tx(
         &tx,
@@ -1510,12 +1518,20 @@ fn cascade_cancel_tasks(
         None => return,
     };
 
+    let writer = crate::write_lock::workspace_writer(workspace_id);
     for target in cascade {
         let task_id = &target.task_id;
         let payload = json!({ "reason": reason }).to_string();
         let seq = match current_task_seq(&aw.conn, task_id) {
             Ok(s) => s,
             Err(_) => continue,
+        };
+        let _wguard = match writer.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                eprintln!("cascade cancel: workspace writer poisoned");
+                return;
+            }
         };
         let tx = match aw.conn.transaction() {
             Ok(t) => t,
@@ -1718,6 +1734,10 @@ pub fn create_task(
         })
         .to_string();
 
+        let writer = crate::write_lock::workspace_writer(&aw.id);
+        let _wguard = writer
+            .lock()
+            .map_err(|_| "workspace writer poisoned".to_string())?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
         let outcome = append_events_in_tx(
             &tx,
@@ -2482,6 +2502,10 @@ fn append_task_event_simple(
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         let aw = require_active_workspace(&mut guard)?;
         let seq = current_task_seq(&aw.conn, task_id)?;
+        let writer = crate::write_lock::workspace_writer(workspace_id);
+        let _wguard = writer
+            .lock()
+            .map_err(|_| "workspace writer poisoned".to_string())?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
         let outcome = append_events_in_tx(
             &tx,
@@ -2558,6 +2582,10 @@ pub fn mark_task_merged(
         })
         .to_string();
         let seq = current_task_seq(&aw.conn, &task_id)?;
+        let writer = crate::write_lock::workspace_writer(&aw.id);
+        let _wguard = writer
+            .lock()
+            .map_err(|_| "workspace writer poisoned".to_string())?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
         let outcome = append_events_in_tx(
             &tx,
@@ -2624,6 +2652,10 @@ pub fn cancel_task(
 
         let payload = json!({ "reason": reason }).to_string();
         let seq = current_task_seq(&aw.conn, &task_id)?;
+        let writer = crate::write_lock::workspace_writer(&aw.id);
+        let _wguard = writer
+            .lock()
+            .map_err(|_| "workspace writer poisoned".to_string())?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
         let outcome = append_events_in_tx(
             &tx,
@@ -2654,6 +2686,90 @@ pub fn cancel_task(
         &workspace_path,
         &task_id,
         "task_cancelled",
+    )?;
+    maybe_complete_plan(&app, &workspace_id, &task_id);
+    Ok(())
+}
+
+/// Archive (soft-delete) a task. Cancels any in-flight phase run, removes the
+/// worktree, and emits `TaskArchived` so the projection flips status to
+/// `"archived"` (filtered out of every default UI list — see the existing
+/// `cancelled | merged | archived` checks in dependencies.rs / pipeline.rs).
+/// Mirrors `cancel_task` but uses a different event type so the user can
+/// distinguish "I no longer want this" from "this was abandoned mid-flight".
+#[tauri::command]
+pub fn delete_task(
+    app: AppHandle,
+    task_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<(), String> {
+    let workspace_id;
+    let workspace_path;
+    let running_phase_run_id: Option<String>;
+    {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        workspace_id = aw.id.clone();
+        workspace_path = aw.path.clone();
+
+        // Find an in-flight phase run for this task so we can cancel it. Best-effort:
+        // if the projection lookup fails, we still proceed to archive — a stuck phase
+        // run will be cleaned up by the activation sweep on next launch.
+        running_phase_run_id = aw
+            .conn
+            .query_row(
+                "SELECT id FROM phase_run_projection
+                 WHERE task_id = ?1 AND status = 'running'
+                 ORDER BY started_at DESC LIMIT 1",
+                params![task_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        let payload = json!({}).to_string();
+        let seq = current_task_seq(&aw.conn, &task_id)?;
+        let writer = crate::write_lock::workspace_writer(&aw.id);
+        let _wguard = writer
+            .lock()
+            .map_err(|_| "workspace writer poisoned".to_string())?;
+        let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
+        let outcome = append_events_in_tx(
+            &tx,
+            "task",
+            &task_id,
+            seq,
+            vec![NewEvent {
+                event_type: "TaskArchived".into(),
+                version: 1,
+                payload,
+            }],
+            &make_metadata("user:local"),
+        )
+        .map_err(map_append_err)?;
+        for ev in &outcome.events {
+            apply_task_event(&tx, ev).map_err(|e| e.to_string())?;
+            recent_events::record_event(&tx, ev).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    // Signal cancellation outside the workspace lock — the running phase task will
+    // observe the token and emit its own `PhaseRunFailed`/`PhaseRunCancelled`.
+    if let Some(pr_id) = running_phase_run_id {
+        let inflight = app.state::<InflightRuns>();
+        inflight.cancel(&pr_id);
+    }
+
+    emit_projection_updated(&app, Some(&workspace_id), "task", &task_id);
+    emit_projection_updated(&app, Some(&workspace_id), "recent_events", &workspace_id);
+
+    cleanup_task_worktree(
+        &app,
+        &workspace_id,
+        &workspace_path,
+        &task_id,
+        "task_archived",
     )?;
     maybe_complete_plan(&app, &workspace_id, &task_id);
     Ok(())
@@ -2732,6 +2848,10 @@ pub fn approve_task_anyway(
 
         let payload = json!({ "by": "user:local" }).to_string();
         let seq = current_task_seq(&aw.conn, &task_id)?;
+        let writer = crate::write_lock::workspace_writer(&aw.id);
+        let _wguard = writer
+            .lock()
+            .map_err(|_| "workspace writer poisoned".to_string())?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
         let outcome = append_events_in_tx(
             &tx,
@@ -2796,6 +2916,10 @@ pub fn update_task_dependencies(
 
         let payload = json!({ "depends_on": depends_on }).to_string();
         let seq = current_task_seq(&aw.conn, &task_id)?;
+        let writer = crate::write_lock::workspace_writer(&aw.id);
+        let _wguard = writer
+            .lock()
+            .map_err(|_| "workspace writer poisoned".to_string())?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
         let outcome = append_events_in_tx(
             &tx,
@@ -2850,6 +2974,10 @@ pub fn unqueue_task(
             return Ok(task);
         }
         let seq = current_task_seq(&aw.conn, &task_id)?;
+        let writer = crate::write_lock::workspace_writer(&aw.id);
+        let _wguard = writer
+            .lock()
+            .map_err(|_| "workspace writer poisoned".to_string())?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
         let outcome = append_events_in_tx(
             &tx,
@@ -3024,6 +3152,10 @@ fn apply_task_phase_config_change(
         }
 
         let seq = current_task_seq(&aw.conn, task_id)?;
+        let writer = crate::write_lock::workspace_writer(&aw.id);
+        let _wguard = writer
+            .lock()
+            .map_err(|_| "workspace writer poisoned".to_string())?;
         let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
         let outcome = append_events_in_tx(
             &tx,
@@ -3315,6 +3447,11 @@ fn perform_worktree_removal(
         ),
     };
 
+    let writer = crate::write_lock::workspace_writer(workspace_id);
+    let _wguard = match writer.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
     let tx = match aw.conn.transaction() {
         Ok(t) => t,
         Err(_) => return,
@@ -3417,6 +3554,69 @@ pub fn list_recent_events(
     recent_events::list_recent(&aw.conn, limit).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn list_task_events(
+    task_id: String,
+    limit: Option<i64>,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<Vec<RecentEventRow>, String> {
+    let limit = limit.unwrap_or(500).clamp(1, 1000);
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    let mut stmt = aw
+        .conn
+        .prepare(
+            "SELECT e.id, e.aggregate_type, e.aggregate_id, e.event_type, e.payload, e.created_at
+             FROM events e
+             WHERE (e.aggregate_type = 'task' AND e.aggregate_id = ?1)
+                OR (
+                  e.aggregate_type = 'phase_run'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM phase_run_projection pr
+                    WHERE pr.id = e.aggregate_id AND pr.task_id = ?1
+                  )
+                )
+             ORDER BY e.created_at DESC, e.id DESC
+             LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![task_id, limit], |r| {
+            let id: String = r.get(0)?;
+            let aggregate_type: String = r.get(1)?;
+            let aggregate_id: String = r.get(2)?;
+            let event_type: String = r.get(3)?;
+            let payload: String = r.get(4)?;
+            let created_at: i64 = r.get(5)?;
+            let event = crate::events::types::AppendedEvent {
+                id: id.clone(),
+                aggregate_type: aggregate_type.clone(),
+                aggregate_id: aggregate_id.clone(),
+                seq: 0,
+                event_type: event_type.clone(),
+                version: 0,
+                payload,
+                metadata: "{}".into(),
+                created_at,
+            };
+            Ok(RecentEventRow {
+                id,
+                aggregate_type,
+                aggregate_id,
+                event_type,
+                summary: recent_events::summarize(&event),
+                created_at,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Serialize)]
 pub struct EventDetail {
     pub id: String,
@@ -3508,6 +3708,10 @@ pub fn rebuild_projections(
     if do_plan || do_task || do_phase_run || do_briefing {
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         if let Some(aw) = guard.as_mut() {
+            let writer = crate::write_lock::workspace_writer(&aw.id);
+            let _wguard = writer
+                .lock()
+                .map_err(|_| "workspace writer poisoned".to_string())?;
             let tx = aw.conn.transaction().map_err(|e| e.to_string())?;
             tx.execute_batch(
                 "DROP TABLE IF EXISTS phase_run_gate;

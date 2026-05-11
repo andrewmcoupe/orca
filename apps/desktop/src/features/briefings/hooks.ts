@@ -107,8 +107,15 @@ export function useRefineBriefing() {
 export function useAcceptBriefing() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (briefingId: string) => briefingsApi.accept(briefingId),
-    onSuccess: (_plan, briefingId) => {
+    mutationFn: ({
+      briefingId,
+      acceptAssumptions,
+    }: {
+      briefingId: string;
+      acceptAssumptions?: boolean;
+    }) => briefingsApi.accept(briefingId, acceptAssumptions ?? false),
+    onSuccess: (_plan, vars) => {
+      const briefingId = vars.briefingId;
       qc.invalidateQueries({ queryKey: briefingKeys.detail(briefingId) });
       qc.invalidateQueries({ queryKey: ["plan"] });
       qc.invalidateQueries({ queryKey: briefingKeys.listActive() });

@@ -418,6 +418,12 @@ fn ensure_task_worktree(
         }
     }
 
+    // The projection has no active worktree for this task. If a branch / dir / registration
+    // exists on disk, it's an orphan from a prior crash between `git worktree add` and the
+    // `WorktreeCreated` event commit (e.g. the SQLite write lock was contended). Clear it
+    // out so the create below can succeed instead of failing with `BranchExists`.
+    let _ = worktree::cleanup_orphan_for_task(workspace_path, task_id);
+
     let info = worktree::create_worktree(workspace_path, task_id, "").map_err(|e| e.to_string())?;
     let payload = json!({
         "worktree_path": info.path.to_string_lossy(),

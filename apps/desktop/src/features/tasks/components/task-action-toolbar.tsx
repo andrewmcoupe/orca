@@ -28,9 +28,18 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import {
   useApproveTaskAnyway,
+  useDeleteTask,
   useDeleteWorktree,
   useLatestAuditorVerdict,
   useRejectTask,
@@ -156,6 +165,7 @@ export function TaskActionToolbar({
   const cancelPhaseRun = useCancelPhaseRun();
   const approve = useApproveTaskAnyway();
   const reject = useRejectTask();
+  const deleteTask = useDeleteTask();
   const deleteWorktree = useDeleteWorktree();
   const unqueueTask = useUnqueueTask();
   const tasksInPlanQ = useTasksInPlan(task.plan_id);
@@ -473,6 +483,10 @@ export function TaskActionToolbar({
           onDeleteWorktree={() =>
             deleteWorktree.mutate({ taskId: task.id, force: false })
           }
+          onDeleteTask={() => deleteTask.mutate(task.id)}
+          deleteTaskDisabled={
+            task.status === "merged" || task.status === "archived"
+          }
         />
       </div>
 
@@ -577,6 +591,8 @@ function OverflowMenu({
   onRunAnyway,
   onCopyId,
   onDeleteWorktree,
+  onDeleteTask,
+  deleteTaskDisabled,
 }: {
   task: Task;
   tasksInPlan: Task[];
@@ -598,6 +614,8 @@ function OverflowMenu({
   onRunAnyway: () => void;
   onCopyId: () => void;
   onDeleteWorktree: () => void;
+  onDeleteTask: () => void;
+  deleteTaskDisabled: boolean;
 }) {
   // Brief 4 / M7: "Edit dependencies" lives in the overflow when the
   // dependencies section isn't rendered (no deps + not blocked); we still
@@ -605,6 +623,7 @@ function OverflowMenu({
   // have a single discoverable place that always works. Local open-state
   // for the popover so dropdown autoclose doesn't kill it.
   const [editDepsOpen, setEditDepsOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   return (
     <>
     <DropdownMenu>
@@ -729,6 +748,14 @@ function OverflowMenu({
           <Trash />
           <span className="flex-1">Delete worktree</span>
         </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={deleteTaskDisabled}
+          variant="destructive"
+          onClick={() => setDeleteOpen(true)}
+        >
+          <Trash />
+          <span className="flex-1">Delete task</span>
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
     <DependencyEditDialog
@@ -737,6 +764,32 @@ function OverflowMenu({
       open={editDepsOpen}
       onOpenChange={setEditDepsOpen}
     />
+    <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Delete this task?</DialogTitle>
+          <DialogDescription>
+            {phaseRunning
+              ? "The running phase will be cancelled and the worktree removed. The task will be archived and hidden from views; the audit trail is kept."
+              : "The worktree will be removed and the task archived (hidden from views). The audit trail is kept."}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setDeleteOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              setDeleteOpen(false);
+              onDeleteTask();
+            }}
+          >
+            Delete task
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
     </>
   );
 }

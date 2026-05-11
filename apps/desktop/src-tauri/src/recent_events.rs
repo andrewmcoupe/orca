@@ -94,6 +94,16 @@ pub fn summarize(event: &AppendedEvent) -> String {
         "TaskApproved" => format!("Task approved by {}", s("by")),
         "TaskMerged" => format!("Task merged ({})", s("merge_strategy")),
         "TaskArchived" => "Task archived".into(),
+        "TaskQueued" => "Task queued until dependencies merge".into(),
+        "TaskUnqueued" => "Task removed from queue".into(),
+        "TaskUnblocked" => {
+            let id = s("unblocking_task_id");
+            if id.is_empty() {
+                "Task unblocked".into()
+            } else {
+                format!("Task unblocked by {}", id)
+            }
+        }
         "WorktreeCreated" => format!("Worktree created on {}", s("branch_name")),
         "WorktreeRemoved" => format!("Worktree removed ({})", s("reason")),
         "WorktreeRemovalFailed" => {

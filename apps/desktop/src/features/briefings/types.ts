@@ -18,11 +18,89 @@ export type DraftAssumption = {
   statement: string;
 };
 
+export type BriefingDepth = "quick" | "guided" | "thorough" | "adversarial";
+
+export type AmbiguityStatus = "unresolved" | "assumed" | "user_resolved";
+
+export type RequestClassification = {
+  complexity: "low" | "medium" | "high" | string;
+  ambiguity: "low" | "medium" | "high" | string;
+  risk: "low" | "medium" | "high" | string;
+  likely_touched_areas: string[];
+  recommended_depth: BriefingDepth | string;
+  repo_scanning_needed: boolean;
+  multi_model_critique_justified: boolean;
+};
+
+export type BriefingBudgetEstimate = {
+  depth: BriefingDepth | string;
+  cost_level: "low" | "medium" | "high" | string;
+  risk_level: "low" | "medium" | "high" | string;
+  confidence: number;
+  token_strategy: string;
+  expensive_steps: string[];
+};
+
+export type AmbiguityItem = {
+  id: string;
+  question: string;
+  why_it_matters: string;
+  risk_if_unanswered: string;
+  recommended_default_assumption: string;
+  user_input_required: boolean;
+  status: AmbiguityStatus | string;
+  user_answer?: string | null;
+};
+
+export type PersonaModelMapping = {
+  persona: string;
+  provider: string;
+  model: string;
+  fallback_used: boolean;
+  warning?: string | null;
+};
+
+export type StructuredBrief = {
+  goal: string;
+  user_value: string;
+  target_users: string[];
+  non_goals: string[];
+  codebase_context: string;
+  relevant_files: RelevantFile[];
+  required_behavior: string[];
+  ux_requirements: string[];
+  data_api_requirements: string[];
+  permissions_security: string[];
+  edge_cases: string[];
+  tests_required: string[];
+  risks: string[];
+  approved_assumptions: string[];
+  open_questions: string[];
+  task_graph: string[];
+  acceptance_criteria: string[];
+};
+
+export type BriefingReadinessStatus =
+  | "ready_for_tasks"
+  | "ready_with_assumptions"
+  | "blocked_needs_user_input";
+
 export type BriefingDraft = {
   title: string;
   description: string;
   tasks: DraftTask[];
   assumptions: DraftAssumption[];
+  classification?: RequestClassification | null;
+  budget_estimate?: BriefingBudgetEstimate | null;
+  ambiguity_ledger?: AmbiguityItem[];
+  structured_brief?: StructuredBrief | null;
+  approved_assumptions?: string[];
+  open_questions?: string[];
+  persona_model_mapping?: PersonaModelMapping[];
+  persona_artifacts?: Record<string, unknown>[];
+  readiness_status?: BriefingReadinessStatus | string;
+  confidence_score?: number | null;
+  recommended_depth?: BriefingDepth | string | null;
 };
 
 export type ImportedBriefingSource = {
@@ -47,6 +125,11 @@ export type AssumptionPushback = {
   pushback: string;
 };
 
+export type AmbiguityAnswer = {
+  ambiguity_id: string;
+  answer: string;
+};
+
 export type BriefingEdits = {
   title?: string | null;
   description?: string | null;
@@ -54,6 +137,7 @@ export type BriefingEdits = {
   task_additions: DraftTask[];
   task_removals: string[];
   assumption_pushbacks: AssumptionPushback[];
+  ambiguity_answers: AmbiguityAnswer[];
   /** Freeform "anything else" notes for the next refinement. Optional. */
   general_notes?: string | null;
 };
@@ -83,6 +167,10 @@ export type Briefing = {
   imported_sources: ImportedBriefingSource[];
   provider: string;
   model: string;
+  briefing_depth: BriefingDepth | string;
+  persona_config: Record<string, unknown> | null;
+  persona_artifacts: Record<string, unknown>[];
+  active_persona: Record<string, unknown> | null;
   current_draft: BriefingDraft | null;
   pending_edits: BriefingEdits | null;
   validation_results: PathValidationResult[] | null;
@@ -138,5 +226,6 @@ export const emptyEdits = (): BriefingEdits => ({
   task_additions: [],
   task_removals: [],
   assumption_pushbacks: [],
+  ambiguity_answers: [],
   general_notes: null,
 });

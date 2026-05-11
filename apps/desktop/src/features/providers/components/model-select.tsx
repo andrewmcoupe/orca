@@ -61,6 +61,12 @@ export function ModelSelect({
     }));
 
   const selectedValue = value ? encode(value) : NULL_VALUE;
+  const selectedLabel = value
+    ? (grouped
+        .find(({ provider }) => provider.id === value.provider)
+        ?.models.find((model) => model.id === value.model)?.label ??
+      `${value.provider}/${value.model}`)
+    : nullLabel;
 
   return (
     <Select
@@ -69,7 +75,7 @@ export function ModelSelect({
       disabled={disabled}
     >
       <SelectTrigger size={size === "sm" ? "sm" : "default"} className="w-full">
-        <SelectValue placeholder={nullLabel} />
+        <SelectValue placeholder={nullLabel}>{selectedLabel}</SelectValue>
       </SelectTrigger>
       <SelectContent>
         <SelectItem value={NULL_VALUE}>
@@ -80,7 +86,10 @@ export function ModelSelect({
             <SelectGroup key={provider.id}>
               <SelectLabel>{provider.display_name}</SelectLabel>
               {models.map((m) => (
-                <SelectItem key={`${provider.id}::${m.id}`} value={encode({ provider: provider.id, model: m.id })}>
+                <SelectItem
+                  key={`${provider.id}::${m.id}`}
+                  value={encode({ provider: provider.id, model: m.id })}
+                >
                   {m.label}
                 </SelectItem>
               ))}

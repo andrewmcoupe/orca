@@ -84,6 +84,21 @@ export type ModelChoice = {
   model: string;
 };
 
+export type BriefingDepth = "quick" | "guided" | "thorough" | "adversarial";
+
+export type BriefingPersona =
+  | "intent_extractor"
+  | "codebase_cartographer"
+  | "ambiguity_hunter"
+  | "implementation_planner"
+  | "skeptic"
+  | "final_synthesizer";
+
+export type BriefingPersonaConfig = {
+  global_default?: ModelChoice | null;
+  personas?: Record<string, ModelChoice | null>;
+};
+
 export type PermissionMode = "plan" | "acceptEdits" | "bypassPermissions";
 
 /** Modes the UI is allowed to surface for each phase. The auditor never sees
@@ -172,6 +187,7 @@ export type WorkspaceSettings = {
   phase_timeouts?: PhaseTimeoutSettings;
   subprocess?: SubprocessSettings;
   preview_server?: PreviewServerSettings;
+  briefing_personas?: BriefingPersonaConfig;
 };
 
 /**

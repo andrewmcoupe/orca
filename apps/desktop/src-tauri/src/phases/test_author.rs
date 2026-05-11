@@ -367,6 +367,11 @@ fn ensure_task_worktree(
         }
     }
 
+    // Recover from a prior crash between `git worktree add` and the `WorktreeCreated`
+    // commit by clearing any leftover branch/dir/registration. See implementer.rs for
+    // the full explanation.
+    let _ = worktree::cleanup_orphan_for_task(workspace_path, task_id);
+
     let info = worktree::create_worktree(workspace_path, task_id, "").map_err(|e| e.to_string())?;
     let payload = json!({
         "worktree_path": info.path.to_string_lossy(),

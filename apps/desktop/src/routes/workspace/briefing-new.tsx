@@ -4,13 +4,20 @@ import {
   useParams,
   useSearch,
 } from "@tanstack/react-router";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { z } from "zod";
 import { workspaceLayoutRoute } from "./layout";
 import { ContentColumn } from "@/components/layout/content-column";
 import { Button } from "@/components/ui/button";
 import { BriefingSetupScreen } from "@/features/briefings/components/setup-screen";
 import { BriefingReviewScreen } from "@/features/briefings/components/review-screen";
+import { BriefingSidebar } from "@/features/briefings/components/briefing-sidebar";
 import {
   useBriefing,
   useBriefingLiveOutput,
@@ -18,6 +25,7 @@ import {
   useCancelBriefingGeneration,
   useGenerateBriefingDraft,
 } from "@/features/briefings/hooks";
+import { ProviderModelLabel } from "@/features/providers/components/provider-logo";
 import type { Briefing } from "@/features/briefings/types";
 
 const briefingNewSearchSchema = z.object({
@@ -39,6 +47,15 @@ function BriefingNewPage() {
 
   const briefingQuery = useBriefing(briefingId ?? undefined);
   const briefing = briefingQuery.data ?? null;
+  const liveOutput = useBriefingLiveOutput(
+    briefingId ?? undefined,
+    !!briefing?.is_generating,
+  );
+  useEffect(() => {
+    if (briefing?.is_generating) liveOutput.reset();
+    // Reset on each new generation start only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [briefing?.is_generating, briefing?.updated_at]);
 
   const goToPlans = () =>
     navigate({
@@ -75,7 +92,11 @@ function BriefingNewPage() {
   //   3. neither         → fresh briefing or a cleanly-cancelled attempt; offer
   //      "Generate first draft".
   if (briefing.status === "active" && !briefing.current_draft) {
-    return <BriefingPreDraftScreen briefing={briefing} onCancelled={goToPlans} />;
+    return (
+      <BriefingShell briefing={briefing} liveOutputText={liveOutput.text}>
+        <BriefingPreDraftScreen briefing={briefing} onCancelled={goToPlans} />
+      </BriefingShell>
+    );
   }
 
   if (briefing.status !== "active") {
@@ -96,16 +117,37 @@ function BriefingNewPage() {
   }
 
   return (
-    <BriefingReviewScreen
-      briefing={briefing}
-      onAccepted={(planId) =>
-        navigate({
-          to: "/workspace/$workspaceId/plan/$planId",
-          params: { workspaceId, planId },
-        })
-      }
-      onCancelled={goToPlans}
-    />
+    <BriefingShell briefing={briefing} liveOutputText={liveOutput.text}>
+      <BriefingReviewScreen
+        briefing={briefing}
+        onAccepted={(planId) =>
+          navigate({
+            to: "/workspace/$workspaceId/plan/$planId",
+            params: { workspaceId, planId },
+          })
+        }
+        onCancelled={goToPlans}
+      />
+    </BriefingShell>
+  );
+}
+
+function BriefingShell({
+  briefing,
+  liveOutputText,
+  children,
+}: {
+  briefing: Briefing;
+  liveOutputText: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex h-full min-h-0">
+      <div className="scrollbar-styled min-w-0 flex-1 overflow-auto">
+        {children}
+      </div>
+      <BriefingSidebar briefing={briefing} liveOutputText={liveOutputText} />
+    </div>
   );
 }
 
@@ -215,7 +257,12 @@ function BriefingPreDraftScreen({
           {briefing.initial_description}
         </p>
         <p className="text-muted-foreground mt-2 font-mono text-[11px]">
-          {briefing.provider}:{briefing.model}
+          <ProviderModelLabel
+            provider={briefing.provider}
+            model={briefing.model}
+            separator="/"
+            logoClassName="size-2.5"
+          />
         </p>
       </div>
 

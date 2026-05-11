@@ -277,6 +277,10 @@ function EditsSummary({ edits }: { edits: BriefingEdits }) {
     bits.push(
       `${edits.assumption_pushbacks.length} pushback${edits.assumption_pushbacks.length === 1 ? "" : "s"}`,
     );
+  if (edits.ambiguity_answers?.length)
+    bits.push(
+      `${edits.ambiguity_answers.length} ambiguity answer${edits.ambiguity_answers.length === 1 ? "" : "s"}`,
+    );
 
   return (
     <div className="space-y-1 text-sm">

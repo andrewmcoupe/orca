@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { CircleNotch, Eye, LinkSimple } from "@phosphor-icons/react";
+import { CircleNotch, Eye, LinkSimple, Queue } from "@phosphor-icons/react";
 import { TaskStatusBadge } from "@/features/tasks/presentation";
 import { usePhaseRuns } from "@/features/phase-runs/hooks";
 import { ProviderLogo } from "@/features/providers/components/provider-logo";
@@ -57,55 +57,107 @@ export function TaskRow({
     !!lastRun &&
     lastRun.phase === "auditor" &&
     lastRun.status === "completed";
+  const queueDependencyTitles =
+    task.is_queued && task.is_blocked && dependencyTitles
+      ? dependencyTitles
+      : [];
   return (
     <Link
       to="/workspace/$workspaceId/plan/$planId/task/$taskId"
       params={{ workspaceId, planId: task.plan_id, taskId: task.id }}
-      className="hover:bg-muted/60 group flex items-center gap-3 px-3 py-2 transition-colors last:border-b-0 bg-muted/40"
+      className="hover:bg-muted/60 group flex items-center gap-3 px-3 py-2 transition-colors last:border-b-0 bg-muted/40 rounded-sm"
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-xs font-light">{task.title}</span>
-          <TaskStatusBadge status={task.status} />
-
-          {initRunning && (
-            <span
-              className="text-muted-foreground inline-flex items-center gap-1 text-[10px]"
-              title={
-                task.worktree_init_command
-                  ? `Initializing worktree: ${task.worktree_init_command}`
-                  : "Initializing worktree"
-              }
-            >
-              <CircleNotch className="size-3 animate-spin text-sky-600 dark:text-sky-400" />
-              <span>Initializing worktree…</span>
-              {task.worktree_init_command && (
-                <code className="hidden truncate font-mono md:inline">
-                  {task.worktree_init_command}
-                </code>
-              )}
-            </span>
-          )}
-          {dependencyTitles && dependencyTitles.length > 0 && (
-            <span
-              className={
-                "inline-flex items-center gap-1 text-[10px] " +
-                (task.is_blocked ? "text-warning" : "text-muted-foreground")
-              }
-              title={
-                (task.is_blocked ? "Blocked by: " : "Depends on: ") +
-                dependencyTitles.join(", ")
-              }
-            >
-              <LinkSimple className="size-3" />
-              <span>
-                {task.is_blocked ? "Blocked by " : "Depends on "}
-                {dependencyTitles.length === 1
-                  ? truncate(dependencyTitles[0], 32)
-                  : `${dependencyTitles.length} tasks`}
+          <div className="grid gap-1">
+            <span className="truncate text-xs font-light">{task.title}</span>
+            {dependencyTitles && dependencyTitles.length > 0 && (
+              <span
+                className={
+                  "inline-flex items-center gap-1 text-[10px] " +
+                  (task.is_blocked || task.is_queued
+                    ? "text-warning"
+                    : "text-muted-foreground")
+                }
+                title={
+                  (task.is_queued
+                    ? "Queued behind: "
+                    : task.is_blocked
+                      ? "Blocked by: "
+                      : "Depends on: ") +
+                  dependencyTitles.join(", ")
+                }
+              >
+                {task.is_queued ? (
+                  <Queue className="size-3" />
+                ) : (
+                  <LinkSimple className="size-3" />
+                )}
+                <span>
+                  {task.is_queued
+                    ? "Queued behind "
+                    : task.is_blocked
+                      ? "Blocked by "
+                      : "Depends on "}
+                  {dependencyTitles.length === 1
+                    ? truncate(dependencyTitles[0], 32)
+                    : `${dependencyTitles.length} tasks`}
+                </span>
               </span>
-            </span>
-          )}
+            )}
+
+            {task.is_queued && queueDependencyTitles.length === 0 && (
+              <span
+                className="inline-flex items-center gap-1 text-[10px] text-warning"
+                title="Queued to start when dependencies are ready"
+              >
+                <Queue className="size-3" />
+                <span>Queued</span>
+              </span>
+            )}
+
+            {initRunning && (
+              <span
+                className="text-muted-foreground inline-flex items-center gap-1 text-[10px]"
+                title={
+                  task.worktree_init_command
+                    ? `Initializing worktree: ${task.worktree_init_command}`
+                    : "Initializing worktree"
+                }
+              >
+                <CircleNotch className="size-3 animate-spin text-sky-600 dark:text-sky-400" />
+                <span>Initializing worktree…</span>
+                {task.worktree_init_command && (
+                  <code className="hidden truncate font-mono md:inline">
+                    {task.worktree_init_command}
+                  </code>
+                )}
+              </span>
+            )}
+
+            {!initRunning && activeRun && (
+              <span
+                className="text-muted-foreground inline-flex items-center gap-1 text-[10px]"
+                title={`Running ${activeRun.phase} via ${activeRun.provider} (${activeRun.model})`}
+              >
+                <CircleNotch className="size-3 animate-spin text-sky-600 dark:text-sky-400" />
+                <span>
+                  Running {PHASE_LABEL[activeRun.phase] ?? activeRun.phase}
+                </span>
+                <span className="text-muted-foreground/70 hidden md:inline">
+                  ·
+                </span>
+                <span className="text-muted-foreground/70 hidden items-center gap-1 md:inline-flex">
+                  <ProviderLogo
+                    provider={activeRun.provider}
+                    className="size-2.5"
+                  />
+                  {activeRun.provider}
+                </span>
+              </span>
+            )}
+          </div>
+
           {awaitingReview && (
             <span
               className="inline-flex items-center gap-1 text-[10px] text-warning"
@@ -115,35 +167,30 @@ export function TaskRow({
               <span>Awaiting review</span>
             </span>
           )}
-          {!initRunning && activeRun && (
-            <span
-              className="text-muted-foreground inline-flex items-center gap-1 text-[10px]"
-              title={`Running ${activeRun.phase} via ${activeRun.provider} (${activeRun.model})`}
-            >
-              <CircleNotch className="size-3 animate-spin text-sky-600 dark:text-sky-400" />
-              <span>
-                Running {PHASE_LABEL[activeRun.phase] ?? activeRun.phase}
-              </span>
-              <span className="text-muted-foreground/70 hidden md:inline">
-                ·
-              </span>
-              <span className="text-muted-foreground/70 hidden items-center gap-1 md:inline-flex">
-                <ProviderLogo
-                  provider={activeRun.provider}
-                  className="size-2.5"
-                />
-                {activeRun.provider}
-              </span>
-            </span>
-          )}
         </div>
       </div>
-      <span
-        className="text-muted-foreground/40 text-xs tabular-nums"
-        title={new Date(task.updated_at).toLocaleString()}
-      >
-        {formatRelativeTime(task.updated_at)}
-      </span>
+      <div className="flex items-center gap-1">
+        {task.is_queued && (
+          <span
+            className="bg-warning/15 text-warning inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px]"
+            title={
+              queueDependencyTitles.length > 0
+                ? `Queued behind: ${queueDependencyTitles.join(", ")}`
+                : "Queued to start when dependencies are ready"
+            }
+          >
+            <Queue className="size-3" />
+            Queued
+          </span>
+        )}
+        <TaskStatusBadge status={task.status} />
+        <span
+          className="text-muted-foreground/40 text-xs tabular-nums"
+          title={new Date(task.updated_at).toLocaleString()}
+        >
+          {formatRelativeTime(task.updated_at)}
+        </span>
+      </div>
     </Link>
   );
 }

@@ -194,7 +194,8 @@ impl Provider for CodexProvider {
                 args.push("read-only".into());
             }
             PermissionMode::AcceptEdits => {
-                args.push("--full-auto".into());
+                args.push("--sandbox".into());
+                args.push("workspace-write".into());
             }
             PermissionMode::BypassPermissions => {
                 args.push("--dangerously-bypass-approvals-and-sandbox".into());
@@ -441,9 +442,10 @@ mod tests {
     }
 
     #[test]
-    fn build_invocation_accept_edits_maps_to_full_auto() {
+    fn build_invocation_accept_edits_maps_to_workspace_write() {
         let inv = CodexProvider.build_invocation("hi", &opts(None, "acceptEdits", "."));
-        assert!(inv.args.iter().any(|a| a == "--full-auto"));
+        let joined = inv.args.join(" ");
+        assert!(joined.contains("--sandbox workspace-write"), "{}", joined);
     }
 
     #[test]

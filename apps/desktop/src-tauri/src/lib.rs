@@ -21,6 +21,7 @@ mod subprocess;
 mod workspace_db;
 mod worktree;
 mod worktree_init;
+mod write_lock;
 
 mod commands;
 mod commands_briefing;
@@ -147,12 +148,14 @@ pub fn run() {
             commands::list_models,
             commands::list_permission_modes,
             commands::list_recent_events,
+            commands::list_task_events,
             commands::get_event_by_id,
             commands::mark_task_merged,
             commands::analyze_task_merge,
             commands::execute_task_merge,
             commands::get_latest_merge_attempt_for_task,
             commands::cancel_task,
+            commands::delete_task,
             commands::pass_back_to_implementer,
             commands::reject_task,
             commands::approve_task_anyway,

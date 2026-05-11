@@ -41,6 +41,12 @@ export function useRejectTask() {
   });
 }
 
+export function useDeleteTask() {
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.delete(taskId),
+  });
+}
+
 export function useApproveTaskAnyway() {
   return useMutation({
     mutationFn: (taskId: string) => tasksApi.approveAnyway(taskId),
