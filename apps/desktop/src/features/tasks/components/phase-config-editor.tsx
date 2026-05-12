@@ -77,7 +77,7 @@ export function PhaseConfigEditor({
           }
           disabled={disabled}
           className={cn(
-            "text-muted-foreground/60 hover:text-foreground inline-flex size-5 items-center justify-center rounded-sm transition-colors",
+            "text-foreground inline-flex size-5 items-center justify-center rounded-sm transition-colors",
             "focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-2",
             disabled &&
               "cursor-not-allowed opacity-40 hover:text-muted-foreground/60",

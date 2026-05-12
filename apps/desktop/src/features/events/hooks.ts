@@ -28,6 +28,9 @@ export function useProjectionInvalidation() {
         ) {
           qc.invalidateQueries({ queryKey: ["workspace_stats"] });
         }
+        if (aggregate_type === "workspace") {
+          qc.invalidateQueries({ queryKey: ["task_pipeline"] });
+        }
         if (
           aggregate_type === "workspace" ||
           aggregate_type === "plan" ||
@@ -52,6 +55,7 @@ export function useProjectionInvalidation() {
         }
         if (aggregate_type === "task" || aggregate_type === "phase_run") {
           qc.invalidateQueries({ queryKey: ["task_events"] });
+          qc.invalidateQueries({ queryKey: ["task_pipeline"] });
         }
       },
     );

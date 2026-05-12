@@ -1872,6 +1872,14 @@ pub fn list_phase_runs(
 }
 
 #[tauri::command]
+pub fn get_task_pipeline_snapshot(
+    app: AppHandle,
+    task_id: String,
+) -> Result<crate::pipeline::TaskPipelineSnapshot, String> {
+    crate::pipeline::task_pipeline_snapshot(&app, &task_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn list_phase_run_output(
     phase_run_id: String,
     active: State<'_, ActiveWorkspaceState>,

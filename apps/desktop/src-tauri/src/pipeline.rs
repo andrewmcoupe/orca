@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rusqlite::params;
-use serde::Serialize;
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Manager};
 use thiserror::Error;
@@ -143,6 +143,210 @@ fn parse_phase_config(value: &serde_json::Value) -> PhaseConfig {
 pub enum StartTaskResult {
     Started { phase_run_id: String },
     Queued { task_id: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineSnapshotStatus {
+    Idle,
+    Running,
+    Blocked,
+    Failed,
+    AwaitingReview,
+    Complete,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineItemStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Passed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PipelineSnapshotItem {
+    Phase {
+        id: String,
+        phase: String,
+        status: PipelineItemStatus,
+        phase_run_id: Option<String>,
+        provider: Option<String>,
+        model: Option<String>,
+        permission_mode: String,
+        started_at: Option<i64>,
+        completed_at: Option<i64>,
+    },
+    Gate {
+        id: String,
+        after_phase: String,
+        name: String,
+        command: String,
+        timeout_seconds: u64,
+        status: PipelineItemStatus,
+        phase_run_id: Option<String>,
+        event_id: Option<String>,
+        started_at: Option<i64>,
+        completed_at: Option<i64>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskPipelineSnapshot {
+    pub task_id: String,
+    pub config_version: i64,
+    pub status: PipelineSnapshotStatus,
+    pub active_item_id: Option<String>,
+    pub items: Vec<PipelineSnapshotItem>,
+}
+
+#[derive(Debug, Clone)]
+struct GateEvent {
+    id: String,
+    event_type: String,
+    phase_run_id: String,
+    gate_name: String,
+    passed: Option<bool>,
+    created_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct GateStartedEventPayload {
+    gate_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GateRanEventPayload {
+    gate_name: String,
+    passed: bool,
+}
+
+pub fn task_pipeline_snapshot(
+    app: &AppHandle,
+    task_id: &str,
+) -> Result<TaskPipelineSnapshot, PipelineError> {
+    let (task, phase_runs, gate_events, workspace_id) = {
+        let active = app
+            .try_state::<ActiveWorkspaceState>()
+            .ok_or(PipelineError::NoActiveWorkspace)?;
+        let mut guard = active
+            .0
+            .lock()
+            .map_err(|e| PipelineError::Internal(e.to_string()))?;
+        let aw = guard.as_mut().ok_or(PipelineError::NoActiveWorkspace)?;
+        let task = projections::get_task(&aw.conn, task_id)
+            .map_err(|e| PipelineError::Internal(e.to_string()))?
+            .ok_or_else(|| PipelineError::TaskNotFound(task_id.to_string()))?;
+        let phase_runs = projections::list_phase_runs_for_task(&aw.conn, task_id)
+            .map_err(|e| PipelineError::Internal(e.to_string()))?;
+        let phase_run_ids: Vec<String> = phase_runs.iter().map(|r| r.id.clone()).collect();
+        let gate_events = load_gate_events(&aw.conn, &phase_run_ids)?;
+        (task, phase_runs, gate_events, aw.id.clone())
+    };
+
+    let config = parse_phase_config(&task.current_phase_config);
+    let workspace_settings = load_workspace_settings(app, &workspace_id);
+    let mut items = Vec::new();
+
+    for phase in &config.phases {
+        let latest = latest_run_for_phase(&phase_runs, *phase);
+        let resolved =
+            settings::resolve_phase_settings_with(&workspace_settings, &config, *phase, |pid| {
+                crate::providers::available_permission_modes(pid, *phase)
+            });
+        let show_historical = latest.is_some_and(|r| r.status == "running");
+        let provider = if show_historical {
+            latest
+                .map(|r| r.provider.clone())
+                .or(resolved.provider.clone())
+        } else {
+            resolved.provider.clone()
+        };
+        let model = if show_historical {
+            latest.map(|r| r.model.clone()).or(resolved.model.clone())
+        } else {
+            resolved.model.clone()
+        };
+        let permission_mode = if show_historical {
+            latest
+                .and_then(|r| r.permission_mode.clone())
+                .unwrap_or_else(|| resolved.permission_mode.as_str().to_string())
+        } else {
+            resolved.permission_mode.as_str().to_string()
+        };
+
+        items.push(PipelineSnapshotItem::Phase {
+            id: format!("phase:{}", phase.as_str()),
+            phase: phase.as_str().to_string(),
+            status: latest
+                .map(|r| phase_run_status_to_item_status(&r.status))
+                .unwrap_or(PipelineItemStatus::Pending),
+            phase_run_id: latest.map(|r| r.id.clone()),
+            provider,
+            model,
+            permission_mode,
+            started_at: latest.map(|r| r.started_at),
+            completed_at: latest.and_then(|r| r.completed_at),
+        });
+
+        let gates = gates_for_phase(&workspace_settings, &config, *phase);
+        for (name, command, timeout_seconds) in gates {
+            let gate_id = format!("gate:{}:{}", phase.as_str(), name);
+            let phase_run_id = latest.map(|r| r.id.clone());
+            let latest_gate_event = phase_run_id
+                .as_deref()
+                .and_then(|run_id| latest_gate_event(&gate_events, run_id, &name));
+            let started = phase_run_id
+                .as_deref()
+                .and_then(|run_id| latest_gate_started(&gate_events, run_id, &name));
+            let status = match latest_gate_event {
+                Some(event) => match event.passed {
+                    Some(true) => PipelineItemStatus::Passed,
+                    Some(false) => PipelineItemStatus::Failed,
+                    None => PipelineItemStatus::Running,
+                },
+                None if started.is_some() => PipelineItemStatus::Running,
+                None => PipelineItemStatus::Pending,
+            };
+            items.push(PipelineSnapshotItem::Gate {
+                id: gate_id,
+                after_phase: phase.as_str().to_string(),
+                name,
+                command,
+                timeout_seconds,
+                status,
+                phase_run_id,
+                event_id: latest_gate_event.or(started).map(|e| e.id.clone()),
+                started_at: started.map(|e| e.created_at),
+                completed_at: latest_gate_event.and_then(|e| e.passed.map(|_| e.created_at)),
+            });
+        }
+    }
+
+    let active_item_id = items.iter().find_map(|item| match item {
+        PipelineSnapshotItem::Phase { id, status, .. }
+        | PipelineSnapshotItem::Gate { id, status, .. } => {
+            matches!(status, PipelineItemStatus::Running).then(|| id.clone())
+        }
+    });
+    let status = snapshot_status(
+        &task.status,
+        &items,
+        active_item_id.is_some(),
+        task.is_blocked,
+    );
+
+    Ok(TaskPipelineSnapshot {
+        task_id: task.id,
+        config_version: task.updated_at,
+        status,
+        active_item_id,
+        items,
+    })
 }
 
 /// Public command: kicks off the first phase in a task's `phase_config`. If the task
@@ -491,6 +695,149 @@ pub fn preview_resolved_settings(
         .collect()
 }
 
+fn latest_run_for_phase<'a>(
+    phase_runs: &'a [projections::PhaseRunProjection],
+    phase: PhaseType,
+) -> Option<&'a projections::PhaseRunProjection> {
+    phase_runs
+        .iter()
+        .rev()
+        .find(|run| run.phase == phase.as_str())
+}
+
+fn phase_run_status_to_item_status(status: &str) -> PipelineItemStatus {
+    match status {
+        "running" => PipelineItemStatus::Running,
+        "completed" => PipelineItemStatus::Completed,
+        "failed" => PipelineItemStatus::Failed,
+        "cancelled" => PipelineItemStatus::Cancelled,
+        _ => PipelineItemStatus::Pending,
+    }
+}
+
+fn snapshot_status(
+    task_status: &str,
+    items: &[PipelineSnapshotItem],
+    has_running_item: bool,
+    is_blocked: bool,
+) -> PipelineSnapshotStatus {
+    if is_blocked {
+        return PipelineSnapshotStatus::Blocked;
+    }
+    if has_running_item {
+        return PipelineSnapshotStatus::Running;
+    }
+    if items.iter().any(|item| match item {
+        PipelineSnapshotItem::Phase { status, .. } | PipelineSnapshotItem::Gate { status, .. } => {
+            matches!(status, PipelineItemStatus::Failed)
+        }
+    }) {
+        return PipelineSnapshotStatus::Failed;
+    }
+    match task_status {
+        "awaiting_review" => PipelineSnapshotStatus::AwaitingReview,
+        "approved" | "merged" => PipelineSnapshotStatus::Complete,
+        "running" => PipelineSnapshotStatus::Running,
+        _ => PipelineSnapshotStatus::Idle,
+    }
+}
+
+fn load_gate_events(
+    conn: &Connection,
+    phase_run_ids: &[String],
+) -> Result<Vec<GateEvent>, PipelineError> {
+    let mut out = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, aggregate_id, event_type, payload, created_at
+             FROM events
+             WHERE aggregate_type = 'phase_run'
+               AND aggregate_id = ?1
+               AND event_type IN ('GateStarted', 'GateRan')
+             ORDER BY seq ASC",
+        )
+        .map_err(|e| PipelineError::Internal(e.to_string()))?;
+    for phase_run_id in phase_run_ids {
+        let rows = stmt
+            .query_map(params![phase_run_id], |row| {
+                let id: String = row.get(0)?;
+                let aggregate_id: String = row.get(1)?;
+                let event_type: String = row.get(2)?;
+                let payload: String = row.get(3)?;
+                let created_at: i64 = row.get(4)?;
+                let parsed = match event_type.as_str() {
+                    "GateStarted" => {
+                        let p: GateStartedEventPayload =
+                            serde_json::from_str(&payload).map_err(|e| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    3,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(e),
+                                )
+                            })?;
+                        GateEvent {
+                            id,
+                            event_type,
+                            phase_run_id: aggregate_id,
+                            gate_name: p.gate_name,
+                            passed: None,
+                            created_at,
+                        }
+                    }
+                    "GateRan" => {
+                        let p: GateRanEventPayload =
+                            serde_json::from_str(&payload).map_err(|e| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    3,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(e),
+                                )
+                            })?;
+                        GateEvent {
+                            id,
+                            event_type,
+                            phase_run_id: aggregate_id,
+                            gate_name: p.gate_name,
+                            passed: Some(p.passed),
+                            created_at,
+                        }
+                    }
+                    _ => unreachable!("query filters gate event types"),
+                };
+                Ok(parsed)
+            })
+            .map_err(|e| PipelineError::Internal(e.to_string()))?;
+        for row in rows {
+            out.push(row.map_err(|e| PipelineError::Internal(e.to_string()))?);
+        }
+    }
+    Ok(out)
+}
+
+fn latest_gate_event<'a>(
+    events: &'a [GateEvent],
+    phase_run_id: &str,
+    gate_name: &str,
+) -> Option<&'a GateEvent> {
+    events.iter().rev().find(|event| {
+        event.phase_run_id == phase_run_id
+            && event.gate_name == gate_name
+            && event.event_type == "GateRan"
+    })
+}
+
+fn latest_gate_started<'a>(
+    events: &'a [GateEvent],
+    phase_run_id: &str,
+    gate_name: &str,
+) -> Option<&'a GateEvent> {
+    events.iter().rev().find(|event| {
+        event.phase_run_id == phase_run_id
+            && event.gate_name == gate_name
+            && event.event_type == "GateStarted"
+    })
+}
+
 /// Hook fired after a `PhaseRunCompleted` event commits. For non-auditor phases: run
 /// configured gates and, on success, dispatch the next phase. For auditor: do nothing
 /// here — the matching `AuditorVerdictRendered` handler progresses the pipeline.
@@ -677,6 +1024,32 @@ async fn run_gates_for_phase(
 
     let mut all_passed = true;
     for (name, command, timeout_secs) in gates_to_run {
+        let seq = current_seq(&conn, "phase_run", phase_run_id).map_err(PipelineError::Internal)?;
+        let payload = json!({
+            "gate_name": name.clone(),
+            "after_phase": phase.as_str(),
+            "command": command.clone(),
+            "timeout_seconds": timeout_secs.max(1),
+            "triggering_phase_run_id": phase_run_id,
+        })
+        .to_string();
+        if let Err(e) = append_phase_run_step(
+            &mut conn,
+            app,
+            workspace_id,
+            phase_run_id,
+            seq,
+            NewEvent {
+                event_type: "GateStarted".into(),
+                version: 1,
+                payload,
+            },
+            &make_metadata("system:gate_runner"),
+        ) {
+            eprintln!("pipeline: append GateStarted failed: {}", e);
+            return Ok(false);
+        }
+
         let result = gates::run_gate(
             &worktree_path,
             &name,

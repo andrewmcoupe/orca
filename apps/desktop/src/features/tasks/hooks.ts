@@ -9,6 +9,8 @@ import type { AuditorVerdict, PhaseType, Task } from "./types";
 export const taskKeys = {
   list: (planId: string) => ["task", "list", planId] as const,
   detail: (taskId: string) => ["task", taskId] as const,
+  pipelineSnapshot: (workspaceId: string, taskId: string) =>
+    ["task_pipeline", workspaceId, taskId] as const,
   latestVerdict: (taskId: string) =>
     ["task", taskId, "latestAuditorVerdict"] as const,
 };
@@ -65,6 +67,19 @@ export function useTask(taskId: string | undefined) {
   return useQuery<Task | null>({
     queryKey: taskId ? taskKeys.detail(taskId) : ["task", "__pending__"],
     queryFn: () => tasksApi.get(taskId!),
+    enabled: !!taskId,
+  });
+}
+
+export function useTaskPipelineSnapshot(
+  workspaceId: string,
+  taskId: string | undefined,
+) {
+  return useQuery({
+    queryKey: taskId
+      ? taskKeys.pipelineSnapshot(workspaceId, taskId)
+      : ["task_pipeline", workspaceId, "__pending__"],
+    queryFn: () => tasksApi.getPipelineSnapshot(taskId!),
     enabled: !!taskId,
   });
 }

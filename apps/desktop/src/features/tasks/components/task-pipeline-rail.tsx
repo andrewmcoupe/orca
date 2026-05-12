@@ -1,26 +1,21 @@
 import { useState } from "react";
-import { Lock, Terminal } from "@phosphor-icons/react";
+import { ArrowDown, Lock, Terminal } from "@phosphor-icons/react";
 import { PhaseConfigEditor } from "@/features/tasks/components/phase-config-editor";
 import { PhaseRunOutputDialog } from "@/features/phase-runs/components/phase-run-output-dialog";
-import type { PhaseConfig, PhaseType } from "@/features/tasks/types";
-import {
-  bundledDefaultPermissionMode,
-  resolvePhaseSettings,
-  type PermissionMode,
-} from "@/features/workspaces/types";
+import type {
+  PhaseConfig,
+  PhaseType,
+  PipelineGateItem,
+  PipelineItem,
+  PipelinePhaseItem,
+  PipelineItemStatus,
+  PermissionMode,
+} from "@/features/tasks/types";
 import { ProviderModelLabel } from "@/features/providers/components/provider-logo";
-import { useWorkspaceSettings } from "@/features/workspaces/hooks";
 import type { PhaseRun } from "@/features/phase-runs/types";
 import { OrbitDot } from "@/components/ui/mini-loaders";
+import { useTaskPipelineSnapshot } from "@/features/tasks/hooks";
 
-/**
- * Compact phase rows for the right sidebar. The brief explicitly calls out
- * "no big phase cards with heavy padding — dense rows" — so we drop the card
- * border/background and render each phase as a one-line summary plus a model
- * meta line plus a "View output" affordance. The full pipeline-card with its
- * arrow connectors lives in the main column for previews; this is its
- * sidebar variant.
- */
 const PERMISSION_MODE_SHORT: Record<PermissionMode, string> = {
   plan: "plan",
   acceptEdits: "acceptEdits",
@@ -36,19 +31,26 @@ function formatDurationMs(ms: number): string {
   return remSec ? `${min}m ${remSec}s` : `${min}m`;
 }
 
-function statusOf(latest: PhaseRun | undefined): string {
-  if (!latest) return "pending";
-  return latest.status;
+function latestRunById(runs: PhaseRun[], id: string | null): PhaseRun | undefined {
+  return id ? runs.find((run) => run.id === id) : undefined;
 }
 
-function latestRunForPhase(
-  runs: PhaseRun[],
-  phase: PhaseType,
-): PhaseRun | undefined {
-  return [...runs].reverse().find((r) => r.phase === phase);
+function fallbackItems(phaseConfig: PhaseConfig): PipelineItem[] {
+  return phaseConfig.phases.map((phase) => ({
+    kind: "phase",
+    id: `phase:${phase}`,
+    phase,
+    status: "pending",
+    phase_run_id: null,
+    provider: null,
+    model: null,
+    permission_mode: "acceptEdits",
+    started_at: null,
+    completed_at: null,
+  }));
 }
 
-function StatusIndicator({ status }: { status: string }) {
+function StatusIndicator({ status }: { status: PipelineItemStatus | string }) {
   if (status !== "running") {
     return (
       <span className="shrink-0 translate-y-[1px]" aria-label={status}>
@@ -79,11 +81,11 @@ export function TaskPipelineRail({
   phaseConfig: PhaseConfig;
   phaseRuns: PhaseRun[];
 }) {
-  const settingsQ = useWorkspaceSettings(workspaceId);
-  const phases = phaseConfig.phases;
-  const anyPhaseRunning = phaseRuns.some((r) => r.status === "running");
+  const snapshotQ = useTaskPipelineSnapshot(workspaceId, taskId);
+  const items = snapshotQ.data?.items ?? fallbackItems(phaseConfig);
+  const anyItemRunning = items.some((item) => item.status === "running");
 
-  if (phases.length === 0) {
+  if (items.length === 0) {
     return (
       <p className="text-muted-foreground text-[11px] italic">
         No phases configured.
@@ -92,126 +94,91 @@ export function TaskPipelineRail({
   }
 
   return (
-    <ul className="space-y-3">
-      {phases.map((phase) => {
-        const latest = latestRunForPhase(phaseRuns, phase);
-        const status = statusOf(latest);
-        const resolved = settingsQ.data
-          ? resolvePhaseSettings(settingsQ.data, phaseConfig, phase)
-          : null;
-        // Show running run's actual values; otherwise show what the *next*
-        // run would resolve to. Mirrors PipelineCards' logic so users see
-        // edits reflected immediately after they apply.
-        const showHistorical = status === "running";
-        const provider =
-          (showHistorical ? latest?.provider : null) ??
-          resolved?.model?.provider ??
-          null;
-        const model =
-          (showHistorical ? latest?.model : null) ??
-          resolved?.model?.model ??
-          null;
-        const permissionMode = ((showHistorical
-          ? latest?.permission_mode
-          : null) ??
-          resolved?.permission_mode ??
-          null) as PermissionMode | null;
-        const duration =
-          latest?.completed_at && latest.started_at
-            ? formatDurationMs(latest.completed_at - latest.started_at)
-            : null;
-
-        return (
-          <PhaseRow
-            key={phase}
-            phase={phase}
-            status={status}
-            taskId={taskId}
-            anyPhaseRunning={anyPhaseRunning}
-            resolvedProvider={resolved?.model?.provider ?? provider}
-            resolvedModel={resolved?.model?.model ?? model}
-            resolvedPermissionMode={
-              (resolved?.permission_mode ??
-                permissionMode ??
-                bundledDefaultPermissionMode(phase)) as PermissionMode
-            }
-            displayProvider={provider}
-            displayModel={model}
-            displayPermissionMode={permissionMode}
-            duration={duration}
-            latest={latest}
-          />
-        );
+    <ul className="space-y-1.5">
+      {items.flatMap((item, idx) => {
+        const isLast = idx === items.length - 1;
+        const row =
+          item.kind === "phase" ? (
+            <PhaseRow
+              key={item.id}
+              item={item}
+              taskId={taskId}
+              anyItemRunning={anyItemRunning}
+              latest={latestRunById(phaseRuns, item.phase_run_id)}
+            />
+          ) : (
+            <GateRow key={item.id} item={item} />
+          );
+        return [row, ...(!isLast ? [<PipelineArrow key={`${item.id}:arrow`} />] : [])];
       })}
     </ul>
   );
 }
 
+function PipelineArrow() {
+  return (
+    <li
+      className="text-muted-foreground/50 flex justify-center"
+      aria-hidden="true"
+    >
+      <ArrowDown className="size-3.5" />
+    </li>
+  );
+}
+
 function PhaseRow({
-  phase,
-  status,
+  item,
   taskId,
-  anyPhaseRunning,
-  resolvedProvider,
-  resolvedModel,
-  resolvedPermissionMode,
-  displayProvider,
-  displayModel,
-  displayPermissionMode,
-  duration,
+  anyItemRunning,
   latest,
 }: {
-  phase: PhaseType;
-  status: string;
+  item: PipelinePhaseItem;
   taskId: string;
-  anyPhaseRunning: boolean;
-  resolvedProvider: string | null;
-  resolvedModel: string | null;
-  resolvedPermissionMode: PermissionMode;
-  displayProvider: string | null;
-  displayModel: string | null;
-  displayPermissionMode: PermissionMode | null;
-  duration: string | null;
+  anyItemRunning: boolean;
   latest: PhaseRun | undefined;
 }) {
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const showEditor = status !== "running";
+  const showEditor = item.status !== "running";
+  const duration =
+    item.completed_at && item.started_at
+      ? formatDurationMs(item.completed_at - item.started_at)
+      : null;
 
   return (
     <li className="crisp-gradient-border space-y-1 rounded-sm p-2">
       <div className="flex items-center gap-2">
-        <StatusIndicator status={status} />
+        <StatusIndicator status={item.status} />
         <span className="text-foreground flex-1 truncate text-[12px] font-medium">
-          {phase}
+          {item.phase}
         </span>
         <span className="text-muted-foreground font-mono text-[10px] tabular-nums">
-          {status === "running" ? "running" : (duration ?? "—")}
+          {item.status === "running" ? "running" : (duration ?? "—")}
         </span>
         {showEditor && (
           <PhaseConfigEditor
             taskId={taskId}
-            phase={phase}
-            initialProvider={resolvedProvider}
-            initialModel={resolvedModel}
-            initialPermissionMode={resolvedPermissionMode}
-            disabled={anyPhaseRunning}
-            disabledReason="Cannot edit while a phase is running"
+            phase={item.phase as PhaseType}
+            initialProvider={item.provider}
+            initialModel={item.model}
+            initialPermissionMode={item.permission_mode}
+            disabled={anyItemRunning}
+            disabledReason="Cannot edit while pipeline work is running"
           />
         )}
       </div>
       <div className="text-muted-foreground flex items-center gap-1 pl-3.5 font-mono text-[10px]">
-        {displayPermissionMode === "plan" && (
+        {item.permission_mode === "plan" && (
           <Lock className="size-2.5 shrink-0" aria-label="read-only" />
         )}
         <span className="inline-flex min-w-0 items-center gap-1 truncate">
           <ProviderModelLabel
-            provider={displayProvider}
-            model={displayModel}
+            provider={item.provider}
+            model={item.model}
             logoClassName="size-2.5"
           />
-          {displayPermissionMode && (
+          {item.permission_mode && (
             <span className="shrink-0">
-              · {PERMISSION_MODE_SHORT[displayPermissionMode]}
+              · {PERMISSION_MODE_SHORT[item.permission_mode]}
             </span>
           )}
         </span>
@@ -233,6 +200,32 @@ function PhaseRow({
           phaseRun={latest}
         />
       )}
+    </li>
+  );
+}
+
+function GateRow({ item }: { item: PipelineGateItem }) {
+  const duration =
+    item.completed_at && item.started_at
+      ? formatDurationMs(item.completed_at - item.started_at)
+      : `${item.timeout_seconds}s timeout`;
+
+  return (
+    <li className="crisp-gradient-border space-y-1 rounded-sm p-2">
+      <div className="flex items-center gap-2">
+        <StatusIndicator status={item.status} />
+        <span className="text-foreground flex-1 truncate text-[12px] font-medium">
+          {item.name}
+        </span>
+        <span className="text-muted-foreground font-mono text-[10px] tabular-nums">
+          {item.status === "running" ? "running" : item.status}
+        </span>
+      </div>
+      <div className="text-muted-foreground flex items-center gap-1 pl-3.5 font-mono text-[10px]">
+        <Terminal className="size-2.5 shrink-0" aria-label="gate command" />
+        <span className="min-w-0 flex-1 truncate">{item.command}</span>
+        <span className="shrink-0">{duration}</span>
+      </div>
     </li>
   );
 }

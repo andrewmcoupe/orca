@@ -24,6 +24,59 @@ export type PhaseConfig = {
   permission_modes?: Record<string, PermissionMode> | null;
 };
 
+export type PipelineSnapshotStatus =
+  | "idle"
+  | "running"
+  | "blocked"
+  | "failed"
+  | "awaiting_review"
+  | "complete";
+
+export type PipelineItemStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "passed";
+
+export type PipelinePhaseItem = {
+  kind: "phase";
+  id: string;
+  phase: PhaseType;
+  status: PipelineItemStatus;
+  phase_run_id: string | null;
+  provider: string | null;
+  model: string | null;
+  permission_mode: PermissionMode;
+  started_at: number | null;
+  completed_at: number | null;
+};
+
+export type PipelineGateItem = {
+  kind: "gate";
+  id: string;
+  after_phase: PhaseType;
+  name: string;
+  command: string;
+  timeout_seconds: number;
+  status: PipelineItemStatus;
+  phase_run_id: string | null;
+  event_id: string | null;
+  started_at: number | null;
+  completed_at: number | null;
+};
+
+export type PipelineItem = PipelinePhaseItem | PipelineGateItem;
+
+export type TaskPipelineSnapshot = {
+  task_id: string;
+  config_version: number;
+  status: PipelineSnapshotStatus;
+  active_item_id: string | null;
+  items: PipelineItem[];
+};
+
 export type AuditorVerdictKind = "approve" | "revise" | "reject";
 
 export type AuditorConcernAnchor = {

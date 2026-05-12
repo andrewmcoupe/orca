@@ -71,6 +71,7 @@ function DetailSidebarSectionView({
           </div>
         )}
       </header>
+
       <div className="text-foreground text-[12px]">{section.children}</div>
     </section>
   );
