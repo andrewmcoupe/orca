@@ -452,7 +452,7 @@ export function TaskActionToolbar({
         {primaryAction && <ToolbarButton {...primaryAction} />}
         <ToolbarButton
           icon={runIcon}
-          // label={runLabel}
+          ariaLabel={runLabel}
           // Don't lift the queued state into the primary slot — "Cancel
           // queue" is a recovery action, not the obvious next step.
           isPrimary={primary === "run" && !task.is_queued}
@@ -472,6 +472,7 @@ export function TaskActionToolbar({
         />
         <ToolbarButton
           icon={<ArrowSquareOut />}
+          ariaLabel={previewLabel}
           isPrimary={false}
           disabled={previewDisabled}
           tooltip={previewTooltip}
@@ -547,6 +548,7 @@ export function TaskActionToolbar({
 function ToolbarButton({
   icon,
   label,
+  ariaLabel,
   isPrimary,
   disabled,
   tooltip,
@@ -555,6 +557,7 @@ function ToolbarButton({
 }: {
   icon: React.ReactNode;
   label?: string;
+  ariaLabel?: string;
   isPrimary: boolean;
   disabled: boolean;
   tooltip: string;
@@ -572,6 +575,7 @@ function ToolbarButton({
       variant={isPrimary ? "default" : "ghost"}
       disabled={disabled}
       onClick={onClick}
+      aria-label={ariaLabel ?? label}
       className={cn(
         "gap-1",
         variant === "reject" &&
