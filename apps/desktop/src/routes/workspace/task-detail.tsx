@@ -30,8 +30,12 @@ import { useActiveWorkspace } from "@/features/workspaces/hooks";
 import { usePhaseRuns } from "@/features/phase-runs/hooks";
 import { TaskEventList } from "@/features/events/components/task-event-list";
 import { PhaseRunsTrail } from "@/features/phase-runs/components/phase-runs-trail";
-import { DiffModal } from "@/features/diff/components/diff-modal";
 import { diffModalController } from "@/features/diff/modal-controller";
+import { ProposalSection } from "@/features/diff/proposal-section";
+import {
+  markProposalReviewed,
+  readLastReviewedAt,
+} from "@/features/diff/proposal-review-storage";
 import { formatRelativeTime } from "@/lib/format";
 import type { Task } from "@/features/tasks/types";
 
@@ -56,7 +60,7 @@ function TaskDetailPage() {
 
 /**
  * Task detail layout: scrolling main column on the left, fixed-width
- * reference sidebar on the right, and the review diff available as a modal.
+ * reference sidebar on the right, and the proposal available inline.
  *
  * Reading order top-to-bottom: action toolbar → title + status → auditor
  * verdict (the thing the user came to read) → spec / audit trail as
@@ -85,23 +89,27 @@ function TaskDetailView({
   } = useTerminalStore();
   const terminalGroup = group(workspaceId, task.id);
 
-  const [modalOpen, setModalOpen] = useState(false);
-  const [modalConcernIdx, setModalConcernIdx] = useState<number | undefined>(
-    undefined,
-  );
+  const [proposalOpen, setProposalOpen] = useState(false);
+  const [proposalConcernIdx, setProposalConcernIdx] = useState<
+    number | undefined
+  >(undefined);
+  const [lastReviewedBeforeOpen, setLastReviewedBeforeOpen] = useState<
+    number | null
+  >(null);
 
-  const openDiffModal = (concernIdx?: number) => {
-    setModalConcernIdx(concernIdx);
-    setModalOpen(true);
+  const openProposal = (concernIdx?: number) => {
+    setProposalConcernIdx(concernIdx);
+    setLastReviewedBeforeOpen(readLastReviewedAt("local", task.id));
+    markProposalReviewed("local", task.id);
+    setProposalOpen(true);
   };
 
   // Bridge: anything calling `diffModalController.open` (e.g. verdict concern
-  // rows) opens the modal here, scoped to the right task.
+  // rows) opens the inline proposal here, scoped to the right task.
   useEffect(() => {
     return diffModalController.subscribe((req) => {
       if (req.taskId !== task.id) return;
-      setModalConcernIdx(req.concernIndex);
-      setModalOpen(true);
+      openProposal(req.concernIndex);
     });
   }, [task.id]);
 
@@ -146,7 +154,7 @@ function TaskDetailView({
         <ArtifactsSidebarBody
           task={task}
           phaseRuns={runs}
-          onOpenDiff={() => openDiffModal()}
+          onOpenDiff={() => openProposal()}
         />
       ),
     },
@@ -158,7 +166,7 @@ function TaskDetailView({
         <TaskActionToolbar
           task={task}
           workspaceId={workspaceId}
-          onOpenDiff={() => openDiffModal()}
+          onOpenDiff={() => openProposal()}
           onOpenTerminal={openTerminal}
         />
       </HeaderSlot>
@@ -198,6 +206,16 @@ function TaskDetailView({
               </ContentColumn>
 
               <ContentColumn className="mx-auto">
+                <ProposalSection
+                  taskId={task.id}
+                  open={proposalOpen}
+                  onOpenChange={setProposalOpen}
+                  lastReviewedBeforeOpen={lastReviewedBeforeOpen}
+                  initialConcernIndex={proposalConcernIdx}
+                />
+              </ContentColumn>
+
+              <ContentColumn className="mx-auto">
                 <WorktreeInitSection task={task} />
               </ContentColumn>
 
@@ -230,14 +248,6 @@ function TaskDetailView({
         </div>
         <DetailSidebar sections={sidebarSections} />
       </div>
-
-      <DiffModal
-        workspaceId={workspaceId}
-        taskId={task.id}
-        open={modalOpen}
-        onOpenChange={setModalOpen}
-        initialConcernIndex={modalConcernIdx}
-      />
     </div>
   );
 }
@@ -337,11 +347,11 @@ function TaskHeaderMeta({ task }: { task: Task }) {
   if (task.status === "merged" && task.merged_commit_sha) {
     return (
       <p className="text-muted-foreground text-[12px] tabular-nums">
-        Merged into{" "}
+        Landed into{" "}
         <code className="font-mono">{task.merge_target_branch ?? "main"}</code>{" "}
         as <CopyableSha sha={task.merged_commit_sha} />
         {task.merged_at != null && <> · {formatRelativeTime(task.merged_at)}</>}
-        {task.worktree_status === "removed" && <> · worktree removed</>}
+        {task.worktree_status === "removed" && <> · task files removed</>}
       </p>
     );
   }
@@ -363,7 +373,7 @@ function CopyableSha({ sha }: { sha: string }) {
     <button
       type="button"
       onClick={onClick}
-      title="Copy commit SHA"
+      title="Copy revision SHA"
       className="hover:text-foreground font-mono underline-offset-2 hover:underline"
     >
       <code>{sha.slice(0, 8)}</code>
@@ -386,7 +396,7 @@ function MergeAttemptInline({ taskId, task }: { taskId: string; task: Task }) {
     a.conflicts.length > 3 ? `, +${a.conflicts.length - 3} more` : "";
   return (
     <p className="border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200 border px-3 py-2 text-xs">
-      Last merge attempt blocked by conflicts{" "}
+      Last land attempt has collisions{" "}
       {formatRelativeTime(a.attempted_at)}. {a.conflicts.length} file
       {a.conflicts.length === 1 ? "" : "s"}:{" "}
       <code className="bg-amber-500/15 rounded-sm px-1 py-0.5 font-mono text-[0.9em]">

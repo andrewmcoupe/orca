@@ -1,6 +1,12 @@
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { TaskStatus } from "./types";
+import {
+  displayTaskStatus,
+  TASK_REVIEW_STATE_LABELS,
+  TASK_REVIEW_STATE_STYLES,
+  type TaskReviewState,
+} from "./task-domain";
 
 const STATUS_STYLES: Record<TaskStatus, string> = {
   draft: "bg-muted text-muted-foreground border-border",
@@ -24,7 +30,21 @@ export function TaskStatusBadge({ status }: { status: TaskStatus | string }) {
       variant="outline"
       className={cn("rounded-sm border-none px-1.5 text-[10px]", cls)}
     >
-      {status.replace(/_/g, " ")}
+      {displayTaskStatus(status)}
+    </Badge>
+  );
+}
+
+export function TaskReviewStateBadge({ state }: { state: TaskReviewState }) {
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "rounded-sm px-1.5 text-[10px]",
+        TASK_REVIEW_STATE_STYLES[state],
+      )}
+    >
+      {TASK_REVIEW_STATE_LABELS[state]}
     </Badge>
   );
 }

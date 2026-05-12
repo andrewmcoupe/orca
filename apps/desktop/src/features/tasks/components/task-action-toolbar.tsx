@@ -6,7 +6,6 @@ import {
   Copy,
   DotsThree,
   GitDiff,
-  GitMerge,
   Pencil,
   Play,
   Stop,
@@ -55,6 +54,7 @@ import {
 } from "@/features/phase-runs/hooks";
 import { tasksApi } from "../api";
 import { MergeDialog } from "./merge-dialog";
+import { useLatestMergeAttempt } from "@/features/tasks/merge-hooks";
 import { PassBackDialog } from "./pass-back-dialog";
 import { FileOverlapDialog, overlapPairKey } from "./file-overlap-dialog";
 import {
@@ -179,6 +179,7 @@ export function TaskActionToolbar({
   const tasksInPlanQ = useTasksInPlan(task.plan_id);
   const workspaceSettingsQ = useWorkspaceSettings(workspaceId);
   const previewStatusQ = usePreviewServerStatus();
+  const latestLandAttemptQ = useLatestMergeAttempt(task.id);
 
   const [mergeOpen, setMergeOpen] = useState(false);
   const [passBackOpen, setPassBackOpen] = useState(false);
@@ -214,7 +215,7 @@ export function TaskActionToolbar({
   if (task.is_queued) {
     runLabel = "Cancel queue";
     runIcon = <XCircle />;
-    runTooltip = `Cancel — task is waiting for ${blockedCount} dependenc${blockedCount === 1 ? "y" : "ies"} to merge.`;
+    runTooltip = `Cancel — task is waiting for ${blockedCount} dependenc${blockedCount === 1 ? "y" : "ies"} to land.`;
   } else if (task.is_blocked) {
     runLabel = hasAnyRun ? "Restart" : "Run";
     runIcon = <Play weight={primary === "run" ? "fill" : "regular"} />;
@@ -225,9 +226,9 @@ export function TaskActionToolbar({
     runTooltip = phaseRunning
       ? "A phase is already running."
       : task.worktree_init_status === "running"
-        ? "Worktree is still initialising — wait for it to finish."
+        ? "Task files are still initialising — wait for them to finish."
         : isMerged
-          ? "Task is already merged."
+          ? "Task is already landed."
           : isCancelled
             ? "Task was cancelled."
             : hasAnyRun
@@ -279,7 +280,7 @@ export function TaskActionToolbar({
     } catch (e) {
       // Best-effort: a backend error (likely "no active workspace" race)
       // shouldn't strand the user. Log and proceed; if real overlap exists
-      // and matters, the merge will surface it later.
+      // and matters, landing will surface it later.
       console.error("file overlap detection failed:", e);
     }
     const fresh = candidates.filter(
@@ -316,17 +317,17 @@ export function TaskActionToolbar({
     : isApproved
       ? "Already approved."
       : isMerged
-        ? "Task is already merged."
+        ? "Task is already landed."
         : isCancelled
           ? "Task was cancelled."
-          : "Approve task and prepare for merge.";
+          : "Approve task and prepare to land.";
 
   // === Pass back =========================================================
   const passBackDisabled = !verdict || isMerged || isCancelled || isApproved;
   const passBackTooltip = !verdict
     ? "No verdict to pass back from."
     : isMerged
-      ? "Task is already merged."
+      ? "Task is already landed."
       : isCancelled
         ? "Task was cancelled."
         : isApproved
@@ -339,32 +340,37 @@ export function TaskActionToolbar({
   const rejectTooltip = !verdict
     ? "No auditor verdict yet."
     : isMerged
-      ? "Task is already merged."
+      ? "Task is already landed."
       : isCancelled
         ? "Task was already cancelled."
         : "Cancel this task without merging.";
 
-  // === Merge =============================================================
-  const mergeDisabled = !isApproved || !worktreeActive || isMerged;
+  // === Land ==============================================================
+  const currentCollisionAttempt =
+    latestLandAttemptQ.data &&
+    latestLandAttemptQ.data.attempted_at >= task.updated_at &&
+    latestLandAttemptQ.data.conflicts.length > 0
+      ? latestLandAttemptQ.data
+      : null;
+  const mergeDisabled =
+    !isApproved || !worktreeActive || isMerged || !!currentCollisionAttempt;
   const mergeTooltip = isMerged
-    ? "Task is already merged."
+    ? "Task is already landed."
+    : currentCollisionAttempt
+      ? `Has collisions with parent in ${currentCollisionAttempt.conflicts.length} file${currentCollisionAttempt.conflicts.length === 1 ? "" : "s"}. Resolve them before landing.`
     : !isApproved
       ? "Approve the task first."
       : worktreeRemoved
-        ? "Worktree was removed — merge unavailable."
+        ? "Task files were removed — land unavailable."
         : !worktreeActive
-          ? "Worktree unavailable."
-          : "Open the merge dialog to merge into the current branch.";
+          ? "Task files unavailable."
+          : "Land this proposal.";
 
-  // === Review diff =======================================================
-  // Diff is conceptually available whenever we have a worktree to diff against
-  // or the task has been merged (we can diff against the merge commit). We let
-  // the modal itself handle "no diff yet" empty-states; here we just check the
-  // baseline.
+  // === Review changes ====================================================
   const diffDisabled = !worktreeActive && !task.merged_commit_sha;
   const diffTooltip = diffDisabled
-    ? "No diff available yet."
-    : "Open the diff in side-by-side view.";
+    ? "No changes available yet."
+    : "Review this proposal's changes.";
 
   // === Preview server ====================================================
   const previewSettings = workspaceSettingsQ.data?.preview_server;
@@ -387,9 +393,9 @@ export function TaskActionToolbar({
       ? "Preview busy"
       : "Preview";
   const previewTooltip = !task.worktree_path
-    ? "Task has no worktree yet."
+    ? "Task has no files yet."
     : task.worktree_status !== "active"
-      ? "Task worktree is unavailable."
+      ? "Task files are unavailable."
       : !previewSettings?.enabled || !previewSettings.command?.trim()
         ? "Open setup guidance for the preview server."
         : previewRunningForThisTask
@@ -400,10 +406,10 @@ export function TaskActionToolbar({
 
   const terminalDisabled = !previewAvailable;
   const terminalTooltip = !task.worktree_path
-    ? "Task has no worktree yet."
+    ? "Task has no files yet."
     : task.worktree_status !== "active"
-      ? "Task worktree is unavailable."
-      : "Open a terminal in this task worktree.";
+      ? "Task files are unavailable."
+      : "Open a terminal in this task.";
 
   const approveAction = {
     icon: <CheckCircle weight={primary === "approve" ? "fill" : "regular"} />,
@@ -422,8 +428,8 @@ export function TaskActionToolbar({
     onClick: () => setPassBackOpen(true),
   };
   const mergeAction = {
-    icon: <GitMerge weight={primary === "merge" ? "fill" : "regular"} />,
-    label: "Merge",
+    icon: <CheckCircle weight={primary === "merge" ? "fill" : "regular"} />,
+    label: "Land",
     isPrimary: primary === "merge",
     disabled: mergeDisabled,
     tooltip: mergeTooltip,
@@ -465,6 +471,7 @@ export function TaskActionToolbar({
         ))}
         <ToolbarButton
           icon={<GitDiff />}
+          ariaLabel="Review changes"
           isPrimary={false}
           disabled={diffDisabled}
           tooltip={diffTooltip}
@@ -810,7 +817,7 @@ function OverflowMenu({
             onClick={onDeleteWorktree}
           >
             <Trash />
-            <span className="flex-1">Delete worktree</span>
+              <span className="flex-1">Delete task files</span>
           </DropdownMenuItem>
           <DropdownMenuItem
             disabled={deleteTaskDisabled}
@@ -834,8 +841,8 @@ function OverflowMenu({
             <DialogTitle>Delete this task?</DialogTitle>
             <DialogDescription>
               {phaseRunning
-                ? "The running phase will be cancelled and the worktree removed. The task will be archived and hidden from views; the audit trail is kept."
-                : "The worktree will be removed and the task archived (hidden from views). The audit trail is kept."}
+                ? "The running phase will be cancelled and the task files removed. The task will be archived and hidden from views; the audit trail is kept."
+                : "The task files will be removed and the task archived (hidden from views). The audit trail is kept."}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

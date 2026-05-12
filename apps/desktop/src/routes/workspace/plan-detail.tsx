@@ -151,6 +151,10 @@ function PlanDetailView({
                         key={task.id}
                         task={task}
                         workspaceId={workspaceId}
+                        dependencies={task.depends_on.map((id) => ({
+                          id,
+                          title: titlesById.get(id) ?? id,
+                        }))}
                         dependencyTitles={task.depends_on.map(
                           (id) => titlesById.get(id) ?? id,
                         )}

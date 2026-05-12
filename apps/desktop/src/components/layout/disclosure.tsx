@@ -13,15 +13,24 @@ export function Disclosure({
   title,
   summary,
   defaultOpen = false,
+  open: controlledOpen,
+  onOpenChange,
   children,
 }: {
   title: ReactNode;
   /** Inline meta to the right of the title — e.g. "— 6 acceptance criteria". */
   summary?: ReactNode;
   defaultOpen?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    onOpenChange?.(next);
+    if (controlledOpen == null) setUncontrolledOpen(next);
+  };
   return (
     <section
       className={cn(
@@ -32,7 +41,7 @@ export function Disclosure({
     >
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen(!open)}
         className="hover:text-foreground flex w-full items-center gap-2 py-3 text-left"
         aria-expanded={open}
       >
