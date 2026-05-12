@@ -97,6 +97,7 @@ impl TerminalManager {
         let initial_label = process_label(&shell);
         let mut cmd = CommandBuilder::new(&shell);
         cmd.cwd(&cwd);
+        configure_prompt(&mut cmd);
 
         let pty = native_pty_system();
         let pair = pty
@@ -463,6 +464,16 @@ fn default_shell() -> String {
 fn default_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())
 }
+
+#[cfg(unix)]
+fn configure_prompt(cmd: &mut CommandBuilder) {
+    cmd.env("PS1", "$ ");
+    cmd.env("PROMPT", "$ ");
+    cmd.env("RPROMPT", "");
+}
+
+#[cfg(not(unix))]
+fn configure_prompt(_cmd: &mut CommandBuilder) {}
 
 fn validate_worktree_path(workspace_path: &Path, cwd: &Path, task_id: &str) -> Result<(), String> {
     let expected = crate::worktree::worktree_path_for(workspace_path, task_id);
