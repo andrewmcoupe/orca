@@ -697,10 +697,10 @@ pub fn preview_resolved_settings(
         .collect()
 }
 
-fn latest_run_for_phase<'a>(
-    phase_runs: &'a [projections::PhaseRunProjection],
+fn latest_run_for_phase(
+    phase_runs: &[projections::PhaseRunProjection],
     phase: PhaseType,
-) -> Option<&'a projections::PhaseRunProjection> {
+) -> Option<&projections::PhaseRunProjection> {
     phase_runs
         .iter()
         .rev()
