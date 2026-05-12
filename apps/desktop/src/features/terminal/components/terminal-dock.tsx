@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent,
+} from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -19,32 +26,98 @@ export function TerminalDock({
   tabs,
   activeTabId,
   collapsed,
+  heightPx,
   onAddTerminal,
   onSelectTab,
   onCloseTab,
   onRenameTab,
   onToggleCollapsed,
+  onResize,
 }: {
   tabs: TerminalTab[];
   activeTabId: string | null;
   collapsed: boolean;
+  heightPx: number | null;
   onAddTerminal: () => void;
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onRenameTab: (tabId: string, label: string) => void;
   onToggleCollapsed: () => void;
+  onResize: (heightPx: number) => void;
 }) {
+  const dockRef = useRef<HTMLElement | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startY: number;
+    startHeight: number;
+  } | null>(null);
+
+  const startResize = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (collapsed || event.button !== 0) return;
+      if ((event.target as HTMLElement).closest("button")) return;
+      const dock = dockRef.current;
+      if (!dock) return;
+      dragRef.current = {
+        pointerId: event.pointerId,
+        startY: event.clientY,
+        startHeight: dock.getBoundingClientRect().height,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    },
+    [collapsed],
+  );
+
+  const updateResize = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      const dock = dockRef.current;
+      if (!drag || !dock || drag.pointerId !== event.pointerId) return;
+      const parentHeight =
+        dock.parentElement?.getBoundingClientRect().height ?? window.innerHeight;
+      const maxHeight = Math.max(180, parentHeight - 120);
+      const nextHeight = clamp(
+        drag.startHeight + drag.startY - event.clientY,
+        160,
+        maxHeight,
+      );
+      onResize(nextHeight);
+    },
+    [onResize],
+  );
+
+  const stopResize = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  }, []);
+
   if (tabs.length === 0) return null;
+
+  const style: CSSProperties | undefined =
+    !collapsed && heightPx
+      ? { height: `${heightPx}px`, maxHeight: "calc(100% - 120px)" }
+      : undefined;
 
   return (
     <section
+      ref={dockRef}
       className={cn(
         "bg-sidebar text-sidebar-foreground flex min-h-0 shrink-0 flex-col overflow-hidden border-t shadow-[0_-12px_30px_rgba(0,0,0,0.12)]",
         collapsed ? "h-10" : "h-[min(42vh,360px)]",
       )}
+      style={style}
       aria-label="Task terminals"
     >
-      <div className="bg-sidebar flex h-10 shrink-0 items-center border-b">
+      <div
+        className="bg-sidebar flex h-10 shrink-0 cursor-row-resize touch-none items-center border-b"
+        onPointerDown={startResize}
+        onPointerMove={updateResize}
+        onPointerUp={stopResize}
+        onPointerCancel={stopResize}
+        title="Drag to resize terminals"
+      >
         <div className="scrollbar-styled flex min-w-0 flex-1 overflow-x-auto">
           {tabs.map((tab, index) => (
             <TerminalTabButton
@@ -371,4 +444,8 @@ function cssVar(name: string): string {
   return getComputedStyle(document.documentElement)
     .getPropertyValue(name)
     .trim();
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }

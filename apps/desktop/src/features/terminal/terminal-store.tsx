@@ -25,6 +25,7 @@ export type TerminalGroupState = {
   tabs: TerminalTab[];
   activeTabId: string | null;
   collapsed: boolean;
+  heightPx: number | null;
   hydrated: boolean;
 };
 
@@ -42,6 +43,7 @@ type Action =
   | { type: "close"; scopeKey: string; terminalId: string }
   | { type: "select"; scopeKey: string; terminalId: string }
   | { type: "setCollapsed"; scopeKey: string; collapsed: boolean }
+  | { type: "setHeight"; scopeKey: string; heightPx: number }
   | { type: "label"; terminalId: string; label: string }
   | { type: "exited"; terminalId: string };
 
@@ -60,6 +62,7 @@ type TerminalStore = {
     terminalId: string,
   ) => void;
   toggleCollapsed: (workspaceId: string, taskId: string) => void;
+  setHeight: (workspaceId: string, taskId: string, heightPx: number) => void;
   renameTerminal: (terminalId: string, label: string) => void;
 };
 
@@ -67,6 +70,7 @@ const EMPTY_GROUP: TerminalGroupState = {
   tabs: [],
   activeTabId: null,
   collapsed: false,
+  heightPx: null,
   hydrated: false,
 };
 
@@ -178,6 +182,17 @@ export function TerminalStoreProvider({ children }: { children: ReactNode }) {
     });
   }, [state.groups]);
 
+  const setHeight = useCallback(
+    (workspaceId: string, taskId: string, heightPx: number) => {
+      dispatch({
+        type: "setHeight",
+        scopeKey: scopeKey(workspaceId, taskId),
+        heightPx,
+      });
+    },
+    [],
+  );
+
   const renameTerminal = useCallback((terminalId: string, label: string) => {
     dispatch({ type: "label", terminalId, label });
   }, []);
@@ -190,6 +205,7 @@ export function TerminalStoreProvider({ children }: { children: ReactNode }) {
       closeTerminal,
       selectTerminal,
       toggleCollapsed,
+      setHeight,
       renameTerminal,
     }),
     [
@@ -199,6 +215,7 @@ export function TerminalStoreProvider({ children }: { children: ReactNode }) {
       openTerminal,
       renameTerminal,
       selectTerminal,
+      setHeight,
       toggleCollapsed,
     ],
   );
@@ -295,6 +312,13 @@ function reducer(state: State, action: Action): State {
       return updateGroup(state, action.scopeKey, {
         ...current,
         collapsed: action.collapsed,
+      });
+    }
+    case "setHeight": {
+      const current = state.groups[action.scopeKey] ?? EMPTY_GROUP;
+      return updateGroup(state, action.scopeKey, {
+        ...current,
+        heightPx: action.heightPx,
       });
     }
     case "label":

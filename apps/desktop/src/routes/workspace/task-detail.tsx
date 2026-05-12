@@ -80,6 +80,7 @@ function TaskDetailView({
     openTerminal: openStoredTerminal,
     renameTerminal,
     selectTerminal,
+    setHeight: setTerminalHeight,
     toggleCollapsed,
   } = useTerminalStore();
   const terminalGroup = group(workspaceId, task.id);
@@ -212,6 +213,7 @@ function TaskDetailView({
             tabs={terminalGroup.tabs}
             activeTabId={terminalGroup.activeTabId}
             collapsed={terminalGroup.collapsed}
+            heightPx={terminalGroup.heightPx}
             onAddTerminal={openTerminal}
             onSelectTab={(tabId) => {
               selectTerminal(workspaceId, task.id, tabId);
@@ -221,6 +223,9 @@ function TaskDetailView({
               renameTerminal(tabId, label);
             }}
             onToggleCollapsed={() => toggleCollapsed(workspaceId, task.id)}
+            onResize={(heightPx) =>
+              setTerminalHeight(workspaceId, task.id, heightPx)
+            }
           />
         </div>
         <DetailSidebar sections={sidebarSections} />
