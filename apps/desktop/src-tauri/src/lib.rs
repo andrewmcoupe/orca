@@ -18,6 +18,7 @@ mod providers;
 mod recent_events;
 mod settings;
 mod subprocess;
+mod terminal;
 mod workspace_db;
 mod worktree;
 mod worktree_init;
@@ -36,6 +37,7 @@ use crate::phases::InflightRuns;
 use crate::preview_server::PreviewServerManager;
 use crate::providers::ProviderCache;
 use crate::subprocess::ChildTracker;
+use crate::terminal::TerminalManager;
 
 /// Global app db — workspace events + workspace_projection.
 pub struct GlobalDb(pub Mutex<Connection>);
@@ -85,6 +87,8 @@ pub fn run() {
     let briefings_for_shutdown = Arc::clone(&briefings);
     let preview_server: Arc<PreviewServerManager> = Arc::new(PreviewServerManager::new());
     let preview_server_for_shutdown = Arc::clone(&preview_server);
+    let terminals: Arc<TerminalManager> = Arc::new(TerminalManager::new());
+    let terminals_for_shutdown = Arc::clone(&terminals);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -99,6 +103,7 @@ pub fn run() {
             app.manage(tracker.clone());
             app.manage(briefings.clone());
             app.manage(preview_server.clone());
+            app.manage(terminals.clone());
             app.manage(InflightRuns::new());
             app.manage(diff_service::DiffCache::new());
             // Detect providers once on startup; the result populates the cache for the
@@ -119,6 +124,12 @@ pub fn run() {
             commands::start_preview_server,
             commands::get_preview_server_status,
             commands::stop_preview_server,
+            commands::create_terminal,
+            commands::list_terminals_for_task,
+            commands::attach_terminal,
+            commands::write_terminal,
+            commands::resize_terminal,
+            commands::close_terminal,
             commands::set_active_workspace,
             commands::get_active_workspace,
             commands::clear_active_workspace,
@@ -208,6 +219,7 @@ pub fn run() {
                 }
                 briefings_for_shutdown.cancel_all();
                 preview_server_for_shutdown.stop();
+                terminals_for_shutdown.close_all();
                 tracker_for_shutdown.kill_all();
             }
         });

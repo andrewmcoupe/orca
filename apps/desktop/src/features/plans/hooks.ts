@@ -6,6 +6,7 @@ import {
   type RevisePlanInput,
 } from "./api";
 import type { Plan } from "./types";
+import { useActiveWorkspace } from "@/features/workspaces/hooks";
 
 export const planKeys = {
   list: (workspaceId: string | null | undefined) =>
@@ -14,11 +15,22 @@ export const planKeys = {
 };
 
 export function usePlans(workspaceId: string | null | undefined) {
-  return useQuery<Plan[]>({
+  const activeWorkspace = useActiveWorkspace();
+  const activeMatchesRoute = activeWorkspace.data?.id === workspaceId;
+  const query = useQuery<Plan[]>({
     queryKey: planKeys.list(workspaceId),
     queryFn: plansApi.list,
-    enabled: !!workspaceId,
+    enabled: !!workspaceId && activeMatchesRoute,
   });
+
+  return {
+    ...query,
+    data: activeMatchesRoute ? query.data : undefined,
+    isLoading:
+      (!!workspaceId && !activeMatchesRoute) ||
+      activeWorkspace.isLoading ||
+      query.isLoading,
+  };
 }
 
 export function usePlan(planId: string | undefined) {

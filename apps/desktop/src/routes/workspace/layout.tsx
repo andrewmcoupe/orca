@@ -1,4 +1,6 @@
 import { Outlet, createRoute, useParams } from "@tanstack/react-router";
+import { useState } from "react";
+import { ClockCounterClockwise } from "@phosphor-icons/react";
 import { rootRoute } from "../root";
 import { useActivateWorkspace } from "@/features/workspaces/hooks";
 import { WorkspaceBreadcrumbs } from "@/components/layout/breadcrumbs";
@@ -8,10 +10,19 @@ import {
 } from "@/components/layout/header-slot";
 import { BriefingsLiveUpdatesProvider } from "@/features/briefings/live-updates-provider";
 import { InflightBriefingsIndicator } from "@/features/briefings/components/inflight-indicator";
+import { EventsDrawer } from "@/features/events/components/events-drawer";
+import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 function WorkspaceLayout() {
   const { workspaceId } = useParams({ from: workspaceLayoutRoute.id });
   useActivateWorkspace(workspaceId);
+  const [eventsOpen, setEventsOpen] = useState(false);
 
   // Read child params if present so the breadcrumb knows what to show.
   // useParams without `strict:false` would error on routes that don't define
@@ -46,11 +57,36 @@ function WorkspaceLayout() {
                 the background. Hidden when there are none, so the header is
                 visually unchanged in the common case. */}
             <InflightBriefingsIndicator />
+            <TooltipProvider delay={150}>
+              <Tooltip>
+                <TooltipTrigger
+                  render={(props) => (
+                    <Button
+                      {...props}
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => setEventsOpen(true)}
+                      className="text-muted-foreground hover:text-foreground"
+                      aria-label="Open recent events"
+                    >
+                      <ClockCounterClockwise className="size-4" />
+                    </Button>
+                  )}
+                />
+                <TooltipContent>Recent events</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </div>
         </header>
-        <div className="scrollbar-styled min-h-0 flex-1 overflow-auto">
+        <div className="min-h-0 flex-1 overflow-hidden">
           <Outlet />
         </div>
+        <EventsDrawer
+          open={eventsOpen}
+          onOpenChange={setEventsOpen}
+          workspaceId={workspaceId}
+        />
       </HeaderSlotProvider>
     </div>
   );

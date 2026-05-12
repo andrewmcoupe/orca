@@ -75,7 +75,7 @@ function PlanDetailView({
       </HeaderSlot>
       <div className="scrollbar-styled min-w-0 flex-1 overflow-auto">
         <div className="space-y-6 px-6 pt-4 pb-8">
-          <div className="flex min-w-0 items-start gap-3">
+          <div className="mx-auto flex min-w-0 max-w-[var(--content-max-width)] items-start gap-3">
             <PlanSourceIcon source={plan.source} className="mt-1.5 size-5" />
             <ContentColumn className="min-w-0 flex-1 space-y-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -104,12 +104,12 @@ function PlanDetailView({
           </div>
 
           {plan.description.trim() ? (
-            <ContentColumn>
+            <ContentColumn className="mx-auto">
               <Markdown>{plan.description}</Markdown>
             </ContentColumn>
           ) : null}
 
-          <ContentColumn>
+          <ContentColumn className="mx-auto">
             <section className="space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="text-muted-foreground/80 font-mono text-[10px] font-medium uppercase tracking-[0.08em]">

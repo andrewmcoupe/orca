@@ -22,6 +22,7 @@ use crate::providers::{self, KnownModel, OptionDecl, ProviderCache, ProviderStat
 use crate::recent_events::{self, RecentEventRow};
 use crate::settings::{self, PermissionMode, PhaseConfig, PhaseType};
 use crate::subprocess::{ChildTracker, StreamOptions};
+use crate::terminal::{TerminalAttachInfo, TerminalManager, TerminalSessionInfo};
 use crate::workspace_db::{events_db_path, open_workspace_db};
 use crate::{ActiveWorkspace, ActiveWorkspaceState, GlobalDb};
 
@@ -1859,6 +1860,64 @@ pub fn get_task(
     let mut guard = active.0.lock().map_err(|e| e.to_string())?;
     let aw = require_active_workspace(&mut guard)?;
     projections::get_task(&aw.conn, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_terminal(
+    app: AppHandle,
+    task_id: String,
+    cols: u16,
+    rows: u16,
+    active: State<'_, ActiveWorkspaceState>,
+    terminals: State<'_, Arc<TerminalManager>>,
+) -> Result<TerminalSessionInfo, String> {
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    terminals.create(app, aw, &task_id, cols, rows)
+}
+
+#[tauri::command]
+pub fn list_terminals_for_task(
+    workspace_id: String,
+    task_id: String,
+    terminals: State<'_, Arc<TerminalManager>>,
+) -> Result<Vec<TerminalSessionInfo>, String> {
+    terminals.list_for_task(&workspace_id, &task_id)
+}
+
+#[tauri::command]
+pub fn attach_terminal(
+    terminal_id: String,
+    terminals: State<'_, Arc<TerminalManager>>,
+) -> Result<TerminalAttachInfo, String> {
+    terminals.attach(&terminal_id)
+}
+
+#[tauri::command]
+pub fn write_terminal(
+    terminal_id: String,
+    data: String,
+    terminals: State<'_, Arc<TerminalManager>>,
+) -> Result<(), String> {
+    terminals.write(&terminal_id, &data)
+}
+
+#[tauri::command]
+pub fn resize_terminal(
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
+    terminals: State<'_, Arc<TerminalManager>>,
+) -> Result<(), String> {
+    terminals.resize(&terminal_id, cols, rows)
+}
+
+#[tauri::command]
+pub fn close_terminal(
+    terminal_id: String,
+    terminals: State<'_, Arc<TerminalManager>>,
+) -> Result<(), String> {
+    terminals.close(&terminal_id)
 }
 
 #[tauri::command]

@@ -22,6 +22,8 @@ import {
   DependenciesSidebarEditAction,
   hasAnyArtifacts,
 } from "@/features/tasks/components/task-sidebar-sections";
+import { TerminalDock } from "@/features/terminal/components/terminal-dock";
+import { useTerminalStore } from "@/features/terminal/terminal-store";
 import { useLatestMergeAttempt } from "@/features/tasks/merge-hooks";
 import { useRecentEvents } from "@/features/events/hooks";
 import { useActiveWorkspace } from "@/features/workspaces/hooks";
@@ -71,6 +73,16 @@ function TaskDetailView({
 }) {
   const phaseRuns = usePhaseRuns(workspaceId, task.id);
   const runs = phaseRuns.data ?? [];
+  const {
+    closeTerminal: closeStoredTerminal,
+    group,
+    hydrateTask,
+    openTerminal: openStoredTerminal,
+    renameTerminal,
+    selectTerminal,
+    toggleCollapsed,
+  } = useTerminalStore();
+  const terminalGroup = group(workspaceId, task.id);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalConcernIdx, setModalConcernIdx] = useState<number | undefined>(
@@ -91,6 +103,18 @@ function TaskDetailView({
       setModalOpen(true);
     });
   }, [task.id]);
+
+  useEffect(() => {
+    void hydrateTask(workspaceId, task.id);
+  }, [hydrateTask, task.id, workspaceId]);
+
+  const openTerminal = () => {
+    void openStoredTerminal(workspaceId, task.id);
+  };
+
+  const closeTerminal = (tabId: string) => {
+    void closeStoredTerminal(workspaceId, task.id, tabId);
+  };
 
   const sidebarSections: DetailSidebarSection[] = [
     {
@@ -128,61 +152,79 @@ function TaskDetailView({
   ];
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col">
       <HeaderSlot>
         <TaskActionToolbar
           task={task}
           workspaceId={workspaceId}
           onOpenDiff={() => openDiffModal()}
+          onOpenTerminal={openTerminal}
         />
       </HeaderSlot>
-      <div className="scrollbar-styled min-w-0 flex-1 overflow-auto">
-        <div className="space-y-6 px-6 pt-4 pb-8">
-          <ContentColumn className="min-w-0 space-y-3">
-            <header className="space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="truncate text-[22px] font-medium tracking-tight font-body">
-                  {task.title}
-                </h1>
-                <TaskStatusBadge status={task.status} />
-                {task.is_blocked && (
-                  <BlockedByBadge count={task.depends_on.length} />
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_280px] overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+          <div className="scrollbar-styled min-h-0 min-w-0 flex-1 overflow-auto">
+            <div className="space-y-6 px-6 pt-4 pb-8">
+              <ContentColumn className="mx-auto min-w-0 space-y-3">
+                <header className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h1 className="truncate text-[22px] font-medium tracking-tight font-body">
+                      {task.title}
+                    </h1>
+                    <TaskStatusBadge status={task.status} />
+                    {task.is_blocked && (
+                      <BlockedByBadge count={task.depends_on.length} />
+                    )}
+                    {task.is_queued && (
+                      <span className="inline-flex items-center gap-1 rounded-sm border border-blue-500/30 bg-blue-500/10 px-1.5 py-px text-[10px] font-medium text-blue-900 dark:text-blue-200">
+                        Queued
+                      </span>
+                    )}
+                  </div>
+                  <TaskHeaderMeta task={task} />
+                </header>
+                {task.cancel_reason && (
+                  <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-[11px]">
+                    <span className="font-medium">Cancelled:</span>{" "}
+                    {task.cancel_reason}
+                  </p>
                 )}
-                {task.is_queued && (
-                  <span className="inline-flex items-center gap-1 rounded-sm border border-blue-500/30 bg-blue-500/10 px-1.5 py-px text-[10px] font-medium text-blue-900 dark:text-blue-200">
-                    Queued
-                  </span>
-                )}
-              </div>
-              <TaskHeaderMeta task={task} />
-            </header>
-            {task.cancel_reason && (
-              <p className="bg-zinc-500/10 text-muted-foreground border px-3 py-2 text-[11px]">
-                <span className="font-medium">Cancelled:</span>{" "}
-                {task.cancel_reason}
-              </p>
-            )}
-            <MergeAttemptInline taskId={task.id} task={task} />
-          </ContentColumn>
+                <MergeAttemptInline taskId={task.id} task={task} />
+              </ContentColumn>
 
-          <ContentColumn>
-            <AuditorVerdictPromoted taskId={task.id} />
-          </ContentColumn>
+              <ContentColumn className="mx-auto">
+                <AuditorVerdictPromoted taskId={task.id} />
+              </ContentColumn>
 
-          <ContentColumn>
-            <WorktreeInitSection task={task} />
-          </ContentColumn>
+              <ContentColumn className="mx-auto">
+                <WorktreeInitSection task={task} />
+              </ContentColumn>
 
-          <ContentColumn className="space-y-0">
-            <SpecAndAuditDisclosures
-              task={task}
-              workspaceId={workspaceId}
-            />
-          </ContentColumn>
+              <ContentColumn className="mx-auto space-y-0">
+                <SpecAndAuditDisclosures
+                  task={task}
+                  workspaceId={workspaceId}
+                />
+              </ContentColumn>
+            </div>
+          </div>
+          <TerminalDock
+            tabs={terminalGroup.tabs}
+            activeTabId={terminalGroup.activeTabId}
+            collapsed={terminalGroup.collapsed}
+            onAddTerminal={openTerminal}
+            onSelectTab={(tabId) => {
+              selectTerminal(workspaceId, task.id, tabId);
+            }}
+            onCloseTab={closeTerminal}
+            onRenameTab={(tabId, label) => {
+              renameTerminal(tabId, label);
+            }}
+            onToggleCollapsed={() => toggleCollapsed(workspaceId, task.id)}
+          />
         </div>
+        <DetailSidebar sections={sidebarSections} />
       </div>
-
-      <DetailSidebar sections={sidebarSections} />
 
       <DiffModal
         workspaceId={workspaceId}

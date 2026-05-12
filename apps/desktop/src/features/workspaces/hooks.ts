@@ -80,7 +80,8 @@ export function useSetActiveWorkspace() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: workspacesApi.setActive,
-    onSuccess: () => {
+    onSuccess: (workspace) => {
+      qc.setQueryData(ACTIVE_WORKSPACE_KEY, workspace);
       qc.invalidateQueries({ queryKey: ACTIVE_WORKSPACE_KEY });
     },
   });

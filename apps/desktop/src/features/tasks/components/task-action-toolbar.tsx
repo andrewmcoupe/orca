@@ -10,6 +10,7 @@ import {
   Pencil,
   Play,
   Stop,
+  Terminal,
   Trash,
   Warning,
   XCircle,
@@ -119,10 +120,12 @@ export function TaskActionToolbar({
   task,
   workspaceId,
   onOpenDiff,
+  onOpenTerminal,
 }: {
   task: Task;
   workspaceId: string;
   onOpenDiff: () => void;
+  onOpenTerminal: () => void;
 }) {
   const phaseRunsQ = usePhaseRuns(workspaceId, task.id);
   const verdictQ = useLatestAuditorVerdict(task.id);
@@ -389,6 +392,13 @@ export function TaskActionToolbar({
           ? "Another task has the preview server."
           : "Start or reopen the frontend dev server.";
 
+  const terminalDisabled = !previewAvailable;
+  const terminalTooltip = !task.worktree_path
+    ? "Task has no worktree yet."
+    : task.worktree_status !== "active"
+      ? "Task worktree is unavailable."
+      : "Open a terminal in this task worktree.";
+
   const approveAction = {
     icon: <CheckCircle weight={primary === "approve" ? "fill" : "regular"} />,
     label: "Approve",
@@ -460,6 +470,13 @@ export function TaskActionToolbar({
           disabled={previewDisabled}
           tooltip={previewTooltip}
           onClick={() => setPreviewOpen(true)}
+        />
+        <IconToolbarButton
+          icon={<Terminal />}
+          label="Open terminal"
+          disabled={terminalDisabled}
+          tooltip={terminalTooltip}
+          onClick={onOpenTerminal}
         />
 
         <OverflowMenu
@@ -559,6 +576,45 @@ function ToolbarButton({
     >
       {icon}
       {label}
+    </Button>
+  );
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={(props) => (
+          <span {...props} className="inline-flex">
+            {button}
+          </span>
+        )}
+      />
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function IconToolbarButton({
+  icon,
+  label,
+  disabled,
+  tooltip,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  disabled: boolean;
+  tooltip: string;
+  onClick: () => void;
+}) {
+  const button = (
+    <Button
+      size="icon-sm"
+      variant="outline"
+      disabled={disabled}
+      onClick={onClick}
+      aria-label={label}
+    >
+      {icon}
     </Button>
   );
 
