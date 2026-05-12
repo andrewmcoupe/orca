@@ -1,238 +1,171 @@
-```text
-Act as a senior product-minded engineer. Inspect this repo and implement the first shippable slice of a progressive “Requirements Distillation Lab” for the app’s feature briefing flow.
+# Brief: Persistent Live Terminal Sessions Across Navigation
 
-Important product constraint:
-This app does NOT have a chat interface. Do not design this as a conversational back-and-forth. The user starts with a feature description in a form/workbench, then reviews structured outputs, edits fields, approves assumptions, resolves questions, and only then creates tasks.
+We have a live terminal feature in the Orca desktop app. It currently works inside the task detail page, but terminal UI state is route-local. When a user navigates away from a task or workspace and later returns, the terminal tabs are lost because the task detail view unmounts.
 
-Core idea:
-When a user describes a feature, the app should classify the request, choose an appropriate briefing depth, gather only targeted codebase context, run specialist model personas, estimate token/cost tradeoffs, identify ambiguities, and produce a structured brief that can generate accurate agent tasks later.
+Build production-grade persistence for terminal sessions so users can switch between tasks and workspaces, create terminals in different places, and return to each task with its terminal tabs, labels, output, active tab, and collapsed state intact.
 
-Start by inspecting the repository. Find the existing briefing UI, backend briefing flow, task generation flow, provider/model selection, and any Linear import functionality. Do not assume the framework or architecture.
+## Current Context
 
-Implement the smallest coherent shippable version of the following.
+- App: `apps/desktop`
+- Frontend: React + TypeScript + TanStack Router + Tailwind
+- Desktop runtime: Tauri 2
+- Terminal frontend: `@xterm/xterm` + `@xterm/addon-fit`
+- Terminal backend: Rust `portable-pty`
+- Existing terminal files:
+  - `apps/desktop/src/features/terminal/api.ts`
+  - `apps/desktop/src/features/terminal/types.ts`
+  - `apps/desktop/src/features/terminal/components/terminal-dock.tsx`
+  - `apps/desktop/src-tauri/src/terminal.rs`
+  - terminal commands are wired through `apps/desktop/src-tauri/src/commands.rs` and `apps/desktop/src-tauri/src/lib.rs`
+- Existing placement:
+  - terminal open button is an icon in the task action toolbar
+  - terminal dock is a flex child at the bottom of the task detail middle pane
+  - the right sidebar must not be affected by terminal layout
 
-Briefing depth modes:
-- Quick
-- Guided
-- Thorough
-- Adversarial
+## Goal
 
-Depth behavior:
-- Quick: use minimal processing for simple/low-risk requests.
-- Guided: include ambiguity detection and implementation planning.
-- Thorough: include targeted codebase context retrieval.
-- Adversarial: include red-team review, preferably with a different provider or model family when configured.
+Terminal sessions must survive route changes within the app.
 
-Request classification:
-Classify the feature description by:
-- complexity
-- ambiguity
-- risk
-- likely touched areas
-- recommended briefing depth
-- whether repo scanning is needed
-- whether multi-model critique is justified
+Example behavior:
 
-Briefing budget model:
-Show or store an estimated cost/risk/confidence tradeoff before expensive steps run where practical.
-Principle: spend tokens proportional to ambiguity and risk.
-Simple requests should stay cheap. Expensive repo scanning and adversarial review should only trigger when complexity, risk, or ambiguity justify it, or when the user explicitly selects a deeper mode.
+1. Open task A.
+2. Open two terminals.
+3. Run commands in each terminal.
+4. Navigate to task B.
+5. Open another terminal there.
+6. Navigate to another workspace and open terminals there.
+7. Return to task A.
+8. The two original terminals are still present as tabs, with their labels, output, active tab, process state, and collapsed/expanded state preserved.
 
-Non-chat clarification model:
-Since there is no chat interface, generate a structured ambiguity ledger instead of asking conversational questions.
+Navigating away should detach the terminal UI from the PTY session. It must not close the PTY session.
 
-Each ambiguity item should include:
-- question
-- why it matters
-- risk if unanswered
-- recommended default assumption
-- whether user input is required
-- status: unresolved, assumed, user_resolved
-- optional user answer/edit field
+Only explicit close actions should close a terminal session.
 
-Reviewable brief workbench:
-The generated brief should be shown as structured, editable/reviewable sections rather than a chat response.
+## Required Behavior
 
-The final brief should include:
-- goal
-- user value
-- target users
-- non-goals
-- codebase context
-- relevant files
-- required behavior
-- UX requirements
-- data/API requirements
-- permissions/security
-- edge cases
-- tests required
-- risks
-- approved assumptions
-- open questions
-- task graph
-- acceptance criteria
+- Persist terminal tab state by task/workspace scope.
+- A task can have multiple terminal sessions.
+- Different tasks can have independent terminal tab sets.
+- Different workspaces can have independent terminal tab sets.
+- Returning to a task should restore:
+  - terminal tabs
+  - active tab
+  - collapsed/expanded state
+  - backend terminal session IDs
+  - frontend terminal labels
+  - terminal output scrollback
+- Closing a terminal tab must close the backend PTY session.
+- Navigating away must not call `close_terminal`.
+- App shutdown may still close all terminals.
+- Terminal labels should continue to update from backend foreground process events.
+- Terminal output should continue to be captured while the task page is not visible, so returning to the task shows what happened while away.
 
-User playback before task creation:
-Before tasks are created, present a concise confirmation summary in the UI/workbench:
-- “Here’s what I think you want…”
-- recommended briefing depth
-- approved assumptions
-- unresolved questions
-- task count
-- notable risks
-- estimated confidence
+## Architecture Direction
 
-Task creation should be blocked if required ambiguity items are unresolved, unless the user explicitly chooses to accept recommended assumptions.
+Introduce a persistent terminal state layer instead of keeping terminal tabs in `TaskDetailView`.
 
-Multi-model / multi-persona review system:
-The briefing pipeline should support multiple specialist personas. These can initially be implemented as prompt roles using the existing provider/model abstraction, and later mapped to Claude CLI, Codex CLI, OpenAI APIs, or Anthropic APIs.
+Recommended frontend shape:
 
-Do not assume this requires a chat interface. Each persona should produce structured output that feeds the brief workbench.
+- Add a terminal store/provider under the workspace area, for example:
+  - `apps/desktop/src/features/terminal/terminal-store.tsx`
+  - or equivalent local pattern if the repo already has a preferred state location
+- Key terminal groups by a stable scope key:
+  - `workspaceId`
+  - `taskId`
+  - likely key format: `${workspaceId}:${taskId}`
+- The store should own:
+  - tabs per task
+  - active tab ID per task
+  - collapsed state per task
+  - labels per terminal
+  - scrollback buffers per terminal
+  - lifecycle state such as connecting, open, exited, closed
+- `TaskDetailView` should read/write terminal state through this store.
+- `TerminalDock` should become a mostly presentational component plus xterm attach/detach behavior.
 
-Personas:
+Recommended backend shape:
 
-1. Intent Extractor
-Purpose:
-Turn the user’s raw feature description into clear product intent.
+- Add an attach/list capability so the frontend can reattach to existing PTY sessions.
+- Backend terminal manager should retain session metadata and scrollback.
+- Add or extend commands as needed:
+  - `list_terminals_for_task(workspace_id, task_id)` or equivalent
+  - `attach_terminal(session_id)` returning current session metadata and recent scrollback
+  - existing `create_terminal`, `write_terminal`, `resize_terminal`, `close_terminal` should continue to work
+- Store a bounded scrollback buffer per backend terminal session.
+  - Use a ring buffer or bounded `VecDeque`.
+  - Keep enough output for useful restoration without unbounded memory growth.
+  - Suggested default: last 10,000 chunks or a sane byte cap.
+- When output is produced:
+  - append it to backend scrollback
+  - emit the existing `terminal_output` event
+- When a frontend attaches:
+  - return metadata and scrollback
+  - then rely on live events for future output
 
-Outputs:
-- goal
-- user value
-- target users
-- core workflows
-- explicit requirements
-- implied requirements
-- non-goals
-- success criteria
+## Important Lifecycle Rules
 
-2. Codebase Cartographer
-Purpose:
-Inspect the repository and identify implementation-relevant context.
+- Component unmount must dispose the xterm instance and event listeners only.
+- Component unmount must not close the backend terminal.
+- Close tab must:
+  - update frontend store
+  - call backend `close_terminal`
+  - clean scrollback and metadata for that terminal
+- If a backend terminal exits naturally:
+  - mark it exited in the frontend
+  - keep the tab visible unless the existing UX already removes exited terminals
+  - show the exit status in the terminal output as currently implemented
+- If reattach finds a terminal missing on the backend:
+  - mark the frontend tab exited or remove it cleanly
+  - do not crash the task detail page
 
-Outputs:
-- likely touched areas
-- relevant files
-- existing patterns to reuse
-- APIs/hooks/components/services involved
-- tests likely affected
-- architectural constraints
-- unknowns that require targeted retrieval
+## UI Requirements
 
-3. Ambiguity Hunter
-Purpose:
-Find what an implementation agent may misunderstand.
+- Keep the terminal dock anchored at the bottom of the task detail middle pane.
+- Keep the main task content scrollable above it.
+- The terminal must not span over the right sidebar.
+- The right sidebar must not gain a scrollbar because of the terminal.
+- Multiple terminals should remain tabs with close icons.
+- Active tab should be restored when returning to a task.
+- Collapsed/expanded state should be restored per task.
+- Terminal text and chrome must remain theme-aware.
+- Terminal content should use IBM Plex Mono.
+- Do not introduce wide letter spacing in terminal output.
 
-Outputs:
-- ambiguity ledger entries
-- missing decisions
-- conflicting requirements
-- vague terms
-- risky assumptions
-- recommended default assumptions
-- whether user input is required
+## Implementation Notes
 
-4. Implementation Planner
-Purpose:
-Convert the brief into a task graph that an execution agent can safely follow.
+- Preserve existing working behavior before refactoring.
+- Keep changes scoped to terminal lifecycle/state and task detail integration.
+- Avoid closing sessions in React cleanup handlers.
+- Be careful with stale closures around terminal labels and output events.
+- Avoid duplicate event subscriptions after repeated navigation.
+- Resize the PTY after reattaching and after the dock becomes visible.
+- If the backend stores scrollback, deduplicate replayed output and live output around attach time.
+- Prefer explicit IDs from the backend over frontend-only generated IDs where possible.
 
-Outputs:
-- task graph
-- task dependencies
-- suggested file ownership
-- acceptance criteria per task
-- required tests
-- execution risks
-- parallelizable vs sequential work
+## Acceptance Criteria
 
-5. Skeptic / Red-Team Reviewer
-Purpose:
-Attack the brief before tasks are created.
+- User can open terminals on one task, navigate away, return, and see the same terminal tabs.
+- Running processes continue while the user is on another route.
+- Output produced while away is visible after returning.
+- User can maintain terminals for multiple tasks at the same time.
+- User can maintain terminals for tasks in different workspaces at the same time.
+- Closing a tab closes only that terminal session.
+- Navigating away from a task does not close its terminal sessions.
+- The app does not hang when closing terminals.
+- The right sidebar does not scroll because of terminal layout.
+- Light and dark mode terminal text remains readable.
+- `pnpm --filter orca build` passes.
+- `cargo check` passes.
+- Add focused tests where practical, especially around backend session listing/attach/scrollback behavior.
 
-Outputs:
-- missing requirements
-- overbuilding risks
-- unsafe assumptions
-- security/privacy concerns
-- UX edge cases
-- data migration risks
-- test gaps
-- reasons task creation should be blocked or allowed
+## Deliverable
 
-6. Final Synthesizer
-Purpose:
-Reconcile persona outputs into the final structured brief.
+Implement the persistent terminal session architecture end to end.
 
-Outputs:
-- final human-readable brief
-- machine-readable brief JSON
-- approved assumptions
-- unresolved required questions
-- confidence score
-- recommended briefing depth
-- readiness status: ready_for_tasks, ready_with_assumptions, blocked_needs_user_input
+At completion, summarize:
 
-Persona execution by depth:
-- Quick mode may only use Intent Extractor and Final Synthesizer.
-- Guided mode should use Intent Extractor, Ambiguity Hunter, Implementation Planner, and Final Synthesizer.
-- Thorough mode should also use Codebase Cartographer with targeted repo retrieval.
-- Adversarial mode should add Skeptic / Red-Team Reviewer, ideally using a different provider or model family where available.
-
-User-configurable provider/model per persona:
-The user should be able to configure which provider and model each persona uses.
-
-Requirements:
-- Add or extend UI/settings so each persona can have its own provider/model selection.
-- Reuse the existing provider/model abstraction if one exists.
-- Support sensible defaults so users do not have to configure every persona manually.
-- Allow a global default provider/model, with per-persona overrides.
-- Persist the configuration using the app’s existing settings/storage pattern.
-- Validate unavailable provider/model selections.
-- If a persona-specific provider/model is unavailable, fall back gracefully to the global default and surface a clear warning.
-- For Adversarial mode, prefer using a different provider/model family for the Skeptic / Red-Team Reviewer when the user has configured one.
-- Show the configured persona/provider/model mapping somewhere appropriate in the briefing workbench or settings UI.
-
-Suggested defaults if the app supports these providers:
-- Intent Extractor: fast/cheap capable model.
-- Codebase Cartographer: code-strong model.
-- Ambiguity Hunter: reasoning-strong model.
-- Implementation Planner: code-strong model.
-- Skeptic / Red-Team Reviewer: different provider/model family from the planner where possible.
-- Final Synthesizer: strongest configured model or the selected main model.
-
-Progressive codebase context:
-Avoid dumping the whole repo into context. Prefer targeted retrieval:
-- file tree summaries
-- ripgrep/symbol search
-- relevant file snippets
-- cached repo understanding if the app has it or a natural place to add it
-
-Product principles:
-- The user should not have to chat with the model.
-- The system should feel like a panel of specialist reviewers working quietly behind the workbench.
-- The model personas should produce structured artifacts the user can review, edit, approve, or reject.
-- Ask targeted, codebase-aware questions as fields/items in the workbench, not as conversational turns.
-- Let users approve default assumptions in bulk.
-- Do not create tasks until the brief is sufficiently clear or the user explicitly accepts assumptions.
-- The downstream agent should receive machine-readable task context, not just prose.
-- Spend tokens proportional to ambiguity and risk.
-
-Implementation guidance:
-- Follow existing app architecture and UI conventions.
-- Keep the first implementation scoped and shippable.
-- Prefer clear types/interfaces for briefing classification, ambiguity ledger entries, briefing depth, persona config, persona outputs, brief sections, and task graph nodes.
-- If there is already a backend route/service for briefing, extend it rather than creating a parallel system.
-- If the app already has provider/model abstraction, reuse it.
-- If the app already has settings for provider/model selection, extend them for persona-specific overrides.
-- If implementation is too large for one pass, create a phased plan and implement Phase 1.
-- Add tests where appropriate.
-- Run relevant typecheck/lint/test commands if available.
-
-Deliverables:
-- Code changes for the initial implementation, or a concrete phased plan if code changes require architectural decisions.
-- A short summary of changed files.
-- Any tests/checks run.
-- Remaining gaps or follow-up work.
-
-Important:
-First inspect the repository. Do not assume the framework or structure. Do not invent new architecture until you understand the existing one.
-```
+- files changed
+- lifecycle model
+- how reattach/scrollback works
+- verification commands run
+- any residual limitations or follow-up work

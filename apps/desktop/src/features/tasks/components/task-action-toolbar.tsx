@@ -10,6 +10,7 @@ import {
   Pencil,
   Play,
   Stop,
+  Terminal,
   Trash,
   Warning,
   XCircle,
@@ -55,10 +56,7 @@ import {
 import { tasksApi } from "../api";
 import { MergeDialog } from "./merge-dialog";
 import { PassBackDialog } from "./pass-back-dialog";
-import {
-  FileOverlapDialog,
-  overlapPairKey,
-} from "./file-overlap-dialog";
+import { FileOverlapDialog, overlapPairKey } from "./file-overlap-dialog";
 import {
   dismissOverlapPairs,
   isOverlapDismissed,
@@ -67,15 +65,15 @@ import { DependencyEditDialog } from "./dependencies-section";
 import { PreviewServerDialog } from "@/features/preview-server/components/preview-server-dialog";
 import { usePreviewServerStatus } from "@/features/preview-server/hooks";
 import { useWorkspaceSettings } from "@/features/workspaces/hooks";
-import type { AuditorVerdict, AuditorVerdictKind, FileOverlap, Task } from "../types";
+import type {
+  AuditorVerdict,
+  AuditorVerdictKind,
+  FileOverlap,
+  Task,
+} from "../types";
 import type { PhaseRun } from "@/features/phase-runs/types";
 
-type PrimaryActionId =
-  | "run"
-  | "approve"
-  | "pass_back"
-  | "merge"
-  | null;
+type PrimaryActionId = "run" | "approve" | "pass_back" | "merge" | null;
 
 type ToolbarState = {
   task: Task;
@@ -95,7 +93,11 @@ type ToolbarState = {
  */
 function computePrimary(s: ToolbarState): PrimaryActionId {
   const { task, phaseRunning, hasAnyRun, allFailed, verdict } = s;
-  if (task.status === "merged" || task.status === "cancelled" || task.status === "archived") {
+  if (
+    task.status === "merged" ||
+    task.status === "cancelled" ||
+    task.status === "archived"
+  ) {
     return null;
   }
   if (phaseRunning) return null;
@@ -119,10 +121,12 @@ export function TaskActionToolbar({
   task,
   workspaceId,
   onOpenDiff,
+  onOpenTerminal,
 }: {
   task: Task;
   workspaceId: string;
   onOpenDiff: () => void;
+  onOpenTerminal: () => void;
 }) {
   const phaseRunsQ = usePhaseRuns(workspaceId, task.id);
   const verdictQ = useLatestAuditorVerdict(task.id);
@@ -132,7 +136,8 @@ export function TaskActionToolbar({
   const phaseRunning = runs.find((r) => r.status === "running");
   const hasAnyRun = runs.length > 0;
   const allFailed =
-    hasAnyRun && runs.every((r) => r.status === "failed" || r.status === "cancelled");
+    hasAnyRun &&
+    runs.every((r) => r.status === "failed" || r.status === "cancelled");
   const implementerCompleted = runs.some(
     (r) => r.phase === "implementer" && r.status === "completed",
   );
@@ -149,16 +154,19 @@ export function TaskActionToolbar({
     worktreeActive,
   };
 
-  const primary = useMemo(() => computePrimary(state), [
-    task.id,
-    task.status,
-    task.worktree_status,
-    runs.length,
-    phaseRunning?.id,
-    hasAnyRun,
-    allFailed,
-    verdict?.verdict,
-  ]);
+  const primary = useMemo(
+    () => computePrimary(state),
+    [
+      task.id,
+      task.status,
+      task.worktree_status,
+      runs.length,
+      phaseRunning?.id,
+      hasAnyRun,
+      allFailed,
+      verdict?.verdict,
+    ],
+  );
 
   const startTask = useStartTask();
   const startTaskPhase = useStartTaskPhase();
@@ -361,7 +369,8 @@ export function TaskActionToolbar({
   // === Preview server ====================================================
   const previewSettings = workspaceSettingsQ.data?.preview_server;
   const previewStatus = previewStatusQ.data;
-  const previewAvailable = !!task.worktree_path && task.worktree_status === "active";
+  const previewAvailable =
+    !!task.worktree_path && task.worktree_status === "active";
   const previewDisabled = !previewAvailable;
   const previewRunningForThisTask =
     previewStatus?.task_id === task.id &&
@@ -386,8 +395,15 @@ export function TaskActionToolbar({
         : previewRunningForThisTask
           ? "Preview server is running for this task."
           : previewRunningForOtherTask
-          ? "Another task has the preview server."
-          : "Start or reopen the frontend dev server.";
+            ? "Another task has the preview server."
+            : "Start or reopen the frontend dev server.";
+
+  const terminalDisabled = !previewAvailable;
+  const terminalTooltip = !task.worktree_path
+    ? "Task has no worktree yet."
+    : task.worktree_status !== "active"
+      ? "Task worktree is unavailable."
+      : "Open a terminal in this task worktree.";
 
   const approveAction = {
     icon: <CheckCircle weight={primary === "approve" ? "fill" : "regular"} />,
@@ -421,9 +437,11 @@ export function TaskActionToolbar({
         : primary === "merge"
           ? mergeAction
           : null;
-  const secondaryInlineActions = [approveAction, passBackAction, mergeAction].filter(
-    (action) => !action.isPrimary && !action.disabled,
-  );
+  const secondaryInlineActions = [
+    approveAction,
+    passBackAction,
+    mergeAction,
+  ].filter((action) => !action.isPrimary && !action.disabled);
   const overflowActions = [approveAction, passBackAction, mergeAction].filter(
     (action) => !action.isPrimary && action.disabled,
   );
@@ -431,9 +449,10 @@ export function TaskActionToolbar({
   return (
     <TooltipProvider delay={200}>
       <div className="flex flex-wrap items-center gap-1">
+        {primaryAction && <ToolbarButton {...primaryAction} />}
         <ToolbarButton
           icon={runIcon}
-          label={runLabel}
+          ariaLabel={runLabel}
           // Don't lift the queued state into the primary slot — "Cancel
           // queue" is a recovery action, not the obvious next step.
           isPrimary={primary === "run" && !task.is_queued}
@@ -441,13 +460,11 @@ export function TaskActionToolbar({
           tooltip={runTooltip}
           onClick={() => void tryStartTask(false)}
         />
-        {primaryAction && <ToolbarButton {...primaryAction} />}
         {secondaryInlineActions.map((action) => (
           <ToolbarButton key={action.label} {...action} />
         ))}
         <ToolbarButton
           icon={<GitDiff />}
-          label="Review diff"
           isPrimary={false}
           disabled={diffDisabled}
           tooltip={diffTooltip}
@@ -455,11 +472,18 @@ export function TaskActionToolbar({
         />
         <ToolbarButton
           icon={<ArrowSquareOut />}
-          label={previewLabel}
+          ariaLabel={previewLabel}
           isPrimary={false}
           disabled={previewDisabled}
           tooltip={previewTooltip}
           onClick={() => setPreviewOpen(true)}
+        />
+        <IconToolbarButton
+          icon={<Terminal />}
+          label="Open terminal"
+          disabled={terminalDisabled}
+          tooltip={terminalTooltip}
+          onClick={onOpenTerminal}
         />
 
         <OverflowMenu
@@ -524,6 +548,7 @@ export function TaskActionToolbar({
 function ToolbarButton({
   icon,
   label,
+  ariaLabel,
   isPrimary,
   disabled,
   tooltip,
@@ -531,7 +556,8 @@ function ToolbarButton({
   variant,
 }: {
   icon: React.ReactNode;
-  label: string;
+  label?: string;
+  ariaLabel?: string;
   isPrimary: boolean;
   disabled: boolean;
   tooltip: string;
@@ -546,9 +572,10 @@ function ToolbarButton({
   const button = (
     <Button
       size="sm"
-      variant={isPrimary ? "default" : "outline"}
+      variant={isPrimary ? "default" : "ghost"}
       disabled={disabled}
       onClick={onClick}
+      aria-label={ariaLabel ?? label}
       className={cn(
         "gap-1",
         variant === "reject" &&
@@ -558,7 +585,46 @@ function ToolbarButton({
       )}
     >
       {icon}
-      {label}
+      {label && label}
+    </Button>
+  );
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={(props) => (
+          <span {...props} className="inline-flex">
+            {button}
+          </span>
+        )}
+      />
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function IconToolbarButton({
+  icon,
+  label,
+  disabled,
+  tooltip,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  disabled: boolean;
+  tooltip: string;
+  onClick: () => void;
+}) {
+  const button = (
+    <Button
+      size="icon-sm"
+      variant="ghost"
+      disabled={disabled}
+      onClick={onClick}
+      aria-label={label}
+    >
+      {icon}
     </Button>
   );
 
@@ -626,170 +692,168 @@ function OverflowMenu({
   const [deleteOpen, setDeleteOpen] = useState(false);
   return (
     <>
-    <DropdownMenu>
-      <Tooltip>
-        <TooltipTrigger
-          render={(props) => (
-            <span {...props} className="inline-flex">
-              <DropdownMenuTrigger
-                render={
-                  <Button
-                    size="icon-sm"
-                    variant="outline"
-                    aria-label="More actions"
-                  >
-                    <DotsThree weight="bold" />
-                  </Button>
-                }
-              />
-            </span>
-          )}
-        />
-        <TooltipContent>More actions</TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent align="start" className="min-w-[240px]">
-        {overflowActions.map((action) => (
+      <DropdownMenu>
+        <Tooltip>
+          <TooltipTrigger
+            render={(props) => (
+              <span {...props} className="inline-flex">
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label="More actions"
+                    >
+                      <DotsThree weight="bold" />
+                    </Button>
+                  }
+                />
+              </span>
+            )}
+          />
+          <TooltipContent>More actions</TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent align="start" className="min-w-[240px]">
+          {overflowActions.map((action) => (
+            <DropdownMenuItem
+              key={action.label}
+              disabled={action.disabled}
+              onClick={action.onClick}
+              title={action.tooltip}
+            >
+              {action.icon}
+              <span className="flex-1">{action.label}</span>
+            </DropdownMenuItem>
+          ))}
+          {overflowActions.length > 0 && <DropdownMenuSeparator />}
+
           <DropdownMenuItem
-            key={action.label}
-            disabled={action.disabled}
-            onClick={action.onClick}
-            title={action.tooltip}
+            disabled={rejectDisabled}
+            onClick={onReject}
+            title={rejectTooltip}
+            variant="destructive"
           >
-            {action.icon}
-            <span className="flex-1">{action.label}</span>
+            <XCircle />
+            <span className="flex-1">Reject</span>
           </DropdownMenuItem>
-        ))}
-        {overflowActions.length > 0 && <DropdownMenuSeparator />}
 
-        <DropdownMenuItem
-          disabled={rejectDisabled}
-          onClick={onReject}
-          title={rejectTooltip}
-          variant="destructive"
-        >
-          <XCircle />
-          <span className="flex-1">Reject</span>
-        </DropdownMenuItem>
+          <DropdownMenuSeparator />
 
-        <DropdownMenuSeparator />
-
-        {/* Phase actions */}
-        <DropdownMenuItem
-          disabled={!phaseRunning}
-          onClick={() => phaseRunning && onCancelPhase(phaseRunning.id)}
-        >
-          <Stop />
-          <span className="flex-1">Cancel running phase</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={
-            !implementerCompleted ||
-            !!phaseRunning ||
-            task.status === "merged" ||
-            task.status === "approved" ||
-            task.status === "cancelled" ||
-            task.status === "archived"
-          }
-          onClick={onRerunAuditor}
-        >
-          <Play />
-          <span className="flex-1">Re-run auditor only</span>
-        </DropdownMenuItem>
-        {/* Brief 4 / M6: "Run anyway (ignore dependencies)" — escape hatch
+          {/* Phase actions */}
+          <DropdownMenuItem
+            disabled={!phaseRunning}
+            onClick={() => phaseRunning && onCancelPhase(phaseRunning.id)}
+          >
+            <Stop />
+            <span className="flex-1">Cancel running phase</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={
+              !implementerCompleted ||
+              !!phaseRunning ||
+              task.status === "merged" ||
+              task.status === "approved" ||
+              task.status === "cancelled" ||
+              task.status === "archived"
+            }
+            onClick={onRerunAuditor}
+          >
+            <Play />
+            <span className="flex-1">Re-run auditor only</span>
+          </DropdownMenuItem>
+          {/* Brief 4 / M6: "Run anyway (ignore dependencies)" — escape hatch
             only relevant when the task is currently blocked. We surface it
             for queued tasks too, since a queued user might decide they
             want to break out of the queue. */}
-        {(task.is_blocked || task.is_queued) && (
-          <DropdownMenuItem
-            disabled={
-              !!phaseRunning ||
-              task.status === "merged" ||
-              task.status === "cancelled"
-            }
-            onClick={onRunAnyway}
-            variant="destructive"
-          >
-            <Warning />
-            <span className="flex-1">Run anyway (ignore dependencies)</span>
-          </DropdownMenuItem>
-        )}
+          {(task.is_blocked || task.is_queued) && (
+            <DropdownMenuItem
+              disabled={
+                !!phaseRunning ||
+                task.status === "merged" ||
+                task.status === "cancelled"
+              }
+              onClick={onRunAnyway}
+              variant="destructive"
+            >
+              <Warning />
+              <span className="flex-1">Run anyway (ignore dependencies)</span>
+            </DropdownMenuItem>
+          )}
 
-        <DropdownMenuSeparator />
+          <DropdownMenuSeparator />
 
-        {/* Dependencies — always available so the user can add deps to a
+          {/* Dependencies — always available so the user can add deps to a
             task that doesn't have any yet (the inline section is hidden in
             that case per the brief). */}
-        <DropdownMenuItem
-          disabled={
-            task.status === "merged" || task.status === "archived"
-          }
-          onClick={() => setEditDepsOpen(true)}
-        >
-          <Pencil />
-          <span className="flex-1">Edit dependencies</span>
-        </DropdownMenuItem>
-
-        <DropdownMenuSeparator />
-
-        {/* Utility actions */}
-        <DropdownMenuItem onClick={onCopyId}>
-          <Copy />
-          <span className="flex-1">Copy task ID</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={
-            !worktreeActive ||
-            !!phaseRunning ||
-            task.worktree_init_status === "running"
-          }
-          variant="destructive"
-          onClick={onDeleteWorktree}
-        >
-          <Trash />
-          <span className="flex-1">Delete worktree</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={deleteTaskDisabled}
-          variant="destructive"
-          onClick={() => setDeleteOpen(true)}
-        >
-          <Trash />
-          <span className="flex-1">Delete task</span>
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-    <DependencyEditDialog
-      task={task}
-      candidates={tasksInPlan}
-      open={editDepsOpen}
-      onOpenChange={setEditDepsOpen}
-    />
-    <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Delete this task?</DialogTitle>
-          <DialogDescription>
-            {phaseRunning
-              ? "The running phase will be cancelled and the worktree removed. The task will be archived and hidden from views; the audit trail is kept."
-              : "The worktree will be removed and the task archived (hidden from views). The audit trail is kept."}
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setDeleteOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            variant="destructive"
-            onClick={() => {
-              setDeleteOpen(false);
-              onDeleteTask();
-            }}
+          <DropdownMenuItem
+            disabled={task.status === "merged" || task.status === "archived"}
+            onClick={() => setEditDepsOpen(true)}
           >
-            Delete task
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+            <Pencil />
+            <span className="flex-1">Edit dependencies</span>
+          </DropdownMenuItem>
+
+          <DropdownMenuSeparator />
+
+          {/* Utility actions */}
+          <DropdownMenuItem onClick={onCopyId}>
+            <Copy />
+            <span className="flex-1">Copy task ID</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={
+              !worktreeActive ||
+              !!phaseRunning ||
+              task.worktree_init_status === "running"
+            }
+            variant="destructive"
+            onClick={onDeleteWorktree}
+          >
+            <Trash />
+            <span className="flex-1">Delete worktree</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={deleteTaskDisabled}
+            variant="destructive"
+            onClick={() => setDeleteOpen(true)}
+          >
+            <Trash />
+            <span className="flex-1">Delete task</span>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <DependencyEditDialog
+        task={task}
+        candidates={tasksInPlan}
+        open={editDepsOpen}
+        onOpenChange={setEditDepsOpen}
+      />
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete this task?</DialogTitle>
+            <DialogDescription>
+              {phaseRunning
+                ? "The running phase will be cancelled and the worktree removed. The task will be archived and hidden from views; the audit trail is kept."
+                : "The worktree will be removed and the task archived (hidden from views). The audit trail is kept."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setDeleteOpen(false);
+                onDeleteTask();
+              }}
+            >
+              Delete task
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

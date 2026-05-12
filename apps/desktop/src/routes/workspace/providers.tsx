@@ -4,7 +4,7 @@ import { CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useProviders, useRefreshProviders } from "@/features/providers/hooks";
 import { ArrowSquareOut, CheckCircle, XCircle } from "@phosphor-icons/react";
 import { createRoute } from "@tanstack/react-router";
-import { workspaceLayoutRoute } from "./layout";
+import { globalSettingsRoute } from "../global-settings";
 
 function ProvidersPage() {
   const providers = useProviders();
@@ -95,7 +95,7 @@ function installDocsLink(providerId: string): string {
 }
 
 export const providersRoute = createRoute({
-  getParentRoute: () => workspaceLayoutRoute,
+  getParentRoute: () => globalSettingsRoute,
   path: "/providers",
   component: ProvidersPage,
 });

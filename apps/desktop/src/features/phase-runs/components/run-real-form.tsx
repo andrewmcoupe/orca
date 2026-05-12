@@ -32,7 +32,7 @@ export function RunRealForm({
   if (installed.length === 0) {
     return (
       <p className="text-muted-foreground text-xs">
-        No installed providers. See Providers tab.
+        No installed providers. See Settings &gt; AI Providers.
       </p>
     );
   }
