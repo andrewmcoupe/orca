@@ -7,6 +7,7 @@ import {
   GearSix,
   GitBranch,
   Lightning,
+  Plugs,
   SlidersHorizontal,
 } from "@phosphor-icons/react";
 import { PhaseConfigPanel } from "@/features/workspaces/components/phase-config-panel";
@@ -27,6 +28,12 @@ function SettingsLayout() {
           label: "Briefing",
           icon: ChatCircleText,
           to: "/settings/briefing",
+        },
+        {
+          id: "providers",
+          label: "AI Providers",
+          icon: Plugs,
+          to: "/settings/providers",
         },
       ]}
     />
@@ -188,7 +195,7 @@ type SettingsNavItem = {
   id: string;
   label: string;
   icon: ComponentType<{ className?: string }>;
-  to?: "/settings" | "/settings/briefing";
+  to?: "/settings" | "/settings/briefing" | "/settings/providers";
 };
 
 function SettingsRouteContent({

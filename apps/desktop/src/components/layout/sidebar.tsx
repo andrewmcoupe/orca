@@ -12,7 +12,6 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar";
 import { usePlans } from "@/features/plans/hooks";
-import { useProviders } from "@/features/providers/hooks";
 import { useAddWorkspace, useWorkspaces } from "@/features/workspaces/hooks";
 import type { Workspace } from "@/features/workspaces/types";
 import { cn } from "@/lib/utils";
@@ -183,13 +182,8 @@ function WorkspaceItem({
   // keeps a single per-workspace event store open at a time. For other items
   // the counts are intentionally hidden rather than guessed.
   const plansQ = usePlans(isActive ? workspace.id : null);
-  const providers = useProviders();
 
   const planCount = plansQ.data?.length ?? null;
-  const installedProviders = (providers.data ?? []).filter(
-    (p) => p.installed,
-  ).length;
-  const totalProviders = providers.data?.length ?? null;
 
   return (
     <AccordionItem value={workspace.id} className={cn("border-none")}>
@@ -217,21 +211,6 @@ function WorkspaceItem({
             <NavRowContent
               label="Plans"
               count={planCount !== null ? String(planCount) : null}
-            />
-          </Link>
-          <Link
-            to="/workspace/$workspaceId/providers"
-            params={{ workspaceId: workspace.id }}
-            onClick={onNavigate}
-            className={navLinkClass}
-          >
-            <NavRowContent
-              label="AI Providers"
-              count={
-                totalProviders !== null
-                  ? `${installedProviders}/${totalProviders}`
-                  : null
-              }
             />
           </Link>
           <Link

@@ -21,7 +21,6 @@ const workspaceTree = workspaceLayoutRoute.addChildren([
   plansListRoute,
   planDetailRoute,
   taskDetailRoute,
-  providersRoute,
   workspaceSettingsRoute,
   briefingNewRoute,
   briefingDetailRoute,
@@ -30,6 +29,7 @@ const workspaceTree = workspaceLayoutRoute.addChildren([
 const globalSettingsTree = globalSettingsRoute.addChildren([
   globalSettingsIndexRoute,
   globalSettingsBriefingRoute,
+  providersRoute,
 ]);
 
 const routeTree = rootRoute.addChildren([
