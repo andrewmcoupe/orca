@@ -6,6 +6,7 @@ import type {
   PhaseConfig,
   PhaseType,
   Task,
+  TaskPipelineSnapshot,
 } from "./types";
 
 export type UpdateTaskPhaseConfigInput = {
@@ -30,6 +31,8 @@ export const tasksApi = {
   listByPlan: (planId: string) =>
     invoke<Task[]>("list_tasks", { planId }),
   get: (id: string) => invoke<Task | null>("get_task", { id }),
+  getPipelineSnapshot: (taskId: string) =>
+    invoke<TaskPipelineSnapshot>("get_task_pipeline_snapshot", { taskId }),
   create: (input: CreateTaskInput) =>
     invoke<Task>("create_task", {
       planId: input.planId,

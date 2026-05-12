@@ -20,7 +20,7 @@ const BADGE_COLORS: Array<[(t: string) => boolean, string]> = [
   [(t) => t.startsWith("Task"), "bg-blue-500"],
   [(t) => t === "WorktreeCreated", "bg-sky-500"],
   [(t) => t === "WorktreeRemoved", "bg-slate-500"],
-  [(t) => t === "GateRan", "bg-orange-500"],
+  [(t) => t.startsWith("Gate"), "bg-orange-500"],
 ];
 
 function badgeClass(eventType: string): string {

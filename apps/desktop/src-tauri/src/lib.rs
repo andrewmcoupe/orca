@@ -135,6 +135,7 @@ pub fn run() {
             commands::create_task,
             commands::list_tasks,
             commands::get_task,
+            commands::get_task_pipeline_snapshot,
             commands::list_phase_runs,
             commands::list_phase_run_output,
             commands::start_real_phase,

@@ -1542,6 +1542,11 @@ pub fn apply_phase_run_event(
                 ],
             )?;
         }
+        "GateStarted" => {
+            // GateStarted is intentionally event-only for now. The authoritative
+            // pipeline snapshot derives in-flight gate state from the event stream,
+            // while completed gate output remains stored in phase_run_gate via GateRan.
+        }
         other => return Err(ProjectionError::UnknownEventType(other.to_string())),
     }
     Ok(())

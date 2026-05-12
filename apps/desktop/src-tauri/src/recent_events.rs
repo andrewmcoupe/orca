@@ -172,6 +172,7 @@ pub fn summarize(event: &AppendedEvent) -> String {
         "BriefingRefineRequested" => "Briefing refine requested".into(),
         "BriefingCompleted" => format!("Briefing completed → plan {}", s("plan_id")),
         "BriefingCancelled" => format!("Briefing cancelled: {}", s("reason")),
+        "GateStarted" => format!("Gate {}: running", s("gate_name")),
         "GateRan" => {
             let passed = payload
                 .get("passed")
