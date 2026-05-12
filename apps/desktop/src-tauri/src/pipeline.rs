@@ -327,6 +327,8 @@ pub fn task_pipeline_snapshot(
         }
     }
 
+    reset_items_after_first_incomplete_item(&mut items);
+
     let active_item_id = items.iter().find_map(|item| match item {
         PipelineSnapshotItem::Phase { id, status, .. }
         | PipelineSnapshotItem::Gate { id, status, .. } => {
@@ -712,6 +714,57 @@ fn phase_run_status_to_item_status(status: &str) -> PipelineItemStatus {
         "failed" => PipelineItemStatus::Failed,
         "cancelled" => PipelineItemStatus::Cancelled,
         _ => PipelineItemStatus::Pending,
+    }
+}
+
+fn reset_items_after_first_incomplete_item(items: &mut [PipelineSnapshotItem]) {
+    let Some(incomplete_idx) = items.iter().position(|item| match item {
+        PipelineSnapshotItem::Phase { status, .. } | PipelineSnapshotItem::Gate { status, .. } => {
+            !item_status_allows_progress(status)
+        }
+    }) else {
+        return;
+    };
+    for item in items.iter_mut().skip(incomplete_idx + 1) {
+        reset_item_to_pending(item);
+    }
+}
+
+fn item_status_allows_progress(status: &PipelineItemStatus) -> bool {
+    matches!(
+        status,
+        PipelineItemStatus::Completed | PipelineItemStatus::Passed
+    )
+}
+
+fn reset_item_to_pending(item: &mut PipelineSnapshotItem) {
+    match item {
+        PipelineSnapshotItem::Phase {
+            status,
+            phase_run_id,
+            started_at,
+            completed_at,
+            ..
+        } => {
+            *status = PipelineItemStatus::Pending;
+            *phase_run_id = None;
+            *started_at = None;
+            *completed_at = None;
+        }
+        PipelineSnapshotItem::Gate {
+            status,
+            phase_run_id,
+            event_id,
+            started_at,
+            completed_at,
+            ..
+        } => {
+            *status = PipelineItemStatus::Pending;
+            *phase_run_id = None;
+            *event_id = None;
+            *started_at = None;
+            *completed_at = None;
+        }
     }
 }
 
@@ -1240,5 +1293,99 @@ mod tests {
         let pc = cfg(&[PhaseType::Implementer]);
         let g = gates_for_phase(&s, &pc, PhaseType::Implementer);
         assert!(g.is_empty());
+    }
+
+    fn phase_item(phase: &str, status: PipelineItemStatus) -> PipelineSnapshotItem {
+        PipelineSnapshotItem::Phase {
+            id: format!("phase:{phase}"),
+            phase: phase.to_string(),
+            status,
+            phase_run_id: Some(format!("run:{phase}")),
+            provider: Some("provider".to_string()),
+            model: Some("model".to_string()),
+            permission_mode: "acceptEdits".to_string(),
+            started_at: Some(1),
+            completed_at: Some(2),
+        }
+    }
+
+    fn gate_item(
+        after_phase: &str,
+        name: &str,
+        status: PipelineItemStatus,
+    ) -> PipelineSnapshotItem {
+        PipelineSnapshotItem::Gate {
+            id: format!("gate:{after_phase}:{name}"),
+            after_phase: after_phase.to_string(),
+            name: name.to_string(),
+            command: "pnpm test".to_string(),
+            timeout_seconds: 120,
+            status,
+            phase_run_id: Some(format!("run:{after_phase}")),
+            event_id: Some(format!("event:{after_phase}:{name}")),
+            started_at: Some(1),
+            completed_at: Some(2),
+        }
+    }
+
+    fn item_status(item: &PipelineSnapshotItem) -> &PipelineItemStatus {
+        match item {
+            PipelineSnapshotItem::Phase { status, .. }
+            | PipelineSnapshotItem::Gate { status, .. } => status,
+        }
+    }
+
+    #[test]
+    fn snapshot_resets_stale_items_after_failed_gate() {
+        let mut items = vec![
+            phase_item("implementer", PipelineItemStatus::Completed),
+            gate_item("implementer", "Test", PipelineItemStatus::Failed),
+            phase_item("auditor", PipelineItemStatus::Completed),
+            gate_item("auditor", "Test", PipelineItemStatus::Passed),
+        ];
+
+        reset_items_after_first_incomplete_item(&mut items);
+
+        assert!(matches!(
+            item_status(&items[0]),
+            PipelineItemStatus::Completed
+        ));
+        assert!(matches!(item_status(&items[1]), PipelineItemStatus::Failed));
+        assert!(matches!(
+            item_status(&items[2]),
+            PipelineItemStatus::Pending
+        ));
+        assert!(matches!(
+            item_status(&items[3]),
+            PipelineItemStatus::Pending
+        ));
+        match &items[2] {
+            PipelineSnapshotItem::Phase {
+                phase_run_id,
+                started_at,
+                completed_at,
+                ..
+            } => {
+                assert!(phase_run_id.is_none());
+                assert!(started_at.is_none());
+                assert!(completed_at.is_none());
+            }
+            PipelineSnapshotItem::Gate { .. } => panic!("expected phase item"),
+        }
+        match &items[3] {
+            PipelineSnapshotItem::Gate {
+                phase_run_id,
+                event_id,
+                started_at,
+                completed_at,
+                ..
+            } => {
+                assert!(phase_run_id.is_none());
+                assert!(event_id.is_none());
+                assert!(started_at.is_none());
+                assert!(completed_at.is_none());
+            }
+            PipelineSnapshotItem::Phase { .. } => panic!("expected gate item"),
+        }
     }
 }
