@@ -1,5 +1,5 @@
 import { createRoute, useNavigate, useParams } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContentColumn } from "@/components/layout/content-column";
 import {
@@ -22,6 +22,7 @@ import { TaskRow } from "@/features/tasks/components/task-row";
 import { NewTaskDialog } from "@/features/tasks/components/new-task-dialog";
 import { formatRelativeTime } from "@/lib/format";
 import type { Plan } from "@/features/plans/types";
+import type { Task } from "@/features/tasks/types";
 
 function PlanDetailPage() {
   const { workspaceId, planId } = useParams({ from: planDetailRoute.id });
@@ -51,6 +52,7 @@ function PlanDetailView({
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const navigate = useNavigate();
   const taskList = tasks.data ?? [];
+  const orderedTasks = useMemo(() => orderTasksForCompletion(taskList), [taskList]);
 
   const sidebarSections: DetailSidebarSection[] = [
     {
@@ -144,9 +146,9 @@ function PlanDetailView({
                 <div className="grid gap-2">
                   {(() => {
                     const titlesById = new Map(
-                      taskList.map((t) => [t.id, t.title]),
+                      orderedTasks.map((t) => [t.id, t.title]),
                     );
-                    return taskList.map((task) => (
+                    return orderedTasks.map((task) => (
                       <TaskRow
                         key={task.id}
                         task={task}
@@ -187,6 +189,60 @@ function PlanDetailView({
       />
     </div>
   );
+}
+
+function orderTasksForCompletion(tasks: Task[]): Task[] {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const dependents = new Map<string, string[]>();
+  const indegree = new Map<string, number>();
+
+  for (const task of tasks) {
+    indegree.set(task.id, 0);
+    dependents.set(task.id, []);
+  }
+
+  for (const task of tasks) {
+    for (const depId of task.depends_on) {
+      if (!byId.has(depId)) continue;
+      dependents.get(depId)?.push(task.id);
+      indegree.set(task.id, (indegree.get(task.id) ?? 0) + 1);
+    }
+  }
+
+  const sortQueue = (ids: string[]) =>
+    ids.sort((a, b) => {
+      const taskA = byId.get(a)!;
+      const taskB = byId.get(b)!;
+      return taskA.created_at - taskB.created_at || taskA.title.localeCompare(taskB.title);
+    });
+
+  const queue = sortQueue(
+    tasks.filter((task) => (indegree.get(task.id) ?? 0) === 0).map((task) => task.id),
+  );
+  const ordered: Task[] = [];
+
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    const task = byId.get(id);
+    if (!task) continue;
+    ordered.push(task);
+    for (const dependentId of sortQueue([...(dependents.get(id) ?? [])])) {
+      const next = (indegree.get(dependentId) ?? 0) - 1;
+      indegree.set(dependentId, next);
+      if (next === 0) {
+        queue.push(dependentId);
+        sortQueue(queue);
+      }
+    }
+  }
+
+  if (ordered.length === tasks.length) return ordered;
+
+  const orderedIds = new Set(ordered.map((task) => task.id));
+  const remaining = tasks
+    .filter((task) => !orderedIds.has(task.id))
+    .sort((a, b) => a.created_at - b.created_at || a.title.localeCompare(b.title));
+  return [...ordered, ...remaining];
 }
 
 export const planDetailRoute = createRoute({

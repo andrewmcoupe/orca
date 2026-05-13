@@ -316,9 +316,22 @@ CREATE TABLE IF NOT EXISTS auditor_verdict_projection (
     confidence      REAL NOT NULL,
     summary         TEXT NOT NULL,
     concerns_json   TEXT NOT NULL,            -- JSON array of concern objects
+    criterion_mappings_json TEXT NOT NULL DEFAULT '[]',
+    unmapped_hunks_json TEXT NOT NULL DEFAULT '[]',
     created_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_auditor_verdict_task ON auditor_verdict_projection (task_id);
+
+CREATE TABLE IF NOT EXISTS proposal_reviews (
+    user_id              TEXT NOT NULL,
+    proposal_revision_id TEXT NOT NULL,
+    criterion_id         TEXT NOT NULL,
+    reviewed_at          INTEGER NOT NULL,
+    mode                 TEXT NOT NULL,
+    total_time_seconds   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, proposal_revision_id, criterion_id)
+);
+CREATE INDEX IF NOT EXISTS idx_proposal_reviews_revision ON proposal_reviews (proposal_revision_id);
 
 CREATE TABLE IF NOT EXISTS briefing_projection (
     id                      TEXT PRIMARY KEY,
@@ -414,6 +427,8 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
         "ALTER TABLE briefing_projection ADD COLUMN persona_config_json TEXT",
         "ALTER TABLE briefing_projection ADD COLUMN persona_artifacts_json TEXT NOT NULL DEFAULT '[]'",
         "ALTER TABLE briefing_projection ADD COLUMN active_persona_json TEXT",
+        "ALTER TABLE auditor_verdict_projection ADD COLUMN criterion_mappings_json TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE auditor_verdict_projection ADD COLUMN unmapped_hunks_json TEXT NOT NULL DEFAULT '[]'",
     ];
     for sql in migrations {
         match conn.execute(sql, []) {
@@ -780,6 +795,10 @@ struct AuditorVerdictRenderedPayload {
     confidence: f64,
     summary: String,
     concerns: serde_json::Value,
+    #[serde(default)]
+    criterion_mappings: serde_json::Value,
+    #[serde(default)]
+    unmapped_hunks: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1663,8 +1682,9 @@ pub fn apply_phase_run_event(
                 .unwrap_or_default();
             tx.execute(
                 "INSERT OR REPLACE INTO auditor_verdict_projection
-                    (phase_run_id, task_id, verdict, confidence, summary, concerns_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    (phase_run_id, task_id, verdict, confidence, summary, concerns_json,
+                     criterion_mappings_json, unmapped_hunks_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     p.phase_run_id,
                     task_id,
@@ -1672,6 +1692,8 @@ pub fn apply_phase_run_event(
                     p.confidence,
                     p.summary,
                     p.concerns.to_string(),
+                    p.criterion_mappings.to_string(),
+                    p.unmapped_hunks.to_string(),
                     event.created_at,
                 ],
             )?;
@@ -1918,6 +1940,8 @@ pub struct AuditorVerdictProjection {
     pub summary: String,
     /// JSON array of concerns; the frontend parses these.
     pub concerns: serde_json::Value,
+    pub criterion_mappings: serde_json::Value,
+    pub unmapped_hunks: serde_json::Value,
     pub created_at: i64,
 }
 
@@ -1925,6 +1949,12 @@ fn read_verdict(r: &rusqlite::Row) -> rusqlite::Result<AuditorVerdictProjection>
     let concerns_str: String = r.get(5)?;
     let concerns =
         serde_json::from_str(&concerns_str).unwrap_or(serde_json::Value::Array(Vec::new()));
+    let criterion_mappings_str: String = r.get(6)?;
+    let criterion_mappings = serde_json::from_str(&criterion_mappings_str)
+        .unwrap_or(serde_json::Value::Array(Vec::new()));
+    let unmapped_hunks_str: String = r.get(7)?;
+    let unmapped_hunks =
+        serde_json::from_str(&unmapped_hunks_str).unwrap_or(serde_json::Value::Array(Vec::new()));
     Ok(AuditorVerdictProjection {
         phase_run_id: r.get(0)?,
         task_id: r.get(1)?,
@@ -1932,7 +1962,9 @@ fn read_verdict(r: &rusqlite::Row) -> rusqlite::Result<AuditorVerdictProjection>
         confidence: r.get(3)?,
         summary: r.get(4)?,
         concerns,
-        created_at: r.get(6)?,
+        criterion_mappings,
+        unmapped_hunks,
+        created_at: r.get(8)?,
     })
 }
 
@@ -1942,7 +1974,8 @@ pub fn get_auditor_verdict(
     phase_run_id: &str,
 ) -> rusqlite::Result<Option<AuditorVerdictProjection>> {
     let mut stmt = conn.prepare(
-        "SELECT phase_run_id, task_id, verdict, confidence, summary, concerns_json, created_at
+        "SELECT phase_run_id, task_id, verdict, confidence, summary, concerns_json,
+                criterion_mappings_json, unmapped_hunks_json, created_at
          FROM auditor_verdict_projection WHERE phase_run_id = ?1",
     )?;
     let mut rows = stmt.query(params![phase_run_id])?;
@@ -1958,7 +1991,8 @@ pub fn list_auditor_verdicts_for_task(
     task_id: &str,
 ) -> rusqlite::Result<Vec<AuditorVerdictProjection>> {
     let mut stmt = conn.prepare(
-        "SELECT phase_run_id, task_id, verdict, confidence, summary, concerns_json, created_at
+        "SELECT phase_run_id, task_id, verdict, confidence, summary, concerns_json,
+                criterion_mappings_json, unmapped_hunks_json, created_at
          FROM auditor_verdict_projection WHERE task_id = ?1 ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map(params![task_id], read_verdict)?;

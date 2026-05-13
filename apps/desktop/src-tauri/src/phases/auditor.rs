@@ -67,6 +67,10 @@ struct AuditorVerdict {
     summary: String,
     #[serde(default)]
     concerns: Vec<Value>,
+    #[serde(default)]
+    criterion_mappings: Vec<Value>,
+    #[serde(default)]
+    unmapped_hunks: Vec<Value>,
 }
 
 pub async fn run(
@@ -316,6 +320,8 @@ pub async fn run(
         "confidence": verdict.confidence,
         "summary": verdict.summary,
         "concerns": verdict.concerns,
+        "criterion_mappings": verdict.criterion_mappings,
+        "unmapped_hunks": verdict.unmapped_hunks,
     })
     .to_string();
     append_phase_run_step(
@@ -551,8 +557,47 @@ fn auditor_verdict_schema() -> Value {
                         "rationale": { "type": "string" }
                     }
                 }
+            },
+            "criterion_mappings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "criterion_id": { "type": "string" },
+                        "hunks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "file": { "type": "string" },
+                                    "hunk_index": { "type": "integer", "minimum": 0 }
+                                },
+                                "required": ["file", "hunk_index"]
+                            }
+                        },
+                        "satisfied": { "type": "boolean" },
+                        "notes": { "type": "string" }
+                    },
+                    "required": ["criterion_id", "hunks", "satisfied", "notes"]
+                }
+            },
+            "unmapped_hunks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "file": { "type": "string" },
+                        "hunk_index": { "type": "integer", "minimum": 0 },
+                        "category": {
+                            "type": "string",
+                            "enum": ["dependency", "config", "refactor", "unknown"]
+                        }
+                    },
+                    "required": ["file", "hunk_index", "category"]
+                }
             }
-        }
+        },
+        "required": ["verdict", "confidence", "summary", "concerns", "criterion_mappings", "unmapped_hunks"]
     })
 }
 
@@ -697,6 +742,30 @@ mod tests {
         let v = parse_verdict(good_verdict_json()).unwrap();
         assert_eq!(v.verdict, "approve");
         assert!((v.confidence - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_preserves_criterion_mapping_payloads() {
+        let text = r#"{
+            "verdict": "approve",
+            "confidence": 0.9,
+            "summary": "Looks good.",
+            "concerns": [],
+            "criterion_mappings": [
+                {
+                    "criterion_id": "ac_1",
+                    "hunks": [{ "file": "src/main.ts", "hunk_index": 0 }],
+                    "satisfied": true,
+                    "notes": "Implemented."
+                }
+            ],
+            "unmapped_hunks": [
+                { "file": "package.json", "hunk_index": 0, "category": "dependency" }
+            ]
+        }"#;
+        let v = parse_verdict(text).unwrap();
+        assert_eq!(v.criterion_mappings.len(), 1);
+        assert_eq!(v.unmapped_hunks.len(), 1);
     }
 
     #[test]

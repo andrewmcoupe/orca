@@ -31,6 +31,16 @@ Return your verdict as a structured object with:
   - `anchor`: `{ path, line }` pointing into the diff, or `null`
   - `rationale`: one or two sentences
   - `reference_proposition_id`: `null` for now (reserved for PRD references)
+- `criterion_mappings`: a list mapping proposal hunks to acceptance criteria.
+  For each acceptance criterion use `criterion_id` values `ac_1`, `ac_2`, etc.
+  in the order the criteria appear below. Include:
+  - `hunks`: `{ file, hunk_index }` references, where `hunk_index` is zero-based
+    within that file's hunks in the diff.
+  - `satisfied`: whether the mapped work satisfies this criterion.
+  - `notes`: a short explanation of why the criterion is or is not satisfied.
+- `unmapped_hunks`: hunks that do not clearly implement any acceptance criterion.
+  For each, include `{ file, hunk_index, category }`, where category is one of
+  `dependency`, `config`, `refactor`, or `unknown`.
 
 Be specific. "This is fine" is not a useful concern; neither is "consider
 refactoring." Cite the diff.

@@ -31,7 +31,7 @@ function BriefingDetailPage() {
   };
 
   return (
-    <ContentColumn className="space-y-5 px-5 py-5">
+    <ContentColumn className="mx-auto space-y-5 px-5 py-5">
       <header className="flex items-start justify-between gap-3">
         <div className="space-y-2">
           <Button

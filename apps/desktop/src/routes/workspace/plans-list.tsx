@@ -20,7 +20,7 @@ import { ContentColumn } from "@/components/layout/content-column";
 const plansSearchSchema = z.object({
   status: z
     .enum(["active", "paused", "completed", "archived", "all"])
-    .default("active"),
+    .default("all"),
   q: z.string().default(""),
 });
 
@@ -75,7 +75,7 @@ function PlansListPage() {
   );
 
   return (
-    <ContentColumn className="space-y-4 px-5 py-4">
+    <ContentColumn className="mx-auto space-y-4 px-5 py-4">
       <div className="flex items-center justify-between">
         <h1 className="text-[18px] font-medium tracking-tight">Plans</h1>
         <span className="text-muted-foreground text-xs tabular-nums">

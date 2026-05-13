@@ -76,7 +76,7 @@ function BriefingNewPage() {
   // Still loading the briefing record itself.
   if (briefingQuery.isLoading || !briefing) {
     return (
-      <ContentColumn className="px-5 py-12">
+      <ContentColumn className="mx-auto px-5 py-12">
         <div className="border-border bg-muted/30 flex items-center gap-3 rounded-md border p-4">
           <span className="border-foreground/20 border-t-foreground inline-block h-3 w-3 animate-spin rounded-full border-2" />
           <p className="text-sm">Loading briefing…</p>
@@ -101,7 +101,7 @@ function BriefingNewPage() {
 
   if (briefing.status !== "active") {
     return (
-      <ContentColumn className="px-5 py-12">
+      <ContentColumn className="mx-auto px-5 py-12">
         <p className="text-sm">
           This briefing is {briefing.status}.{" "}
           <button
@@ -235,7 +235,7 @@ function BriefingPreDraftScreen({
     cancelBriefing.isPending;
 
   return (
-    <ContentColumn className="space-y-4 px-5 py-8">
+    <ContentColumn className="mx-auto space-y-4 px-5 py-8">
       <header className="space-y-1">
         <h1 className="text-xl font-medium tracking-tight">
           {briefing.is_generating ? "Generating draft" : "Resume briefing"}

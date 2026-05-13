@@ -40,11 +40,7 @@ import type { PhaseRun } from "@/features/phase-runs/types";
 import { TaskEventList } from "@/features/events/components/task-event-list";
 import { PhaseRunsTrail } from "@/features/phase-runs/components/phase-runs-trail";
 import { diffModalController } from "@/features/diff/modal-controller";
-import { ProposalSection } from "@/features/diff/proposal-section";
-import {
-  markProposalReviewed,
-  readLastReviewedAt,
-} from "@/features/diff/proposal-review-storage";
+import { ProposalReviewSurface } from "@/features/diff/proposal-review-surface";
 import { formatRelativeTime } from "@/lib/format";
 import type { Task } from "@/features/tasks/types";
 import { deriveTaskReviewState } from "@/features/tasks/task-domain";
@@ -112,19 +108,10 @@ function TaskDetailView({
   } = useTerminalStore();
   const terminalGroup = group(workspaceId, task.id);
 
-  const [proposalOpen, setProposalOpen] = useState(false);
-  const [proposalConcernIdx, setProposalConcernIdx] = useState<
-    number | undefined
-  >(undefined);
-  const [lastReviewedBeforeOpen, setLastReviewedBeforeOpen] = useState<
-    number | null
-  >(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
 
-  const openProposal = (concernIdx?: number) => {
-    setProposalConcernIdx(concernIdx);
-    setLastReviewedBeforeOpen(readLastReviewedAt("local", task.id));
-    markProposalReviewed("local", task.id);
-    setProposalOpen(true);
+  const openProposal = (_concernIdx?: number) => {
+    setReviewOpen(true);
   };
 
   // Bridge: anything calling `diffModalController.open` (e.g. verdict concern
@@ -185,6 +172,13 @@ function TaskDetailView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {reviewOpen && (
+        <ProposalReviewSurface
+          task={task}
+          workspaceId={workspaceId}
+          onExit={() => setReviewOpen(false)}
+        />
+      )}
       <HeaderSlot>
         <TaskActionToolbar
           task={task}
@@ -239,13 +233,6 @@ function TaskDetailView({
               </ContentColumn>
 
               <ContentColumn className="mx-auto">
-                <ProposalSection
-                  taskId={task.id}
-                  open={proposalOpen}
-                  onOpenChange={setProposalOpen}
-                  lastReviewedBeforeOpen={lastReviewedBeforeOpen}
-                  initialConcernIndex={proposalConcernIdx}
-                />
                 <OldParentProposalNote task={task} />
               </ContentColumn>
 

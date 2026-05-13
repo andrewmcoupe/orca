@@ -327,7 +327,7 @@ export function BriefingSetupScreen({
   return (
     <div className="flex h-full min-h-0">
       <div className="scrollbar-styled min-w-0 flex-1 overflow-auto">
-        <ContentColumn className="space-y-6 px-5 py-8">
+        <ContentColumn className="mx-auto space-y-6 px-5 py-8">
           <header className="space-y-1">
             <h1 className="text-xl font-medium tracking-tight">New briefing</h1>
             <p className="text-muted-foreground text-sm">

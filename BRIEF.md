@@ -1,221 +1,262 @@
-# Brief: Task-centric review UI with domain language
+# Brief: Acceptance-criterion-driven proposal review
 
 ## Context
 
-The app currently exposes Git through traditional primitives (commits, branches, diffs against HEAD, merge buttons). This made sense when humans were the agents doing the work. In our model, humans are reviewers and approvers — agents produce the work, and the human's intents are narrower and clearer than Git's vocabulary suggests. This brief covers two interlocking changes:
+The current proposal view sits inline on the task page, alongside the auditor verdict, spec, audit trail, and pipeline rail. Code review is the highest-cognitive-load activity in the app and it's being asked to coexist with everything else in a column that's too narrow for it. This brief replaces the inline proposal view with a dedicated full-window review surface, organised around acceptance criteria rather than files, with a novel rendering treatment that uses opacity to distinguish changes from context.
 
-1. **A task-centric review UI** that hides Git's primitives and reflects our domain model (tasks, plans, auditor verdicts, pipeline).
-2. **A new domain vocabulary** that replaces Git terms in user-facing surfaces, so the language matches what the user is actually doing.
+This isn't a polish pass on the existing diff view. It's a rethink of what proposal review *is* in an app where the body of work has structured acceptance criteria and an auditor that maps changes to those criteria.
 
-These two changes reinforce each other. New UI surfaces should ship with the new vocabulary from day one. Existing surfaces that aren't being rebuilt in v1 should still be retranslated as a copy pass.
+## Premise
 
----
+Reviewing an agent-produced proposal is fundamentally a verification activity, not a forensic one. The reviewer is not trying to detect a sneaky change — they're trying to answer "did this work do what we asked for, and is it good?" Files are an implementation accident; acceptance criteria are the actual unit of verification.
 
-## Part 1: Why a new vocabulary
+The review UI should be organised around what the reviewer is verifying, not around the file system the changes happen to live in.
 
-### The problem with Git's terms
+## Two interlocking ideas
 
-Git's vocabulary describes mechanisms, not intents. `Merge` describes how two histories combine, not the user's goal ("accept this work"). `Rebase` hides whether anything is destructive. `Pull` and `Fetch` overlap confusingly. `HEAD`, `index`, `stash`, `reflog` have no human-meaningful counterpart in our workflow. None of this language was designed for someone whose job is to review and approve work that an agent produced.
+This brief covers two changes that depend on each other:
 
-We can do better because our user's intents are narrower than Git's. There are six things a human does in our app:
+1. **AC-driven organisation**: changes are grouped by which acceptance criterion they implement, not by file.
+2. **Opacity rendering**: files are shown in full with unchanged code faded and changed code at full opacity, so reviewers read code-with-changes-highlighted rather than diffs-with-context-expanded.
 
-1. Ask an agent to attempt some work
-2. Look at what the agent produced
-3. Accept the work into the parent line of development
-4. Reject it or ask for changes
-5. Bring in changes from the parent that happened in parallel
-6. Recover from a stuck state
+Each of these would be valuable on its own. Together they reframe review from "read this diff" to "verify this criterion is satisfied by these lines."
 
-That's the whole verb surface. Every Git primitive in our app serves one of these. Naming them after the intent — rather than the mechanism — makes the app self-explanatory and lowers the cognitive load on people who don't think in Git.
+## Precondition: auditor structured output
 
-### The principles behind the new terms
+The auditor agent currently emits prose advisories. For this UI to work, the auditor must additionally emit a structured mapping of hunks to acceptance criteria. This is a precondition — the UI cannot be built without it, and the auditor pipeline must be extended first.
 
-- **Name the intent, not the mechanism.** Users say "I want to land this," not "I want to fast-forward merge this."
-- **Verb and state agree.** If the action is `Land`, the in-flight state is `Landing` and the result is `Landed`. No Git-style inconsistency.
-- **One word per concept.** No synonyms drifting in from Git ("merge", "integrate", "combine" all surfacing for the same action).
-- **Errors speak the new language.** The hardest place to keep vocabulary clean is error messages, which tend to leak underlying tooling terms. We hold the line there especially.
-- **The terminal is the language boundary.** Inside the terminal, Git's terms live. In our GUI, our terms live. We do not wrap `git` with custom shell aliases; we let the two languages coexist with a clear boundary.
+Required structured output, per proposal:
 
-### The vocabulary
+```
+{
+  "criterion_mappings": [
+    {
+      "criterion_id": "ac_1",
+      "hunks": [
+        { "file": "src/components/CountryCard.tsx", "hunk_index": 2 },
+        { "file": "src/hooks/useFavourites.ts", "hunk_index": 0 }
+      ],
+      "satisfied": true,
+      "notes": "Heart button correctly toggles state via useFavourites hook."
+    },
+    ...
+  ],
+  "unmapped_hunks": [
+    { "file": "package.json", "hunk_index": 0, "category": "dependency" },
+    ...
+  ]
+}
+```
 
-| New term | Replaces | Meaning |
-|---|---|---|
-| **Proposal** | (implicit "the task's changes") | The implementer agent's output: the body of work being reviewed |
-| **Land** | Merge | Accept a proposal into its parent (squash under the hood) |
-| **Catch up** | Rebase / merge-from-parent | Bring a task in line with parent changes that happened in parallel |
-| **Collision** | Conflict | Two changes overlap and need resolution |
-| **Changes** | Diff | The set of modifications a proposal contains |
-| **Revision** | Commit | A single snapshot within a task (rarely surfaced, escape hatch only) |
-| **Sync** | Pull / Fetch / Push | Bidirectional remote operations, if/when remotes are exposed |
+Notes:
 
-State words follow the verbs:
+- **Granularity**: hunk-level is the target. File-level is acceptable as a fallback when the auditor cannot reliably attribute at hunk granularity. The UI degrades gracefully (see "Degraded modes" below).
+- **M:N relationships**: a single hunk may map to multiple criteria. The schema supports this by allowing the same hunk to appear under multiple `criterion_mappings`.
+- **`satisfied` is the auditor's per-criterion verdict**: did the mapped hunks satisfactorily implement this criterion? This is distinct from the overall verdict.
+- **`unmapped_hunks`**: hunks the auditor could not attribute to any criterion. Categorised loosely (`dependency`, `config`, `refactor`, `unknown`). Non-empty `unmapped_hunks` is itself a signal worth surfacing.
 
-| State | Used when |
-|---|---|
-| `Drafting` | The implementer is producing the proposal |
-| `Under review` | Auditor or human is evaluating the proposal |
-| `Approved` | Auditor has approved (already in use) |
-| `Ready to land` | Approved and all pre-land checks pass |
-| `Landing` | Land action is in flight |
-| `Landed` | Successfully landed into parent |
-| `Needs catch-up` | Parent has moved; task needs to catch up before it can land |
-| `Catching up` | Catch-up is in flight |
-| `Has collisions` | Catch-up has produced collisions that need resolution |
-| `Rejected` | User chose not to land the proposal |
+The implementer should build the structured-output extension to the auditor pipeline as the first step of this work, then build the UI against it.
 
-Terms that **do not exist** in the UI under any circumstance: branch, HEAD, ref, index, stash, reflog, worktree, fast-forward, cherry-pick, checkout, pull, fetch, push, origin. If any of these appear in user-facing strings, that's a bug.
+## Activation
 
-### Translation guidance for copy passes
+`Review changes` on the task page becomes a full-window takeover, not an inline expansion. Clicking it replaces the task page with the review surface. An exit affordance (button + `Esc` key) returns to the task page.
 
-When retranslating existing UI strings:
+The full-window choice is deliberate: review is a *mode*, not a *section*. It deserves the whole window, and trying to fit it into the task page's column was the root cause of the current friction.
 
-- "Review diff" → "Review changes"
-- "Merge" (button) → "Land"
-- "Merge" (verb in audit log) → "Land"
-- "Merged" (state) → "Landed"
-- "Conflicts with parent" → "Has collisions with parent"
-- "Branch" (anywhere it appears) → remove entirely, or replace with "task" if it referred to the task's branch
-- "Commit" (in error messages) → "revision"
-- "Worktree" (anywhere it appears) → remove or replace with "task files"
+## Layout
 
-When writing new copy, the rule is: if a word from the "do not exist" list would be the natural choice, you're describing a mechanism. Find the intent instead.
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ [exit]  Verify no filename collision at repository root      [Land] […]│  ← top bar (~48px)
+├──────────────────┬─────────────────────────────────────────────────────┤
+│ CRITERIA         │  src/components/CountryCard.tsx       [claude] +12 -3│
+│ ✓ 1 Heart button │  ────────────────────────────────────────────────── │
+│   toggles state  │   45 │ import { useState } from 'react'              │
+│ ✓ 2 Persists     │   46 │ import { useFavourites } from '../hooks/...   │  ← faded
+│ ⚠ 3 Empty state  │   47 │                                                │
+│ ✓ 4 Route lists  │   48 │ export function CountryCard({ country }) {     │
+│ ◯ 5 Removable    │   49 │   const { isFavourite, toggle } = useFavou... │  ← full opacity (changed)
+│                  │   50 │   return (                                     │
+│ OTHER            │   ...│                                                │
+│ ⚠ 3 hunks        │                                                       │
+│                  │  src/hooks/useFavourites.ts          [claude] +28 -0 │
+│ ──────────────── │  ────────────────────────────────────────────────── │
+│ Spec        ▸    │   ... continues ...                                  │
+│ Verdict     ▸    │                                                       │
+└──────────────────┴─────────────────────────────────────────────────────┘
+```
 
----
+### Top bar
 
-## Part 2: v1 UI scope
+Persistent across the review surface. Contains:
 
-### Principle
+- Exit button (left)
+- Task title
+- Reviewed-progress indicator: `Reviewed 2 of 5 criteria`
+- Primary action (right): `Land` (if approved and Ready to land) or `Pass back with notes` or `Catch up` depending on state
+- Overflow menu for secondary actions
 
-Tasks are the unit. Plans are the structure. Revisions are an implementation detail the user should rarely see.
+### Left rail (~280px)
 
-### 1. Proposal view (replaces "Review diff" modal)
+**Criteria list** (top section):
 
-Open from the existing action — now labelled `Review changes`. Replace the current modal with an inline view in the task detail area (same surface as Auditor verdict, Spec, Audit trail — a collapsible section).
+Each criterion is a row showing:
 
-**Default: changes against merge base, grouped by file, hunk-oriented.**
+- An auditor verdict glyph: `✓` (satisfied), `⚠` (satisfied with notes), `⨯` (not satisfied), `◯` (no implementing hunks)
+- The criterion title (truncated if needed; full title on hover)
+- A small "reviewed" indicator that fills in when the user has viewed all the hunks within that criterion
 
-- Show the proposal's full set of changes against the merge base with the parent. Not revision-by-revision. One coherent view.
-- Group hunks by file. Collapsible per file. File header shows path, +/- line counts, and a status pill (added / modified / deleted / renamed).
-- Each hunk gets an **author badge** indicating who/what wrote it:
-  - `claude` — implementer agent
-  - `codex` — auditor agent (for auditor-requested fixes)
-  - `you` — human via terminal or external editor
-  - Resolve by walking revision authorship within the task's range. Map known agent identities via config. Unknown authors fall back to `human`.
-- Standard syntax highlighting, unified default with a side-by-side toggle.
+Selected criterion is visually distinguished (background tint or left border). Clicking a criterion loads its mapped hunks in the main pane.
 
-**"Since last review" mode:**
+**Other changes** (middle section):
 
-- Track per-user, per-task `last_reviewed_at`. Update when the user opens the proposal view.
-- Toggle at the top: `All changes` / `Since last review`. The latter filters to hunks changed after `last_reviewed_at`.
-- Persist in local DB keyed by (user, task_id).
+A bucket for unmapped hunks. Shows a count badge if non-empty (`Other ⚠ 3 hunks`). Clicking it shows unmapped hunks grouped by their auditor category (dependency, config, refactor, unknown). Empty section is hidden entirely.
 
-**Show revisions (escape hatch):**
+**Reference panels** (bottom section):
 
-- Muted `Show revisions` toggle. When on, renders a thin list above the changes (short SHA, author, subject, timestamp). Clicking scopes the view to that revision's changes. Default off.
+Collapsed by default, expandable:
 
-### 2. Plan detail page (keep current layout, sharpen the row signal)
+- `Spec` — the original task spec
+- `Verdict` — the auditor's prose verdict and advisories
 
-The existing vertical list of tasks on the plan detail page is the right shape for this view. Plans are operational surfaces — scanning, clicking through, creating new tasks — not visualisations to be understood. A DAG would force diagonal eye movement and hide task titles inside nodes. The list scales better, dependencies are already expressed inline as "Blocked by …" labels, and most plans aren't shaped graphy enough to justify a graph view. Keep the list.
+These are accessible during review without leaving the surface but don't eat space when not in use.
 
-The current list does need three improvements, however:
+**View mode toggle** (very top of the left rail):
 
-**1. State pills on every row.** Each task row currently shows only `created · 10 hours ago`, which makes it impossible to scan plan progress at a glance. Add a state pill on each row using the vocabulary defined above (`Drafting`, `Under review`, `Approved`, `Ready to land`, `Landing`, `Landed`, `Needs catch-up`, `Catching up`, `Has collisions`, `Rejected`). Colour-code matching the pipeline status colours already in use. Position: right-aligned on the row, before the timestamp.
+- `By criterion` (default)
+- `By file`
 
-**2. Consistent blocked-by formatting.** Currently rows mix "Blocked by 3 tasks" (count) and "Blocked by Add favourites storage module a…" (truncated name). Standardise:
+`By file` switches the main pane to a traditional file-organised view, still using the opacity rendering. This is the escape valve for reviewers who want to read the code without the AC framing — to look for subtle bugs, scope creep, or stylistic issues the criteria don't capture. First-class affordance, not buried.
 
-- 1 blocker: show the blocker's name (truncated if needed), clickable to jump to it
-- 2+ blockers: show "Blocked by N tasks", clickable to expand a small inline list of the blockers
-- 0 blockers: show nothing (no "Unblocked" label — absence is the signal)
+### Main pane
 
-**3. "Ready" affordance.** When a task is unblocked and not yet in progress, it should be visually distinguished from blocked tasks (slightly brighter row, or a small "ready" indicator). This lets the user identify what could be worked on next without reading every row.
+Files relevant to the selected criterion, stacked vertically. Each file has:
 
-No DAG. No graph view. The list is the view.
+**File header**:
 
-### 3. Land flow
+- Path (full, monospace, copyable)
+- Status pill (added / modified / deleted / renamed)
+- +/- line counts
+- Author badges for the hunks within this file *that relate to the selected criterion*
+- A "jump between changes" control: `↑ ↓` with a counter `3 of 12`
 
-The `Land` button is the only landing verb. No mode picker.
+**File body**:
 
-- **Default strategy: squash.** One task becomes one revision on the parent.
-- Commit message format:
-  - Subject: task title
-  - Body: auto-generated, includes auditor verdict summary, link to task, and `Co-authored-by:` trailers for every distinct author within the task range (so claude/codex/human attribution is preserved in the underlying log).
-- Strategy is configurable per-workspace in Settings (`squash` default, plus `merge-commit` and `fast-forward` as alternatives for power users). Not exposed per-land.
+The full file content rendered with opacity treatment:
 
-**Pre-land checks (Land button enabled only if all true):**
+- **Unchanged lines**: ~35% opacity. Readable on hover or focus, but visually recedes.
+- **Added lines**: full opacity. Subtle left-gutter colour (green tint) but not the dominant signal — opacity does the lifting.
+- **Modified lines**: full opacity. Small `M` marker in the gutter; hovering reveals the previous version inline below the current line.
+- **Removed lines**: shown inline as ghost lines (struck through, ~25% opacity) at their original position when the deletion is ≤5 lines. For larger deletions, a single collapsed indicator at the deletion site shows `−N lines removed` and expands inline on click.
 
-1. Auditor verdict is `approved`
-2. All pipeline gates passed
-3. No collisions with current parent (dry-run; cached, invalidated when parent moves)
-4. Task is not already landed
+**Default collapsing for long files**:
 
-If any check fails, the button is disabled with a tooltip explaining which. If (3) fails, surface `Has collisions with parent` as a first-class state on the task header (red badge). v1 stops at surfacing — collision resolution UI is deferred.
+If a file is >100 lines and changes are sparse, unchanged regions between changes collapse to a `+125 lines` interstitial that expands on click. The reviewer sees changed regions with ~5 lines of context above and below by default. Each file has a `Show full file` toggle in its header to override this and render everything at once (still with opacity treatment).
 
-**On click:**
+**Hunks mapped to multiple criteria**:
 
-- Confirm dialog: target, strategy, message preview, file count, +/- lines.
-- On confirm: perform the underlying merge in the parent repo, show progress, mark the task `Landed`, close any open terminals for the task files (with confirmation if processes are running), remove the task files from disk.
-- Emit a `TaskLanded` audit event with the resulting revision SHA.
+When the current criterion includes a hunk that also belongs to other criteria, the hunk shows a small badge in its margin: `Also: Empty state when no favourites`. Clicking the badge jumps to that criterion's view, with the same hunk highlighted.
 
-### 4. Workspace history view
+## Behaviour
 
-Accessible from the workspace root (clicking `country-playground-app` shows a workspace overview, not just expanding the tree).
+### Reviewed tracking
 
-- Render the parent's history as a **landed-task log**, not a revision log.
-- Each row = one squashed landing = one task. Show: task title, author(s), landed-at timestamp, link to the task detail (which remains accessible read-only post-landing).
-- Non-task revisions (direct pushes, manual commits) render as muted "direct revision" rows — present but de-emphasised.
-- Filter/search by task title, author, date range.
+A criterion is marked "reviewed" automatically when the user has scrolled through (or rapidly visited) all hunks within it. Stored per-user, per-proposal-revision. Resets when the proposal is updated (new revisions, catch-up, resolution).
 
-### 5. Action bar consistency (cleanup)
+Reviewers can also explicitly toggle reviewed state via keyboard (`r`) or a small affordance on the criterion row. This handles the case where the reviewer has read the changes but doesn't want them auto-marked as scrolling triggers.
 
-The plan detail page currently uses labelled action buttons (`Edit`, `Pause`, `Cancel`, `Archive`), while the task detail page is moving to icon-only buttons with tooltips. This asymmetry is fine if intentional, but should be deliberate. Recommended approach:
+### Audit trail integration
 
-- **Plan-level actions stay labelled.** Plans are accessed less frequently than tasks, and the actions are more consequential (`Cancel`, `Archive`). Labels reduce mis-click risk.
-- **Task-level actions stay icon-only**, except for the primary action (`Land`), which retains its label. This preserves visual hierarchy — `Land` is the most consequential verb in the app and should be the most legible.
+When the user lands the proposal, the audit event records review completion: which criteria were marked reviewed, which were not, total time in review surface, mode used (`by criterion` vs `by file`). This is internal data for now, not surfaced — but it builds the foundation for future signals like "this proposal was landed without reviewing 2 criteria" or "average review time for X-type tasks."
 
-Document this pattern in the design system so future surfaces follow it: high-frequency surfaces favour icons; consequential or rarely-visited surfaces favour labels; primary actions always keep labels regardless of surface frequency.
+### Keyboard navigation
 
----
+This is a reading-dense surface and must feel keyboard-native:
+
+- `1`–`9`: jump to criterion N in the left rail
+- `0`: jump to Other changes
+- `j` / `k`: next / previous change within current criterion
+- `f`: focus next file within current criterion
+- `Shift-f`: focus previous file
+- `r`: toggle reviewed on current criterion
+- `v`: toggle view mode (by criterion / by file)
+- `s`: expand/collapse Spec panel
+- `Esc`: exit review surface, return to task page
+- `Enter` when `Land` is the primary action: trigger the land confirmation dialog
+
+Shortcuts are documented in a `?` overlay accessible from the top bar.
+
+## Degraded modes
+
+The UI must work when auditor structured output is incomplete or absent:
+
+**File-level mapping only** (auditor attributed criteria to files, not hunks):
+
+- Criterion view shows the full files mapped to it, with all changes highlighted regardless of which criterion they nominally serve.
+- A small notice in the left rail: "Showing file-level mapping. Hunk-level mapping unavailable for this proposal."
+
+**No mapping at all** (auditor failed to produce structured output):
+
+- The left rail collapses; the surface falls back to `By file` mode only.
+- A notice: "Acceptance-criterion view unavailable. The auditor did not produce a mapping for this proposal."
+- The opacity rendering still applies. The full-window takeover still applies. Only the AC-driven organisation is lost.
+
+These degraded modes are important: structured output from the auditor is a precondition for the *best* experience, not for *any* experience. Tasks reviewed before the auditor was upgraded, or tasks where the auditor errors out, should still be reviewable.
+
+## Multi-proposal handling
+
+When a task has multiple proposals (e.g., an implementation proposal and a resolution proposal), the review surface shows the **active proposal** (the one that would land). A small affordance in the top bar lists previous proposals and lets the reviewer switch — useful for comparing what the agent did originally vs. after a pass-back or catch-up.
+
+Reviewed state is per-proposal-revision. Switching to a previous proposal shows its own reviewed state at the time it was the active one.
 
 ## Data model additions
 
-- `tasks.last_reviewed_at` — map of user_id → timestamp (or separate `task_reviews` table)
-- `tasks.merge_base_sha` — cached merge base; invalidated when parent moves
-- `tasks.collision_state` — `clean | colliding | unknown`, recomputed on parent change
-- `workspace_settings.land_strategy` — enum, default `squash`
-- Agent identity registry (config): map of author email/name → agent label
+- `auditor_verdicts.criterion_mappings` — JSON column holding the structured mapping described in the precondition section
+- `auditor_verdicts.unmapped_hunks` — JSON column for the unmapped hunks bucket
+- `proposal_reviews` — new table: `(user_id, proposal_revision_id, criterion_id, reviewed_at, mode)` to track per-criterion reviewed state
+- `proposal_reviews.total_time_seconds` — aggregate review time per proposal-revision, for the audit trail
 
----
+## Non-goals for this iteration
 
-## Non-goals for v1
+- **Per-criterion comment threads.** The natural next step (and a really compelling one) but out of scope for this brief. Mentioned in "Future directions" below.
+- **Inline editing of files during review.** Read-only surface.
+- **Cross-proposal diffing** (compare proposal A to proposal B side-by-side). Multi-proposal switching is supported; cross-proposal diff is a separate feature.
+- **Customising the opacity threshold.** Default values for unchanged-line opacity, deletion-collapse threshold, context-line count, etc. are fixed for v1. Make them tweakable in settings later if there's demand.
+- **AC-driven view for non-agent-produced changes.** Direct revisions to the parent branch (made via terminal) are not covered by this UI. They appear in the workspace history view only.
 
-Intentionally deferred:
+## Open questions for the implementer
 
-- **Collision resolution UI** (three-way changes view, agent-assisted resolution). v1 surfaces the colliding state only; resolution happens in the terminal.
-- **Task blame** (per-line "which task introduced this"). Better built once the landed-task log is solid.
-- **Cherry-pick / rebase / stash UI.** Stays in the terminal indefinitely — these are sharp tools that don't fit the domain language and don't need to.
-- **Cross-task change comparison.**
-- **Remote operations UI.** Stays in the terminal for v1; revisit when real users hit it.
-- **DAG / graph visualisation of plans.** Considered and rejected: plans are operational surfaces, the list scales better, and the dependency information is already expressed inline. Revisit only if real users complain about not being able to see plan shape at a glance.
-
----
-
-## Open questions for the implementer to flag
-
-1. Large proposals (>5000 lines of changes) — virtual scrolling and per-file "load more"? Confirm approach before building.
-2. Hunks touched by multiple authors — show most recent only, or all? Recommendation: most recent on the badge, tooltip lists all contributors.
-3. Squash author when multiple contributors: use the landing user as author, all contributors as `Co-authored-by:`. Confirm.
-4. Copy pass scope: should retranslation of existing surfaces (audit log entries, error messages, settings labels) ship with v1 or as a follow-up sweep? Recommendation: ship the new surfaces with new vocabulary; sweep the rest in a dedicated copy PR within the same release.
-5. "Ready" affordance styling on the plan detail page — confirm visual treatment with design before implementing. A subtle row background tint is the safest default; a "ready" pill may compete with the state pill.
-
----
+1. **Auditor pipeline timing.** The structured mapping should be produced during the standard auditor pass, not as a separate stage. Confirm this fits the current pipeline architecture and doesn't significantly extend auditor latency.
+2. **Rendering performance for large files.** The opacity treatment requires rendering full file content (not just changed hunks). For very large files (>2000 lines), this may be slow. Recommendation: virtual scrolling within each file pane, lazy-loading content beyond the viewport. Confirm approach.
+3. **Auto-marking-as-reviewed thresholds.** What counts as "the user viewed this hunk"? Time-based (visible for >2s)? Scroll-based (entered viewport)? Click-based (focused)? Recommendation: scroll-based with a brief debounce (1s in viewport marks it reviewed). Worth pilot-testing.
+4. **Auditor failure modes.** What does the auditor output look like when it cannot confidently map a hunk? Recommendation: a `confidence` score per mapping; mappings below threshold get demoted to "unmapped" rather than being shown with false certainty.
+5. **Opacity values.** Specific values (35% for unchanged, 25% for removed-ghost) are starting points, not gospel. Worth design review with real proposals at various sizes before locking in.
 
 ## Acceptance criteria
 
-- `Review changes` opens an inline proposal view, grouped by file, with author badges on hunks.
-- `Since last review` filters correctly; opening the view updates the timestamp.
-- Plan detail page retains its list layout, with state pills on every task row, consistent blocked-by formatting, and a visual cue for unblocked-but-not-started tasks.
-- `Land` button reflects pre-land state correctly; clicking performs a squash with the specified message format and cleans up the task files.
-- Workspace history view lists landings as tasks, links back to task detail.
-- New vocabulary is used consistently in all new surfaces and in retranslated existing surfaces. No `merge`, `branch`, `worktree`, `diff`, `conflict`, `HEAD`, etc. appear in user-facing strings.
-- Error messages use the domain vocabulary.
-- All existing functionality (terminals, pipeline, audit trail, auditor verdict) continues to work.
+- Auditor pipeline produces `criterion_mappings` and `unmapped_hunks` as structured output alongside the prose verdict, persisted with the verdict record.
+- Clicking `Review changes` on a task opens a full-window review surface, replacing the task page.
+- The review surface defaults to `By criterion` mode, with the criteria list in the left rail and the first criterion's mapped files in the main pane.
+- Files render in full with unchanged lines faded (~35% opacity) and changed lines at full opacity. Deletions render as ghost lines (≤5) or collapsed indicators (>5).
+- Long files default to collapsed-context view with `Show full file` toggle.
+- Switching criteria in the left rail updates the main pane to show that criterion's mapped files and hunks.
+- Hunks mapped to multiple criteria show cross-reference badges.
+- Unmapped hunks appear in the "Other" section with category labels.
+- View mode toggle switches between `By criterion` and `By file`, preserving the opacity rendering in both.
+- Keyboard shortcuts work as specified; `?` overlay documents them.
+- Reviewed state is tracked per criterion and surfaced in the top bar progress indicator.
+- Degraded modes work: file-level mapping renders sensibly; no mapping falls back to `By file` only with a clear notice.
+- Multi-proposal tasks expose proposal switching in the top bar; reviewed state is per-proposal-revision.
+- Exiting (`Esc` or exit button) returns to the task page with no loss of context.
+- All copy follows the domain vocabulary defined in the Git-as-implementation-detail doc. No `diff`, `merge`, `branch`, `conflict`, etc. appear in the UI.
+
+## Future directions
+
+Once this lands, the AC structure becomes the spine of richer review features:
+
+- **Per-criterion comment threads.** Reviewer feedback gets structured the same way the work was structured. When passing back with notes, the notes attach to specific criteria, which makes the implementer's re-attempt much sharper.
+- **Conversational review.** "Ask the implementer about this hunk" — a short scoped dialogue with the agent that produced the change, with the resulting context fed into a re-attempt if the reviewer chooses to pass back.
+- **Cross-proposal diffing.** Compare two proposals for the same task side-by-side. Useful when the reviewer wants to understand "what did claude do differently this time" after a pass-back.
+- **AC coverage analytics.** Over time, which criteria most often need pass-backs? Which auditor mappings most often disagree with human review? These signals tune both the briefing phase and the auditor.
+
+None of these are in scope for this brief, but the data model and UI shape laid down here are the foundation they'll build on.

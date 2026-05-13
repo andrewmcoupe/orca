@@ -85,7 +85,27 @@ export type AuditorVerdictSummary = {
   verdict: string;
   confidence: number;
   summary: string;
+  criterion_mappings?: AuditorCriterionMapping[];
+  unmapped_hunks?: AuditorUnmappedHunk[];
   created_at: number;
+};
+
+export type AuditorMappedHunk = {
+  file: string;
+  hunk_index: number;
+};
+
+export type AuditorCriterionMapping = {
+  criterion_id: string;
+  hunks: AuditorMappedHunk[];
+  satisfied: boolean;
+  notes: string;
+};
+
+export type AuditorUnmappedHunk = {
+  file: string;
+  hunk_index: number;
+  category: "dependency" | "config" | "refactor" | "unknown" | string;
 };
 
 export type TaskDiffWithMappings = {

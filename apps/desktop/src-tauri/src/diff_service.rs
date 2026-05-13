@@ -73,6 +73,8 @@ pub struct AuditorVerdictSummary {
     pub verdict: String,
     pub confidence: f64,
     pub summary: String,
+    pub criterion_mappings: serde_json::Value,
+    pub unmapped_hunks: serde_json::Value,
     pub created_at: i64,
 }
 
@@ -123,6 +125,10 @@ fn parse_concerns(raw: &serde_json::Value) -> Vec<AuditorConcern> {
         .unwrap_or_default()
 }
 
+fn usable_worktree_path(path: &Path) -> bool {
+    path.exists() && git2::Repository::open(path).is_ok()
+}
+
 fn task_is_live(conn: &rusqlite::Connection, task_id: &str) -> bool {
     projections::list_phase_runs_for_task(conn, task_id)
         .map(|runs| runs.iter().any(|r| r.status == "running"))
@@ -150,7 +156,7 @@ fn produce(
         .worktree_path
         .as_deref()
         .map(PathBuf::from)
-        .filter(|p| p.exists());
+        .filter(|p| usable_worktree_path(p));
 
     let inputs = build_inputs(workspace_path, task_id, &task, &worktree_path_buf);
     let diff: TaskDiff = diff::compute_task_diff(inputs).map_err(|e| e.to_string())?;
@@ -205,6 +211,8 @@ fn produce(
                     verdict: v.verdict,
                     confidence: v.confidence,
                     summary: v.summary,
+                    criterion_mappings: v.criterion_mappings,
+                    unmapped_hunks: v.unmapped_hunks,
                     created_at: v.created_at,
                 }),
             )
@@ -287,7 +295,7 @@ pub fn get_unchanged_file_content(
         .worktree_path
         .as_deref()
         .map(PathBuf::from)
-        .filter(|p| p.exists());
+        .filter(|p| usable_worktree_path(p));
 
     let inputs = build_inputs(&workspace_path, &task_id, &task, &worktree_path_buf);
     let diff = diff::compute_task_diff(inputs).map_err(|e| e.to_string())?;
