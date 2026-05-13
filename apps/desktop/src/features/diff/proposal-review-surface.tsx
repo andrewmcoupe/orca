@@ -314,6 +314,12 @@ export function ProposalReviewSurface({ task, workspaceId, onExit }: Props) {
             )}
             {diff && selectedFiles.length > 0 && (
               <>
+                {!verdict && (
+                  <div className="border-border bg-muted/20 rounded-sm border px-3 py-2 text-xs text-muted-foreground">
+                    Criterion review will appear after the auditor finishes.
+                    For now, you can inspect the proposal by file.
+                  </div>
+                )}
                 <ReviewHeading
                   mode={effectiveMode}
                   selectedItem={selection === "other" ? null : selectedItem}
