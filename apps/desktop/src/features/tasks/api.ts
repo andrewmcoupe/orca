@@ -27,6 +27,39 @@ export type CreateTaskInput = {
   dependsOn?: string[];
 };
 
+export type CollisionAttribution = {
+  title: string;
+  commit_sha: string;
+  landed_at: number | null;
+};
+
+export type CollisionSide = {
+  label: string;
+  revision: string | null;
+  content: string;
+  missing: boolean;
+  truncated: boolean;
+  line_start: number | null;
+  line_end: number | null;
+  attribution: CollisionAttribution | null;
+};
+
+export type CollisionHunkView = {
+  index: number;
+  current_parent: CollisionSide;
+  this_proposal: CollisionSide;
+  common_ancestor: CollisionSide;
+};
+
+export type CollisionFileView = {
+  path: string;
+  collision_count: number;
+  collisions: CollisionHunkView[];
+  current_parent: CollisionSide;
+  this_proposal: CollisionSide;
+  common_ancestor: CollisionSide;
+};
+
 export const tasksApi = {
   listByPlan: (planId: string) =>
     invoke<Task[]>("list_tasks", { planId }),
@@ -92,4 +125,6 @@ export const tasksApi = {
     invoke<Task>("cancel_task_catch_up", { taskId }),
   requestResolution: (taskId: string) =>
     invoke<void>("request_collision_resolution", { taskId }),
+  getCollisions: (taskId: string) =>
+    invoke<CollisionFileView[]>("get_task_collisions", { taskId }),
 };

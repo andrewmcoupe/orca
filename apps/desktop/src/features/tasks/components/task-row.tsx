@@ -2,7 +2,12 @@ import { Link } from "@tanstack/react-router";
 import { CircleNotch, Eye, LinkSimple, Queue } from "@phosphor-icons/react";
 import { TaskReviewStateBadge } from "@/features/tasks/presentation";
 import { usePhaseRuns } from "@/features/phase-runs/hooks";
-import { ProviderLogo } from "@/features/providers/components/provider-logo";
+import {
+  ProviderLogo,
+  ProviderModelLabel,
+} from "@/features/providers/components/provider-logo";
+import { useWorkspaceSettings } from "@/features/workspaces/hooks";
+import { resolvePhaseSettings } from "@/features/workspaces/types";
 import { formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { deriveTaskReviewState } from "@/features/tasks/task-domain";
@@ -40,6 +45,7 @@ export function TaskRow({
   dependencies?: Array<{ id: string; title: string }>;
 }) {
   const [blockersOpen, setBlockersOpen] = useState(false);
+  const workspaceSettingsQ = useWorkspaceSettings(workspaceId);
   const initRunning = task.worktree_init_status === "running";
   // Task projections never carry a literal "running" status — the running-ness
   // is held by the latest phase run. Fetch when there's any phase run on a
@@ -78,6 +84,15 @@ export function TaskRow({
     activeRun,
     latestRun: lastRun,
   });
+  const nextPhase = task.current_phase_config.phases[0];
+  const planned =
+    !activeRun && !initRunning && !isTerminal && nextPhase && workspaceSettingsQ.data
+      ? resolvePhaseSettings(
+          workspaceSettingsQ.data,
+          task.current_phase_config,
+          nextPhase,
+        )
+      : null;
   const isReady =
     !task.is_blocked &&
     !task.is_queued &&
@@ -163,6 +178,18 @@ export function TaskRow({
                     />
                     {activeRun.provider}
                   </span>
+                </span>
+              )}
+
+              {planned?.model && (
+                <span className="text-muted-foreground inline-flex min-w-0 items-center gap-1 font-mono text-[10px]">
+                  <span className="shrink-0">next {nextPhase}</span>
+                  <span className="text-muted-foreground/70">·</span>
+                  <ProviderModelLabel
+                    provider={planned.model.provider}
+                    model={planned.model.model}
+                    logoClassName="size-2.5"
+                  />
                 </span>
               )}
             </div>

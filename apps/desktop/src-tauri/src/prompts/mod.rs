@@ -1,8 +1,8 @@
 //! Prompt resolution, templating, and content hashing.
 //!
 //! Resolution order: a workspace-level customised file at
-//! `<workspace>/.orca/prompts/{phase}.md` wins; otherwise the bundled default for
-//! that phase is returned. Rendering is Handlebars; the resulting hash is recorded on
+//! `~/.orca/workspaces/<workspace-key>/prompts/{phase}.md` wins; otherwise the bundled
+//! default for that phase is returned. Rendering is Handlebars; the resulting hash is recorded on
 //! `PhaseRunStarted` as `prompt_template_hash` so a phase run is reproducible from its
 //! event log.
 
@@ -88,8 +88,7 @@ pub fn relevant_files_from_value(v: &serde_json::Value) -> Vec<RelevantFileForPr
 
 /// The path a customised prompt file would live at, regardless of whether it exists.
 pub fn prompt_file_path(workspace_path: &Path, phase: PhaseType) -> PathBuf {
-    workspace_path
-        .join(crate::workspace_db::WORKSPACE_DIR)
+    crate::workspace_db::workspace_dir(&workspace_path.to_string_lossy())
         .join("prompts")
         .join(format!("{}.md", phase.as_str()))
 }
@@ -164,12 +163,9 @@ pub fn reset(workspace_path: &Path, phase: PhaseType) -> Result<(), PromptError>
     }
 }
 
-/// Ensure `<workspace>/.orca/prompts/` exists. Called from workspace activation so the
-/// directory is always present once a workspace has been opened.
+/// Ensure the workspace's prompt override directory exists in Orca's home storage.
 pub fn ensure_prompts_dir(workspace_path: &Path) -> std::io::Result<()> {
-    let dir = workspace_path
-        .join(crate::workspace_db::WORKSPACE_DIR)
-        .join("prompts");
+    let dir = crate::workspace_db::workspace_dir(&workspace_path.to_string_lossy()).join("prompts");
     std::fs::create_dir_all(dir)
 }
 

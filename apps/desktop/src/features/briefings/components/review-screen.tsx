@@ -136,13 +136,13 @@ export function BriefingReviewScreen({
       : null;
   const requiredUnresolved = useMemo(
     () =>
-      (merged.ambiguity_ledger ?? []).filter(
+      (draft.ambiguity_ledger ?? []).filter(
         (item) =>
           item.user_input_required &&
           item.status !== "assumed" &&
           item.status !== "user_resolved",
       ),
-    [merged.ambiguity_ledger],
+    [draft.ambiguity_ledger],
   );
 
   const validationMap = useMemo(() => {

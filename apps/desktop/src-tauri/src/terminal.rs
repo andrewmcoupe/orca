@@ -91,7 +91,7 @@ impl TerminalManager {
             .ok_or_else(|| "task has no worktree".to_string())
             .map(PathBuf::from)?;
 
-        validate_worktree_path(Path::new(&aw.path), &cwd, task_id)?;
+        validate_worktree_path(&cwd)?;
 
         let shell = default_shell();
         let initial_label = process_label(&shell);
@@ -475,15 +475,11 @@ fn configure_prompt(cmd: &mut CommandBuilder) {
 #[cfg(not(unix))]
 fn configure_prompt(_cmd: &mut CommandBuilder) {}
 
-fn validate_worktree_path(workspace_path: &Path, cwd: &Path, task_id: &str) -> Result<(), String> {
-    let expected = crate::worktree::worktree_path_for(workspace_path, task_id);
-    let expected = expected
-        .canonicalize()
-        .map_err(|e| format!("expected worktree path is unavailable: {e}"))?;
+fn validate_worktree_path(cwd: &Path) -> Result<(), String> {
     let actual = cwd
         .canonicalize()
         .map_err(|e| format!("worktree path is unavailable: {e}"))?;
-    if actual == expected {
+    if actual.join(".git").exists() {
         Ok(())
     } else {
         Err("task worktree path failed validation".into())

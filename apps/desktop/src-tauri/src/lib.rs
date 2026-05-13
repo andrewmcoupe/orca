@@ -184,6 +184,7 @@ pub fn run() {
             commands::catch_up_task,
             commands::cancel_task_catch_up,
             commands::request_collision_resolution,
+            commands::get_task_collisions,
             commands::cancel_task,
             commands::delete_task,
             commands::pass_back_to_implementer,

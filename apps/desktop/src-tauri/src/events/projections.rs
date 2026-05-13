@@ -1513,9 +1513,29 @@ pub fn apply_phase_run_event(
                 "UPDATE task_projection
                  SET latest_phase_run_id = ?1,
                      is_queued = 0,
+                     status = CASE
+                         WHEN status IN ('merged', 'cancelled', 'archived') THEN status
+                         ELSE 'running'
+                     END,
+                     catch_up_state = CASE
+                         WHEN status IN ('merged', 'cancelled', 'archived') THEN catch_up_state
+                         ELSE 'none'
+                     END,
+                     catch_up_conflicts_json = CASE
+                         WHEN status IN ('merged', 'cancelled', 'archived') THEN catch_up_conflicts_json
+                         ELSE '[]'
+                     END,
+                     approved_by = CASE
+                         WHEN status = 'approved' THEN NULL
+                         ELSE approved_by
+                     END,
                      updated_at = ?2
                  WHERE id = ?3",
                 params![event.aggregate_id, event.created_at, p.task_id],
+            )?;
+            tx.execute(
+                "DELETE FROM task_merge_attempt_projection WHERE task_id = ?1",
+                params![p.task_id],
             )?;
             // Cross-aggregate: bump the plan's running counter.
             tx.execute(
@@ -1618,6 +1638,18 @@ pub fn apply_phase_run_event(
                  )",
                 params![event.created_at, event.aggregate_id],
             )?;
+            tx.execute(
+                "UPDATE task_projection
+                 SET status = CASE
+                     WHEN status IN ('merged', 'cancelled', 'archived') THEN status
+                     ELSE 'failed'
+                 END,
+                 updated_at = ?1
+                 WHERE id = (
+                     SELECT task_id FROM phase_run_projection WHERE id = ?2
+                 )",
+                params![event.created_at, event.aggregate_id],
+            )?;
         }
         "AuditorVerdictRendered" => {
             let p: AuditorVerdictRenderedPayload = serde_json::from_str(&event.payload)?;
@@ -1642,6 +1674,37 @@ pub fn apply_phase_run_event(
                     p.concerns.to_string(),
                     event.created_at,
                 ],
+            )?;
+            tx.execute(
+                "UPDATE task_projection
+                 SET status = CASE
+                     WHEN status IN ('merged', 'cancelled', 'archived') THEN status
+                     ELSE 'awaiting_review'
+                 END,
+                 task_base_commit = CASE
+                     WHEN status IN ('merged', 'cancelled', 'archived') THEN task_base_commit
+                     WHEN ?3 = 'approve' THEN COALESCE(catch_up_target_sha, task_base_commit)
+                     ELSE task_base_commit
+                 END,
+                 catch_up_state = CASE
+                     WHEN status IN ('merged', 'cancelled', 'archived') THEN catch_up_state
+                     ELSE 'none'
+                 END,
+                 catch_up_target_sha = CASE
+                     WHEN status IN ('merged', 'cancelled', 'archived') THEN catch_up_target_sha
+                     ELSE NULL
+                 END,
+                 catch_up_conflicts_json = CASE
+                     WHEN status IN ('merged', 'cancelled', 'archived') THEN catch_up_conflicts_json
+                     ELSE '[]'
+                 END,
+                 updated_at = ?1
+                 WHERE id = ?2",
+                params![event.created_at, task_id, p.verdict],
+            )?;
+            tx.execute(
+                "DELETE FROM task_merge_attempt_projection WHERE task_id = ?1",
+                params![task_id],
             )?;
         }
         "GateRan" => {
@@ -2432,6 +2495,25 @@ mod tests {
         }
     }
 
+    fn phase_event(
+        seq: i64,
+        phase_run_id: &str,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) -> AppendedEvent {
+        AppendedEvent {
+            id: format!("phase_ev_{seq}"),
+            aggregate_type: "phase_run".into(),
+            aggregate_id: phase_run_id.into(),
+            seq,
+            event_type: event_type.into(),
+            version: 1,
+            payload: payload.to_string(),
+            metadata: "{}".into(),
+            created_at: 100 * seq,
+        }
+    }
+
     #[test]
     fn task_merge_attempted_inserts_attempt_row() {
         let mut conn = db();
@@ -2459,6 +2541,123 @@ mod tests {
         // Task itself stays approved — TaskMergeAttempted is not a state transition.
         let task = get_task(&conn, "task1").unwrap().unwrap();
         assert_eq!(task.status, "approved");
+    }
+
+    #[test]
+    fn phase_run_started_clears_stale_collision_state() {
+        let mut conn = db();
+        conn.execute(
+            "UPDATE task_projection
+             SET catch_up_state = 'colliding',
+                 catch_up_target_sha = 'abc123',
+                 catch_up_conflicts_json = '[\"src/main.rs\"]',
+                 task_base_commit = 'oldbase'
+             WHERE id = 'task1'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO task_merge_attempt_projection
+                (task_id, attempted_at, target_branch, source_branch, target_head_sha, conflicts_json)
+             VALUES ('task1', 50, 'main', 'orca/task1', 'abc123', '[\"src/main.rs\"]')",
+            [],
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let ev = phase_event(
+            1,
+            "phase1",
+            "PhaseRunStarted",
+            json!({
+                "task_id": "task1",
+                "phase": "implementer",
+                "provider": "codex",
+                "model": "test-model",
+                "permission_mode": "acceptEdits",
+            }),
+        );
+        apply_phase_run_event(&tx, &ev).unwrap();
+        tx.commit().unwrap();
+
+        let task = get_task(&conn, "task1").unwrap().unwrap();
+        assert_eq!(task.status, "running");
+        assert_eq!(task.catch_up_state, "none");
+        assert_eq!(task.catch_up_target_sha.as_deref(), Some("abc123"));
+        assert!(task.catch_up_conflicts.is_empty());
+        assert!(latest_merge_attempt_for_task(&conn, "task1")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn auditor_verdict_rendered_clears_stale_collision_state() {
+        let mut conn = db();
+        conn.execute(
+            "UPDATE task_projection
+             SET catch_up_state = 'colliding',
+                 catch_up_target_sha = 'abc123',
+                 catch_up_conflicts_json = '[\"src/main.rs\"]',
+                 task_base_commit = 'oldbase'
+             WHERE id = 'task1'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO task_merge_attempt_projection
+                (task_id, attempted_at, target_branch, source_branch, target_head_sha, conflicts_json)
+             VALUES ('task1', 50, 'main', 'orca/task1', 'abc123', '[\"src/main.rs\"]')",
+            [],
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let started = phase_event(
+            1,
+            "phase1",
+            "PhaseRunStarted",
+            json!({
+                "task_id": "task1",
+                "phase": "auditor",
+                "provider": "codex",
+                "model": "test-model",
+                "permission_mode": "plan",
+            }),
+        );
+        apply_phase_run_event(&tx, &started).unwrap();
+        tx.execute(
+            "UPDATE task_projection
+             SET catch_up_state = 'colliding',
+                 catch_up_target_sha = 'abc123',
+                 catch_up_conflicts_json = '[\"src/main.rs\"]'
+             WHERE id = 'task1'",
+            [],
+        )
+        .unwrap();
+        let verdict = phase_event(
+            2,
+            "phase1",
+            "AuditorVerdictRendered",
+            json!({
+                "phase_run_id": "phase1",
+                "verdict": "approve",
+                "confidence": 0.9,
+                "summary": "Looks good.",
+                "concerns": [],
+            }),
+        );
+        apply_phase_run_event(&tx, &verdict).unwrap();
+        tx.commit().unwrap();
+
+        let task = get_task(&conn, "task1").unwrap().unwrap();
+        assert_eq!(task.status, "awaiting_review");
+        assert_eq!(task.task_base_commit.as_deref(), Some("abc123"));
+        assert_eq!(task.catch_up_state, "none");
+        assert_eq!(task.catch_up_target_sha, None);
+        assert!(task.catch_up_conflicts.is_empty());
+        assert!(latest_merge_attempt_for_task(&conn, "task1")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

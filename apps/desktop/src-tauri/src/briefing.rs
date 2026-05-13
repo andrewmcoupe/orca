@@ -388,8 +388,7 @@ struct BriefingPromptContext<'a> {
 
 #[allow(dead_code)]
 fn briefing_prompt_path(workspace_path: &Path) -> PathBuf {
-    workspace_path
-        .join(crate::workspace_db::WORKSPACE_DIR)
+    crate::workspace_db::workspace_dir(&workspace_path.to_string_lossy())
         .join("prompts")
         .join(BRIEFING_PROMPT_FILENAME)
 }

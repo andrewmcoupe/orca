@@ -50,6 +50,8 @@ export type MergeAttempt = {
 export type MergeCommandError =
   | { kind: "NoActiveWorkspace" }
   | { kind: "TaskNotFound" }
+  | { kind: "TaskNotApproved" }
+  | { kind: "PhaseRunning" }
   | { kind: "NoWorktreeBranch" }
   | { kind: "InvalidStrategy"; details: string }
   | { kind: "DetachedHead" }

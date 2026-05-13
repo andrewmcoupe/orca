@@ -2,6 +2,8 @@ import { useState, type ReactNode } from "react";
 import { Lock, Terminal } from "@phosphor-icons/react";
 import { PhaseConfigEditor } from "@/features/tasks/components/phase-config-editor";
 import { PhaseRunOutputDialog } from "@/features/phase-runs/components/phase-run-output-dialog";
+import { useWorkspaceSettings } from "@/features/workspaces/hooks";
+import { resolvePhaseSettings } from "@/features/workspaces/types";
 import type {
   PhaseConfig,
   PhaseType,
@@ -54,6 +56,28 @@ function fallbackItems(phaseConfig: PhaseConfig): PipelineItem[] {
   }));
 }
 
+function plannedItems(
+  phaseConfig: PhaseConfig,
+  workspaceSettings: ReturnType<typeof useWorkspaceSettings>["data"],
+): PipelineItem[] {
+  if (!workspaceSettings) return fallbackItems(phaseConfig);
+  return phaseConfig.phases.map((phase) => {
+    const resolved = resolvePhaseSettings(workspaceSettings, phaseConfig, phase);
+    return {
+      kind: "phase",
+      id: `phase:${phase}`,
+      phase,
+      status: "pending",
+      phase_run_id: null,
+      provider: resolved.model?.provider ?? null,
+      model: resolved.model?.model ?? null,
+      permission_mode: resolved.permission_mode,
+      started_at: null,
+      completed_at: null,
+    };
+  });
+}
+
 export function TaskPipelineRail({
   workspaceId,
   taskId,
@@ -66,7 +90,8 @@ export function TaskPipelineRail({
   phaseRuns: PhaseRun[];
 }) {
   const snapshotQ = useTaskPipelineSnapshot(workspaceId, taskId);
-  const items = snapshotQ.data?.items ?? fallbackItems(phaseConfig);
+  const settingsQ = useWorkspaceSettings(workspaceId);
+  const items = snapshotQ.data?.items ?? plannedItems(phaseConfig, settingsQ.data);
   const anyItemRunning = items.some((item) => item.status === "running");
 
   if (items.length === 0) {

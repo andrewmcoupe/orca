@@ -365,6 +365,8 @@ export function TaskActionToolbar({
     !isApproved ||
     !worktreeActive ||
     isMerged ||
+    !!phaseRunning ||
+    initRunning ||
     needsCatchUp ||
     hasCollisions ||
     !!currentCollisionAttempt;
@@ -374,15 +376,19 @@ export function TaskActionToolbar({
       ? "Catch up before landing."
       : hasCollisions
         ? "Resolve collisions before landing."
-    : currentCollisionAttempt
-      ? `Has collisions with parent in ${currentCollisionAttempt.conflicts.length} file${currentCollisionAttempt.conflicts.length === 1 ? "" : "s"}. Resolve them before landing.`
-    : !isApproved
-      ? "Approve the task first."
-      : worktreeRemoved
-        ? "Task files were removed — land unavailable."
-        : !worktreeActive
-          ? "Task files unavailable."
-          : "Land this proposal.";
+        : phaseRunning
+          ? "A phase is still running."
+          : initRunning
+            ? "Task files are still initialising."
+            : currentCollisionAttempt
+              ? `Has collisions with parent in ${currentCollisionAttempt.conflicts.length} file${currentCollisionAttempt.conflicts.length === 1 ? "" : "s"}. Resolve them before landing.`
+              : !isApproved
+                ? "Approve the task first."
+                : worktreeRemoved
+                  ? "Task files were removed — land unavailable."
+                  : !worktreeActive
+                    ? "Task files unavailable."
+                    : "Land this proposal.";
 
   // === Review changes ====================================================
   const diffDisabled = !worktreeActive && !task.merged_commit_sha;

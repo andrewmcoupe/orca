@@ -482,6 +482,16 @@ function mergeErrorToParsed(err: MergeCommandError): ParsedError {
       return { title: "Invalid land strategy", body: err.details };
     case "TaskNotFound":
       return { title: "Task not found" };
+    case "TaskNotApproved":
+      return {
+        title: "Approval required",
+        body: "This task is not approved. Wait for the current review to finish, then approve it before landing.",
+      };
+    case "PhaseRunning":
+      return {
+        title: "Task still running",
+        body: "A task phase is still running. Wait for it to finish before landing.",
+      };
     case "NoActiveWorkspace":
       return { title: "No active workspace" };
     case "NoWorktreeBranch":

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1066,9 +1067,7 @@ fn find_orphans(
     conn: &rusqlite::Connection,
     workspace_path: &str,
 ) -> Result<Vec<OrphanWorktree>, String> {
-    let dir = std::path::Path::new(workspace_path)
-        .join(".orca")
-        .join("worktrees");
+    let dir = crate::workspace_db::workspace_dir(workspace_path).join("worktrees");
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -2450,6 +2449,10 @@ pub enum MergeCommandError {
     NoActiveWorkspace,
     #[error("task not found")]
     TaskNotFound,
+    #[error("task is not approved")]
+    TaskNotApproved,
+    #[error("task pipeline is still running")]
+    PhaseRunning,
     #[error("task has no worktree branch recorded")]
     NoWorktreeBranch,
     #[error("invalid merge strategy: {0}")]
@@ -2685,7 +2688,7 @@ pub fn cancel_task_catch_up(
 
 #[tauri::command]
 pub async fn request_collision_resolution(app: AppHandle, task_id: String) -> Result<(), String> {
-    let (workspace_id, retry_context) = {
+    let (workspace_id, worktree_path, target_head_sha, conflicts) = {
         let active = app.state::<ActiveWorkspaceState>();
         let mut guard = active.0.lock().map_err(|e| e.to_string())?;
         let aw = require_active_workspace(&mut guard)?;
@@ -2695,15 +2698,33 @@ pub async fn request_collision_resolution(app: AppHandle, task_id: String) -> Re
         if task.catch_up_state != "colliding" {
             return Err("task does not currently have collisions".to_string());
         }
-        let context = json!({
-            "kind": "resolution",
-            "instruction": "Produce a resolution that preserves the original acceptance criteria while integrating cleanly with the current parent. Where the parent has introduced changes that conflict with the original proposal's approach, prefer the parent's approach unless it breaks the original acceptance criteria.",
-            "conflicting_files": task.catch_up_conflicts,
-            "target_head_sha": task.catch_up_target_sha,
-        })
-        .to_string();
-        (aw.id.clone(), context)
+        let running_count: i64 = aw
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM phase_run_projection
+                 WHERE task_id = ?1 AND status = 'running'",
+                params![task_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if running_count > 0 {
+            return Err("task already has a running phase".to_string());
+        }
+        let worktree_path = task
+            .worktree_path
+            .ok_or_else(|| "task has no worktree to resolve".to_string())?;
+        let target_head_sha = task
+            .catch_up_target_sha
+            .ok_or_else(|| "task has no catch-up target revision".to_string())?;
+        (
+            aw.id.clone(),
+            worktree_path,
+            target_head_sha,
+            task.catch_up_conflicts,
+        )
     };
+    let retry_context =
+        prepare_collision_resolution_context(&worktree_path, &target_head_sha, &conflicts)?;
     append_task_event_simple(
         &app,
         &workspace_id,
@@ -2723,6 +2744,578 @@ pub async fn request_collision_resolution(app: AppHandle, task_id: String) -> Re
     )
     .await?;
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+pub struct CollisionSide {
+    pub label: String,
+    pub revision: Option<String>,
+    pub content: String,
+    pub missing: bool,
+    pub truncated: bool,
+    pub line_start: Option<usize>,
+    pub line_end: Option<usize>,
+    pub attribution: Option<CollisionAttribution>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct CollisionAttribution {
+    pub title: String,
+    pub commit_sha: String,
+    pub landed_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CollisionHunkView {
+    pub index: usize,
+    pub current_parent: CollisionSide,
+    pub this_proposal: CollisionSide,
+    pub common_ancestor: CollisionSide,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CollisionFileView {
+    pub path: String,
+    pub collision_count: usize,
+    pub collisions: Vec<CollisionHunkView>,
+    pub current_parent: CollisionSide,
+    pub this_proposal: CollisionSide,
+    pub common_ancestor: CollisionSide,
+}
+
+const COLLISION_CONTENT_LIMIT: usize = 24 * 1024;
+
+#[tauri::command]
+pub fn get_task_collisions(
+    task_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<Vec<CollisionFileView>, String> {
+    let (workspace_path, task, landed_attributions) = {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        let task = projections::get_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("task not found: {}", task_id))?;
+        let landed_attributions = landed_task_attributions(&aw.conn).map_err(|e| e.to_string())?;
+        (aw.path.clone(), task, landed_attributions)
+    };
+    if task.catch_up_state != "colliding" {
+        return Ok(Vec::new());
+    }
+    let target_sha = task
+        .catch_up_target_sha
+        .as_deref()
+        .ok_or_else(|| "task has no catch-up target revision".to_string())?;
+    let source_branch = task
+        .worktree_branch
+        .as_deref()
+        .ok_or_else(|| "task has no proposal branch".to_string())?;
+
+    let repo = git2::Repository::open(&workspace_path).map_err(|e| e.message().to_string())?;
+    let target_oid = git2::Oid::from_str(target_sha).map_err(|e| e.to_string())?;
+    let target_commit = repo
+        .find_commit(target_oid)
+        .map_err(|e| e.message().to_string())?;
+    let source_ref = format!("refs/heads/{source_branch}");
+    let source_oid = repo.refname_to_id(&source_ref).map_err(|e| {
+        format!(
+            "proposal branch not found: {source_branch}: {}",
+            e.message()
+        )
+    })?;
+    let source_commit = repo
+        .find_commit(source_oid)
+        .map_err(|e| e.message().to_string())?;
+    let base_oid = repo
+        .merge_base(target_commit.id(), source_commit.id())
+        .map_err(|e| e.message().to_string())?;
+    let base_commit = repo
+        .find_commit(base_oid)
+        .map_err(|e| e.message().to_string())?;
+
+    let paths = if task.catch_up_conflicts.is_empty() {
+        Vec::new()
+    } else {
+        task.catch_up_conflicts
+    };
+
+    paths
+        .into_iter()
+        .map(|path| {
+            let current_parent = collision_side(
+                &repo,
+                &target_commit,
+                &path,
+                "Current parent",
+                Some(target_commit.id().to_string()),
+            )?;
+            let this_proposal = collision_side(
+                &repo,
+                &source_commit,
+                &path,
+                "This proposal",
+                Some(source_commit.id().to_string()),
+            )?;
+            let common_ancestor = collision_side(
+                &repo,
+                &base_commit,
+                &path,
+                "Common ancestor",
+                Some(base_commit.id().to_string()),
+            )?;
+            let mut collisions = collision_hunks(&current_parent, &this_proposal, &common_ancestor);
+            attach_parent_attribution(
+                &repo,
+                &path,
+                &target_commit,
+                &landed_attributions,
+                &mut collisions,
+            );
+            Ok(CollisionFileView {
+                collision_count: collisions.len().max(1),
+                collisions,
+                current_parent,
+                this_proposal,
+                common_ancestor,
+                path,
+            })
+        })
+        .collect()
+}
+
+fn collision_side(
+    repo: &git2::Repository,
+    commit: &git2::Commit<'_>,
+    path: &str,
+    label: &str,
+    revision: Option<String>,
+) -> Result<CollisionSide, String> {
+    let tree = commit.tree().map_err(|e| e.message().to_string())?;
+    let entry = match tree.get_path(std::path::Path::new(path)) {
+        Ok(entry) => entry,
+        Err(_) => {
+            return Ok(CollisionSide {
+                label: label.to_string(),
+                revision,
+                content: "(file absent)".to_string(),
+                missing: true,
+                truncated: false,
+                line_start: None,
+                line_end: None,
+                attribution: None,
+            });
+        }
+    };
+    let object = entry.to_object(repo).map_err(|e| e.message().to_string())?;
+    let Some(blob) = object.as_blob() else {
+        return Ok(CollisionSide {
+            label: label.to_string(),
+            revision,
+            content: "(not a file blob)".to_string(),
+            missing: true,
+            truncated: false,
+            line_start: None,
+            line_end: None,
+            attribution: None,
+        });
+    };
+    let mut content = String::from_utf8_lossy(blob.content()).to_string();
+    let truncated = content.len() > COLLISION_CONTENT_LIMIT;
+    if truncated {
+        let mut cut = COLLISION_CONTENT_LIMIT;
+        while cut > 0 && !content.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        content.truncate(cut);
+        content.push_str("\n...[file truncated]\n");
+    }
+    Ok(CollisionSide {
+        label: label.to_string(),
+        revision,
+        content,
+        missing: false,
+        truncated,
+        line_start: None,
+        line_end: None,
+        attribution: None,
+    })
+}
+
+fn landed_task_attributions(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<HashMap<String, CollisionAttribution>> {
+    let mut stmt = conn.prepare(
+        "SELECT title, merged_commit_sha, merged_at
+         FROM task_projection
+         WHERE merged_commit_sha IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let title: String = row.get(0)?;
+        let commit_sha: String = row.get(1)?;
+        let landed_at: Option<i64> = row.get(2)?;
+        Ok((
+            commit_sha.clone(),
+            CollisionAttribution {
+                title,
+                commit_sha,
+                landed_at,
+            },
+        ))
+    })?;
+    let mut attributions = HashMap::new();
+    for row in rows {
+        let (commit_sha, attribution) = row?;
+        attributions.insert(commit_sha, attribution);
+    }
+    Ok(attributions)
+}
+
+#[derive(Debug, Clone)]
+struct ChangedRange {
+    base_start: usize,
+    base_end: usize,
+    side_start: usize,
+    side_end: usize,
+}
+
+fn collision_hunks(
+    current_parent: &CollisionSide,
+    this_proposal: &CollisionSide,
+    common_ancestor: &CollisionSide,
+) -> Vec<CollisionHunkView> {
+    if current_parent.missing
+        || this_proposal.missing
+        || common_ancestor.missing
+        || current_parent.truncated
+        || this_proposal.truncated
+        || common_ancestor.truncated
+    {
+        return vec![full_file_collision_hunk(
+            1,
+            current_parent,
+            this_proposal,
+            common_ancestor,
+        )];
+    }
+
+    let base_lines = split_collision_lines(&common_ancestor.content);
+    let parent_lines = split_collision_lines(&current_parent.content);
+    let proposal_lines = split_collision_lines(&this_proposal.content);
+    let parent_ranges = changed_ranges(&base_lines, &parent_lines);
+    let proposal_ranges = changed_ranges(&base_lines, &proposal_lines);
+    let mut hunks = Vec::new();
+
+    for parent_range in &parent_ranges {
+        for proposal_range in &proposal_ranges {
+            if !base_ranges_collide(parent_range, proposal_range) {
+                continue;
+            }
+            let base_start = parent_range.base_start.min(proposal_range.base_start);
+            let base_end = parent_range.base_end.max(proposal_range.base_end);
+            let index = hunks.len() + 1;
+            hunks.push(CollisionHunkView {
+                index,
+                current_parent: windowed_collision_side(
+                    current_parent,
+                    &parent_lines,
+                    parent_range.side_start,
+                    parent_range.side_end,
+                ),
+                this_proposal: windowed_collision_side(
+                    this_proposal,
+                    &proposal_lines,
+                    proposal_range.side_start,
+                    proposal_range.side_end,
+                ),
+                common_ancestor: windowed_collision_side(
+                    common_ancestor,
+                    &base_lines,
+                    base_start,
+                    base_end,
+                ),
+            });
+        }
+    }
+
+    if hunks.is_empty() {
+        vec![full_file_collision_hunk(
+            1,
+            current_parent,
+            this_proposal,
+            common_ancestor,
+        )]
+    } else {
+        hunks
+    }
+}
+
+fn attach_parent_attribution(
+    repo: &git2::Repository,
+    path: &str,
+    target_commit: &git2::Commit<'_>,
+    landed_attributions: &HashMap<String, CollisionAttribution>,
+    hunks: &mut [CollisionHunkView],
+) {
+    if landed_attributions.is_empty() {
+        return;
+    }
+    let mut blame_options = git2::BlameOptions::new();
+    blame_options.newest_commit(target_commit.id());
+    let Ok(blame) = repo.blame_file(std::path::Path::new(path), Some(&mut blame_options)) else {
+        return;
+    };
+    for hunk in hunks {
+        let Some(line_start) = hunk.current_parent.line_start else {
+            continue;
+        };
+        let Some(line_end) = hunk.current_parent.line_end else {
+            continue;
+        };
+        let mut attribution = None;
+        for line_no in line_start..=line_end {
+            let Some(blame_hunk) = blame.get_line(line_no) else {
+                continue;
+            };
+            let commit_sha = blame_hunk.final_commit_id().to_string();
+            if let Some(task_attribution) = landed_attributions.get(&commit_sha) {
+                attribution = Some(task_attribution.clone());
+                break;
+            }
+        }
+        hunk.current_parent.attribution = attribution;
+    }
+}
+
+fn full_file_collision_hunk(
+    index: usize,
+    current_parent: &CollisionSide,
+    this_proposal: &CollisionSide,
+    common_ancestor: &CollisionSide,
+) -> CollisionHunkView {
+    CollisionHunkView {
+        index,
+        current_parent: current_parent.clone_with_window(
+            None,
+            None,
+            current_parent.content.clone(),
+        ),
+        this_proposal: this_proposal.clone_with_window(None, None, this_proposal.content.clone()),
+        common_ancestor: common_ancestor.clone_with_window(
+            None,
+            None,
+            common_ancestor.content.clone(),
+        ),
+    }
+}
+
+impl CollisionSide {
+    fn clone_with_window(
+        &self,
+        line_start: Option<usize>,
+        line_end: Option<usize>,
+        content: String,
+    ) -> Self {
+        Self {
+            label: self.label.clone(),
+            revision: self.revision.clone(),
+            content,
+            missing: self.missing,
+            truncated: self.truncated,
+            line_start,
+            line_end,
+            attribution: self.attribution.clone(),
+        }
+    }
+}
+
+fn split_collision_lines(content: &str) -> Vec<String> {
+    if content.is_empty() {
+        Vec::new()
+    } else {
+        content.lines().map(|line| line.to_string()).collect()
+    }
+}
+
+fn changed_ranges(base_lines: &[String], side_lines: &[String]) -> Vec<ChangedRange> {
+    let matches = lcs_matches(base_lines, side_lines);
+    let mut ranges = Vec::new();
+    let mut base_cursor = 0;
+    let mut side_cursor = 0;
+    for (base_match, side_match) in matches {
+        if base_cursor != base_match || side_cursor != side_match {
+            ranges.push(ChangedRange {
+                base_start: base_cursor,
+                base_end: base_match,
+                side_start: side_cursor,
+                side_end: side_match,
+            });
+        }
+        base_cursor = base_match + 1;
+        side_cursor = side_match + 1;
+    }
+    if base_cursor != base_lines.len() || side_cursor != side_lines.len() {
+        ranges.push(ChangedRange {
+            base_start: base_cursor,
+            base_end: base_lines.len(),
+            side_start: side_cursor,
+            side_end: side_lines.len(),
+        });
+    }
+    ranges
+}
+
+fn lcs_matches(left: &[String], right: &[String]) -> Vec<(usize, usize)> {
+    let rows = left.len();
+    let cols = right.len();
+    let mut table = vec![vec![0usize; cols + 1]; rows + 1];
+    for i in (0..rows).rev() {
+        for j in (0..cols).rev() {
+            table[i][j] = if left[i] == right[j] {
+                table[i + 1][j + 1] + 1
+            } else {
+                table[i + 1][j].max(table[i][j + 1])
+            };
+        }
+    }
+
+    let mut matches = Vec::new();
+    let mut i = 0;
+    let mut j = 0;
+    while i < rows && j < cols {
+        if left[i] == right[j] {
+            matches.push((i, j));
+            i += 1;
+            j += 1;
+        } else if table[i + 1][j] >= table[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    matches
+}
+
+fn base_ranges_collide(left: &ChangedRange, right: &ChangedRange) -> bool {
+    if left.base_start == left.base_end || right.base_start == right.base_end {
+        left.base_start >= right.base_start && left.base_start <= right.base_end
+            || right.base_start >= left.base_start && right.base_start <= left.base_end
+    } else {
+        left.base_start < right.base_end && right.base_start < left.base_end
+    }
+}
+
+fn windowed_collision_side(
+    side: &CollisionSide,
+    lines: &[String],
+    changed_start: usize,
+    changed_end: usize,
+) -> CollisionSide {
+    const CONTEXT_LINES: usize = 4;
+    if lines.is_empty() {
+        return side.clone_with_window(Some(1), Some(1), String::new());
+    }
+    let window_start = changed_start.saturating_sub(CONTEXT_LINES).min(lines.len());
+    let window_end = changed_end.saturating_add(CONTEXT_LINES).min(lines.len());
+    let content = lines[window_start..window_end].join("\n");
+    side.clone_with_window(
+        Some(window_start + 1),
+        Some(window_end.max(window_start + 1)),
+        content,
+    )
+}
+
+fn prepare_collision_resolution_context(
+    worktree_path: &str,
+    target_head_sha: &str,
+    conflicts: &[String],
+) -> Result<String, String> {
+    if !merge_head_exists(worktree_path)? {
+        let output = Command::new("git")
+            .args([
+                "-C",
+                worktree_path,
+                "merge",
+                "--no-commit",
+                "--no-ff",
+                target_head_sha,
+            ])
+            .output()
+            .map_err(|e| format!("failed to start resolution merge: {e}"))?;
+        if !output.status.success() && !merge_head_exists(worktree_path)? {
+            return Err(format!(
+                "failed to prepare resolution merge:\n{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+    }
+
+    let status = git_text(worktree_path, &["status", "--short"]).unwrap_or_default();
+    let unmerged =
+        git_text(worktree_path, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
+    let combined = git_text(worktree_path, &["diff", "--cc"]).unwrap_or_default();
+    let conflict_list = if conflicts.is_empty() {
+        unmerged
+            .lines()
+            .map(|line| format!("- `{line}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        conflicts
+            .iter()
+            .map(|path| format!("- `{path}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    Ok(format!(
+        r#"## Collision Resolution Mode
+
+The parent moved after this task was approved. I have started a real merge of the current parent revision `{target_head_sha}` into this task worktree.
+
+Your job is to resolve the collision in this worktree, preserving the original acceptance criteria while integrating cleanly with the current parent. Where the parent has introduced changes that conflict with the original proposal's approach, prefer the parent's approach unless it breaks the original acceptance criteria.
+
+Do not abort the merge. Resolve every conflict marker, ensure `git status --short` has no unmerged paths, and make the final worktree represent the proposal that should land on top of the current parent.
+
+Conflicting files:
+{conflict_list}
+
+Current status:
+```text
+{status}
+```
+
+Combined conflict diff:
+```diff
+{combined}
+```
+"#
+    ))
+}
+
+fn merge_head_exists(worktree_path: &str) -> Result<bool, String> {
+    let status = Command::new("git")
+        .args([
+            "-C",
+            worktree_path,
+            "rev-parse",
+            "-q",
+            "--verify",
+            "MERGE_HEAD",
+        ])
+        .status()
+        .map_err(|e| format!("failed to inspect merge state: {e}"))?;
+    Ok(status.success())
+}
+
+fn git_text(worktree_path: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(worktree_path)
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to run git {}: {e}", args.join(" ")))?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// Read-side: inspect what a merge would do. Side effects:
@@ -2801,6 +3394,24 @@ pub fn execute_task_merge(
             MergeCommandError::InternalError("active workspace mutex poisoned".into())
         })?;
         let aw = guard.as_mut().ok_or(MergeCommandError::NoActiveWorkspace)?;
+        let task = projections::get_task(&aw.conn, &task_id)
+            .map_err(|e| MergeCommandError::InternalError(e.to_string()))?
+            .ok_or(MergeCommandError::TaskNotFound)?;
+        if task.status != "approved" {
+            return Err(MergeCommandError::TaskNotApproved);
+        }
+        let running_count: i64 = aw
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM phase_run_projection
+                 WHERE task_id = ?1 AND status = 'running'",
+                params![task_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| MergeCommandError::InternalError(e.to_string()))?;
+        if running_count > 0 {
+            return Err(MergeCommandError::PhaseRunning);
+        }
         lookup_task_workspace_and_branch(aw, &task_id)?
     };
 
@@ -4185,6 +4796,43 @@ mod tests {
         apply_events_ddl(&conn).unwrap();
         apply_workspace_db_projection_ddl(&conn).unwrap();
         conn
+    }
+
+    fn test_collision_side(label: &str, content: &str) -> CollisionSide {
+        CollisionSide {
+            label: label.to_string(),
+            revision: Some("abc123".to_string()),
+            content: content.to_string(),
+            missing: false,
+            truncated: false,
+            line_start: None,
+            line_end: None,
+            attribution: None,
+        }
+    }
+
+    #[test]
+    fn collision_hunks_split_independent_overlapping_regions() {
+        let base = test_collision_side(
+            "Common ancestor",
+            "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine",
+        );
+        let parent = test_collision_side(
+            "Current parent",
+            "one\nparent two\nthree\nfour\nfive\nsix\nparent seven\neight\nnine",
+        );
+        let proposal = test_collision_side(
+            "This proposal",
+            "one\nproposal two\nthree\nfour\nfive\nsix\nproposal seven\neight\nnine",
+        );
+
+        let hunks = collision_hunks(&parent, &proposal, &base);
+
+        assert_eq!(hunks.len(), 2);
+        assert!(hunks[0].current_parent.content.contains("parent two"));
+        assert!(hunks[0].this_proposal.content.contains("proposal two"));
+        assert!(hunks[1].current_parent.content.contains("parent seven"));
+        assert!(hunks[1].this_proposal.content.contains("proposal seven"));
     }
 
     fn insert_plan(conn: &Connection, id: &str, status: &str) {

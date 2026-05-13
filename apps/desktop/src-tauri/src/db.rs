@@ -42,7 +42,8 @@ fn migrate_legacy_data_dir(target: &PathBuf) {
 /// Initialize the global app database.
 ///
 /// Holds: the workspace-aggregate event stream and `workspace_projection` (the read model
-/// for workspace registrations). Per-workspace events live in `<repo>/.orca/events.sqlite`.
+/// for workspace registrations). Per-workspace events live under
+/// `~/.orca/workspaces/<workspace-key>/events.sqlite`.
 pub fn init() -> rusqlite::Result<Connection> {
     let path = db_path();
     migrate_legacy_data_dir(&path);
