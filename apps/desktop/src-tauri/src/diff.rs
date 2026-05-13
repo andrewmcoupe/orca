@@ -249,22 +249,21 @@ pub fn compute_task_diff(inputs: TaskDiffInputs<'_>) -> Result<TaskDiff, DiffErr
     // 1. Live worktree.
     if let Some(wt) = inputs.worktree_path {
         if wt.exists() {
-            let repo = Repository::open(wt).map_err(|e| {
-                DiffError::Git(format!("open worktree {}: {}", wt.display(), e.message()))
-            })?;
-            let head_oid = repo.head()?.peel_to_commit()?.id();
-            let base_oid = parse_oid(&base_commit_str)?;
-            let files = build_files(&repo, base_oid, head_oid)?;
-            return Ok(TaskDiff {
-                task_id,
-                base_commit: base_commit_str,
-                head_commit: head_oid.to_string(),
-                source: DiffSource::Worktree {
-                    path: wt.to_string_lossy().into_owned(),
-                },
-                files,
-                computed_at: now,
-            });
+            if let Ok(repo) = Repository::open(wt) {
+                let head_oid = repo.head()?.peel_to_commit()?.id();
+                let base_oid = parse_oid(&base_commit_str)?;
+                let files = build_files(&repo, base_oid, head_oid)?;
+                return Ok(TaskDiff {
+                    task_id,
+                    base_commit: base_commit_str,
+                    head_commit: head_oid.to_string(),
+                    source: DiffSource::Worktree {
+                        path: wt.to_string_lossy().into_owned(),
+                    },
+                    files,
+                    computed_at: now,
+                });
+            }
         }
     }
 
@@ -1124,6 +1123,35 @@ mod tests {
         }
         assert_eq!(diff.files.len(), 1);
         assert_eq!(diff.files[0].path, "merged.py");
+    }
+
+    #[test]
+    fn branch_source_when_recorded_worktree_path_is_not_repo() {
+        let dir = init_repo();
+        let repo = dir.path();
+        let base = head_sha(repo);
+        sh(repo, &["checkout", "-q", "-b", "orca/T_BRANCH"]);
+        std::fs::write(repo.join("branch.py"), "x = 1\n").unwrap();
+        sh(repo, &["add", "."]);
+        sh(repo, &["commit", "-q", "-m", "branch candidate"]);
+        sh(repo, &["checkout", "-q", "main"]);
+        let stale_dir = dir.path().join("not-a-worktree");
+        std::fs::create_dir_all(&stale_dir).unwrap();
+
+        let inputs = TaskDiffInputs {
+            repo_root: repo,
+            task_id: "T_BRANCH",
+            task_base_commit: Some(&base),
+            worktree_path: Some(&stale_dir),
+            merged_commit: None,
+        };
+        let diff = compute_task_diff(inputs).unwrap();
+        match &diff.source {
+            DiffSource::BranchOnly { branch, .. } => assert_eq!(branch, "orca/T_BRANCH"),
+            other => panic!("expected branch-only source, got {:?}", other),
+        }
+        assert_eq!(diff.files.len(), 1);
+        assert_eq!(diff.files[0].path, "branch.py");
     }
 
     #[test]

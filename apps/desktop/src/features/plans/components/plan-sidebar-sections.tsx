@@ -41,12 +41,12 @@ export function PlanSummarySidebarBody({
           <span className="font-mono tabular-nums">{plan.task_count}</span>
         }
       />
-      {counts.merged > 0 && (
+      {counts.landed > 0 && (
         <Row
-          label="Merged"
+          label="Landed"
           value={
             <span className="font-mono tabular-nums text-blue-600 dark:text-blue-400">
-              {counts.merged}
+              {counts.landed}
             </span>
           }
         />
@@ -218,17 +218,17 @@ function importedSourcesOf(plan: Plan): ImportedSource[] {
 }
 
 type TaskCounts = {
-  merged: number;
+  landed: number;
   inFlight: number;
   blocked: number;
   other: number;
 };
 
 function countTasks(tasks: Task[]): TaskCounts {
-  const c: TaskCounts = { merged: 0, inFlight: 0, blocked: 0, other: 0 };
+  const c: TaskCounts = { landed: 0, inFlight: 0, blocked: 0, other: 0 };
   for (const t of tasks) {
     if (t.is_blocked) c.blocked++;
-    if (t.status === "merged") c.merged++;
+    if (t.status === "merged") c.landed++;
     else if (t.status === "running" || t.status === "awaiting_review")
       c.inFlight++;
     else c.other++;

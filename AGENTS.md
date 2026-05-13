@@ -1,3 +1,15 @@
+## Repository Rules
+
+Use kebab-case for filenames.
+
+Prefer a TDD workflow: red, green, refactor.
+
+For the React frontend, use TanStack Query for network requests and server-state management.
+
+Use XState for complex state. Avoid `useEffect` where a clearer declarative pattern, derived state, TanStack Query, event handler, or state machine can solve the problem.
+
+Co-locate frontend test files with the implementation they cover.
+
 ## Typography
 
 Sans (IBM Plex Sans). Default voice for everything in the app — UI chrome, page titles, body text, form labels, button text, navigation, status badges, section headers, prose written or edited by the user, and any prose that isn't covered by the mono or serif rules below. If you're unsure which typeface to use, the answer is sans.

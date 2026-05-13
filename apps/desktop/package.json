@@ -1,12 +1,13 @@
 {
   "name": "orca",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.13",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "vitest run",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -48,6 +49,7 @@
     "@vitejs/plugin-react": "^4.6.0",
     "tailwindcss": "^4.2.4",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^4.1.6"
   }
 }

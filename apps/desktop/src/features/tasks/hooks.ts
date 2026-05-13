@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   tasksApi,
+  type CollisionFileView,
   type CreateTaskInput,
   type UpdateTaskPhaseConfigInput,
 } from "./api";
@@ -13,6 +14,7 @@ export const taskKeys = {
     ["task_pipeline", workspaceId, taskId] as const,
   latestVerdict: (taskId: string) =>
     ["task", taskId, "latestAuditorVerdict"] as const,
+  collisions: (taskId: string) => ["task", taskId, "collisions"] as const,
 };
 
 export function useLatestAuditorVerdict(taskId: string | undefined) {
@@ -80,6 +82,14 @@ export function useTaskPipelineSnapshot(
       ? taskKeys.pipelineSnapshot(workspaceId, taskId)
       : ["task_pipeline", workspaceId, "__pending__"],
     queryFn: () => tasksApi.getPipelineSnapshot(taskId!),
+    enabled: !!taskId,
+  });
+}
+
+export function useTaskCollisions(taskId: string | undefined) {
+  return useQuery<CollisionFileView[]>({
+    queryKey: taskId ? taskKeys.collisions(taskId) : ["task", "__pending__", "collisions"],
+    queryFn: () => tasksApi.getCollisions(taskId!),
     enabled: !!taskId,
   });
 }
@@ -170,5 +180,45 @@ export function useUnqueueTask() {
     onSuccess: (task) => {
       qc.invalidateQueries({ queryKey: taskKeys.detail(task.id) });
     },
+  });
+}
+
+export function useCheckTaskCatchUp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.checkCatchUp(taskId),
+    onSuccess: (task) => {
+      qc.invalidateQueries({ queryKey: taskKeys.detail(task.id) });
+      qc.invalidateQueries({ queryKey: taskKeys.list(task.plan_id) });
+    },
+  });
+}
+
+export function useCatchUpTask() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.catchUp(taskId),
+    onSuccess: (task) => {
+      qc.invalidateQueries({ queryKey: taskKeys.detail(task.id) });
+      qc.invalidateQueries({ queryKey: taskKeys.list(task.plan_id) });
+      qc.invalidateQueries({ queryKey: ["task_pipeline"] });
+    },
+  });
+}
+
+export function useCancelTaskCatchUp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.cancelCatchUp(taskId),
+    onSuccess: (task) => {
+      qc.invalidateQueries({ queryKey: taskKeys.detail(task.id) });
+      qc.invalidateQueries({ queryKey: taskKeys.list(task.plan_id) });
+    },
+  });
+}
+
+export function useRequestCollisionResolution() {
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.requestResolution(taskId),
   });
 }

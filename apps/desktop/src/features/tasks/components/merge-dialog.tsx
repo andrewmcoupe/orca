@@ -12,13 +12,6 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   isMergeCommandError,
   type MergeAnalysis,
   type MergeCommandError,
@@ -43,11 +36,11 @@ function shortSha(sha: string): string {
 }
 
 function defaultCommitMessage(taskTitle: string, taskId: string): string {
-  return `[task] ${taskTitle.trim()}\n\nTask-ID: ${taskId}\n`;
+  return `${taskTitle.trim()}\n\nTask: ${taskId}\n`;
 }
 
 /**
- * Replaces the merge form while git is running. We swap the body rather than
+ * Replaces the land form while Git is running. We swap the body rather than
  * overlaying it because the overlay's translucent background was barely
  * distinguishable from the dialog itself in some themes — users couldn't tell
  * the click had registered. A dedicated panel makes the in-flight state
@@ -55,12 +48,9 @@ function defaultCommitMessage(taskTitle: string, taskId: string): string {
  */
 function MergingProgress({
   analysis,
-  strategy,
 }: {
   analysis: MergeAnalysis;
-  strategy: MergeStrategy;
 }) {
-  const cmd = strategy === "squash" ? "git merge --squash" : "git merge";
   return (
     <div
       className="flex flex-col items-center justify-center gap-3 py-10 text-center"
@@ -68,12 +58,11 @@ function MergingProgress({
       aria-live="polite"
     >
       <CircleNotch className="size-8 animate-spin" />
-      <p className="text-base font-medium">Merging…</p>
+      <p className="text-base font-medium">Landing…</p>
       <p className="text-muted-foreground max-w-sm text-xs">
-        Running <code className="font-mono">{cmd}</code> from{" "}
-        <code className="font-mono">{analysis.source_branch}</code> into{" "}
+        Applying the proposal into{" "}
         <code className="font-mono">{analysis.target_branch}</code>. This can
-        take a few seconds for large diffs — please don't close the window.
+        take a few seconds for large changes.
       </p>
     </div>
   );
@@ -83,7 +72,7 @@ export function MergeDialog({ taskId, taskTitle, open, onOpenChange }: Props) {
   const analyze = useAnalyzeTaskMerge();
   const execute = useExecuteTaskMerge();
 
-  const [strategy, setStrategy] = useState<MergeStrategy>("squash");
+  const strategy: MergeStrategy = "squash";
   const [message, setMessage] = useState<string>(() =>
     defaultCommitMessage(taskTitle, taskId),
   );
@@ -100,7 +89,6 @@ export function MergeDialog({ taskId, taskTitle, open, onOpenChange }: Props) {
     setAnalysis(null);
     setAnalyzeError(null);
     setExecuteError(null);
-    setStrategy("squash");
     setMessage(defaultCommitMessage(taskTitle, taskId));
     setMessageDirty(false);
     analyze.reset();
@@ -165,7 +153,9 @@ export function MergeDialog({ taskId, taskTitle, open, onOpenChange }: Props) {
         {!analysis && analyzeError == null && (
           <div className="flex items-center gap-2 py-6">
             <CircleNotch className="size-5 animate-spin" />
-            <p className="text-muted-foreground text-sm">Analyzing merge…</p>
+            <p className="text-muted-foreground text-sm">
+              Checking whether this proposal can land…
+            </p>
           </div>
         )}
 
@@ -194,12 +184,11 @@ export function MergeDialog({ taskId, taskTitle, open, onOpenChange }: Props) {
           !analysis.already_merged &&
           analysis.conflicts.length === 0 &&
           (execute.isPending ? (
-            <MergingProgress analysis={analysis} strategy={strategy} />
+            <MergingProgress analysis={analysis} />
           ) : (
             <CleanMergeForm
               analysis={analysis}
               strategy={strategy}
-              onStrategyChange={setStrategy}
               message={message}
               onMessageChange={(v) => {
                 setMessage(v);
@@ -217,10 +206,10 @@ export function MergeDialog({ taskId, taskTitle, open, onOpenChange }: Props) {
 }
 
 function titleFor(analysis: MergeAnalysis | null, taskTitle: string): string {
-  if (!analysis) return "Merge task";
-  if (analysis.already_merged) return "Already merged";
-  if (analysis.conflicts.length > 0) return "Conflicts detected";
-  return `Merge "${taskTitle}" into ${analysis.target_branch}`;
+  if (!analysis) return "Land task";
+  if (analysis.already_merged) return "Already landed";
+  if (analysis.conflicts.length > 0) return "Collisions detected";
+  return `Land "${taskTitle}"`;
 }
 
 function AlreadyMergedView({
@@ -233,7 +222,7 @@ function AlreadyMergedView({
   return (
     <div className="space-y-3">
       <p className="text-sm">
-        This task is already merged into{" "}
+        This task is already landed into{" "}
         <code className="font-mono">{analysis.target_branch}</code> as{" "}
         <code className="font-mono">{shortSha(analysis.target_head_sha)}</code>.
       </p>
@@ -254,7 +243,7 @@ function ConflictView({
   return (
     <div className="space-y-3">
       <p className="text-sm">
-        These files conflict between{" "}
+        These files have collisions between the proposal and{" "}
         <code className="font-mono">{analysis.source_branch}</code> and{" "}
         <code className="font-mono">{analysis.target_branch}</code>:
       </p>
@@ -273,14 +262,13 @@ function ConflictView({
         ))}
       </ul>
       <div className="text-muted-foreground space-y-1 text-xs">
-        <p>Resolve these conflicts manually before merging. You can:</p>
+        <p>Resolve these collisions manually before landing. You can:</p>
         <ul className="list-disc space-y-0.5 pl-5">
-          <li>Switch to your main worktree</li>
+          <li>Switch to your parent task files</li>
           <li>
-            Run <code className="font-mono">git merge {analysis.source_branch}</code>{" "}
-            and resolve conflicts in your editor, or
+            Use your terminal or editor to resolve collisions, or
           </li>
-          <li>Cherry-pick or apply the changes by hand</li>
+          <li>Apply the changes by hand</li>
         </ul>
       </div>
       <DialogFooter>
@@ -295,7 +283,6 @@ function ConflictView({
 function CleanMergeForm({
   analysis,
   strategy,
-  onStrategyChange,
   message,
   onMessageChange,
   onConfirm,
@@ -305,7 +292,6 @@ function CleanMergeForm({
 }: {
   analysis: MergeAnalysis;
   strategy: MergeStrategy;
-  onStrategyChange: (s: MergeStrategy) => void;
   message: string;
   onMessageChange: (s: string) => void;
   onConfirm: () => void;
@@ -339,7 +325,7 @@ function CleanMergeForm({
               onClick={() => setFilesOpen((v) => !v)}
               className="text-muted-foreground hover:text-foreground text-xs underline-offset-2 hover:underline"
             >
-              {filesOpen ? "Hide" : "Show"} {fileList.length} commit
+              {filesOpen ? "Hide" : "Show"} {fileList.length} revision
               {fileList.length === 1 ? "" : "s"}
             </button>
             {filesOpen && (
@@ -362,18 +348,12 @@ function CleanMergeForm({
         <Label className="text-muted-foreground text-[11px] uppercase tracking-wide">
           Strategy
         </Label>
-        <Select
-          value={strategy}
-          onValueChange={(v) => onStrategyChange(v as MergeStrategy)}
-        >
-          <SelectTrigger size="sm">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="squash">Squash (default)</SelectItem>
-            <SelectItem value="merge">Merge commit</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="rounded-sm border bg-muted/20 px-2 py-1.5 text-xs">
+          Land as one revision
+          {strategy === "squash" && (
+            <span className="text-muted-foreground"> · workspace default</span>
+          )}
+        </div>
       </div>
 
       <div className="space-y-1.5">
@@ -381,7 +361,7 @@ function CleanMergeForm({
           htmlFor="merge-commit-message"
           className="text-muted-foreground text-[11px] uppercase tracking-wide"
         >
-          Commit message
+          Revision message
         </Label>
         <Textarea
           id="merge-commit-message"
@@ -400,7 +380,7 @@ function CleanMergeForm({
         </Button>
         <Button onClick={onConfirm} disabled={executing || !message.trim()}>
           {executing && <CircleNotch className="size-4 animate-spin" />}
-          {executing ? "Merging…" : "Merge"}
+          {executing ? "Landing…" : "Land"}
         </Button>
       </DialogFooter>
     </div>
@@ -464,53 +444,63 @@ function parseError(err: unknown): ParsedError {
   if (isMergeCommandError(err)) {
     return mergeErrorToParsed(err);
   }
-  return { title: "Merge failed", body: String(err) };
+  return { title: "Land failed", body: String(err) };
 }
 
 function mergeErrorToParsed(err: MergeCommandError): ParsedError {
   switch (err.kind) {
     case "WorkingTreeDirty":
       return {
-        title: "Uncommitted changes",
-        body: "Your main worktree has uncommitted changes. Commit or stash them before merging.",
+        title: "Unsaved parent changes",
+        body: "Your parent task files have pending changes. Create a revision or clear them before landing.",
         fileList: err.details.dirty_files,
       };
     case "DetachedHead":
       return {
-        title: "Detached HEAD",
-        body: "Your main worktree is in detached-HEAD state. Check out a branch before merging.",
+        title: "Parent target unavailable",
+        body: "The parent target is detached. Select a normal parent line before landing.",
       };
     case "Conflicts":
       return {
-        title: "Conflicts detected during merge",
-        body: "These files conflict — resolve them manually and try again.",
+        title: "Collisions detected during land",
+        body: "These files have collisions. Resolve them manually and try again.",
         fileList: err.details.conflicts,
       };
     case "AlreadyMerged":
       return {
-        title: "Already merged",
-        body: `Source is already merged at ${err.details.commit_sha.slice(0, SHORT_SHA_LEN)}.`,
+        title: "Already landed",
+        body: `Proposal is already landed at ${err.details.commit_sha.slice(0, SHORT_SHA_LEN)}.`,
       };
     case "SourceBranchMissing":
       return {
-        title: "Source branch missing",
-        body: `Branch ${err.details} was not found. Has the worktree been removed?`,
+        title: "Proposal source missing",
+        body: `Proposal source ${err.details} was not found. Have the task files been removed?`,
       };
     case "TargetBranchMissing":
-      return { title: "Target branch missing", body: err.details };
+      return { title: "Parent target missing", body: err.details };
     case "InvalidStrategy":
-      return { title: "Invalid merge strategy", body: err.details };
+      return { title: "Invalid land strategy", body: err.details };
     case "TaskNotFound":
       return { title: "Task not found" };
+    case "TaskNotApproved":
+      return {
+        title: "Approval required",
+        body: "This task is not approved. Wait for the current review to finish, then approve it before landing.",
+      };
+    case "PhaseRunning":
+      return {
+        title: "Task still running",
+        body: "A task phase is still running. Wait for it to finish before landing.",
+      };
     case "NoActiveWorkspace":
       return { title: "No active workspace" };
     case "NoWorktreeBranch":
       return {
-        title: "No worktree on this task",
-        body: "There is no recorded worktree branch for this task to merge.",
+        title: "No task files available",
+        body: "There is no recorded proposal source for this task to land.",
       };
     case "GitError":
-      return { title: "Git error", body: err.details };
+      return { title: "Version-control error", body: err.details };
     case "InternalError":
       return { title: "Internal error", body: err.details };
   }

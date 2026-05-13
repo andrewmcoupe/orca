@@ -1,5 +1,6 @@
-//! Git worktree primitives. Per-task worktrees live at
-//! `<repo_root>/.orca/worktrees/<task_id>/` on a branch named `orca/<task_id>`.
+//! Git worktree primitives. Per-task worktrees live under Orca's home storage
+//! (`~/.orca/workspaces/<workspace-key>/worktrees/<task_id>/`) on a branch named
+//! `orca/<task_id>`.
 //!
 //! All git operations go through `git2` rather than shelling out to `git`.
 
@@ -60,7 +61,9 @@ pub fn branch_name_for(task_id: &str) -> String {
 }
 
 pub fn worktree_path_for(repo_root: &Path, task_id: &str) -> PathBuf {
-    repo_root.join(".orca").join("worktrees").join(task_id)
+    crate::workspace_db::workspace_dir(&repo_root.to_string_lossy())
+        .join("worktrees")
+        .join(task_id)
 }
 
 fn worktree_internal_name(task_id: &str) -> String {
@@ -68,8 +71,8 @@ fn worktree_internal_name(task_id: &str) -> String {
     format!("orca-{}", task_id)
 }
 
-/// Create a worktree at `<repo_root>/.orca/worktrees/<task_id>/` on a new branch
-/// `orca/<task_id>` cut from the current HEAD of `repo_root`.
+/// Create a worktree in Orca's home storage on a new branch `orca/<task_id>` cut
+/// from the current HEAD of `repo_root`.
 pub fn create_worktree(
     repo_root: &Path,
     task_id: &str,
@@ -323,8 +326,9 @@ fn repo_has_uncommitted(repo: &Repository) -> Result<bool, git2::Error> {
 }
 
 /// Stage all changes in `worktree_path` and create a commit with `message`. If there are
-/// no changes, returns the current HEAD without creating a commit. Returns the resulting
-/// HEAD commit SHA either way.
+/// no changes, returns the current HEAD without creating a commit, unless a merge is in
+/// progress. In that case we still create the merge commit so collision resolution records
+/// the parent revision it resolved against.
 pub fn commit_all(worktree_path: &Path, message: &str) -> Result<String, WorktreeError> {
     let repo = Repository::open(worktree_path)?;
 
@@ -337,7 +341,35 @@ pub fn commit_all(worktree_path: &Path, message: &str) -> Result<String, Worktre
 
     let head = repo.head().ok();
     let parent_commit = head.as_ref().and_then(|h| h.peel_to_commit().ok());
-    if let Some(parent) = &parent_commit {
+    let merge_parent_oids = merge_head_oids(&repo)?;
+    if merge_parent_oids.is_empty() {
+        if let Some(parent) = &parent_commit {
+            if parent.tree_id() == tree_id {
+                return Ok(parent.id().to_string());
+            }
+        }
+    } else if index.has_conflicts() {
+        return Err(WorktreeError::GitError(
+            "cannot commit unresolved merge conflicts".to_string(),
+        ));
+    }
+
+    let mut parent_commits = Vec::new();
+    if let Some(parent) = parent_commit {
+        parent_commits.push(parent);
+    }
+    for oid in merge_parent_oids {
+        let commit = repo.find_commit(oid)?;
+        if !parent_commits
+            .iter()
+            .any(|existing| existing.id() == commit.id())
+        {
+            parent_commits.push(commit);
+        }
+    }
+
+    if parent_commits.len() == 1 {
+        let parent = &parent_commits[0];
         if parent.tree_id() == tree_id {
             return Ok(parent.id().to_string());
         }
@@ -346,9 +378,27 @@ pub fn commit_all(worktree_path: &Path, message: &str) -> Result<String, Worktre
     let sig = repo
         .signature()
         .or_else(|_| git2::Signature::now("orca", "orca@local"))?;
-    let parents: Vec<&git2::Commit> = parent_commit.iter().collect();
+    let parents: Vec<&git2::Commit> = parent_commits.iter().collect();
     let oid = repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
+    repo.cleanup_state()?;
     Ok(oid.to_string())
+}
+
+fn merge_head_oids(repo: &Repository) -> Result<Vec<git2::Oid>, WorktreeError> {
+    let merge_head_path = repo.path().join("MERGE_HEAD");
+    if !merge_head_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let contents = std::fs::read_to_string(merge_head_path)?;
+    contents
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            git2::Oid::from_str(line.trim())
+                .map_err(|e| WorktreeError::GitError(format!("invalid MERGE_HEAD: {}", e)))
+        })
+        .collect()
 }
 
 /// Produce a unified-diff text of `base_commit_sha..HEAD` for the given worktree, in
@@ -447,7 +497,9 @@ mod tests {
         let info = create_worktree(repo.path(), "01TASK", "main").unwrap();
         assert!(info.path.exists());
         assert_eq!(info.branch, "orca/01TASK");
-        assert!(info.path.starts_with(repo.path().join(".orca/worktrees")));
+        assert!(info.path.starts_with(crate::workspace_db::workspace_dir(
+            &repo.path().to_string_lossy()
+        )));
 
         let canon = std::fs::canonicalize(&info.path).unwrap();
         let listed = list_worktrees(repo.path()).unwrap();
@@ -531,6 +583,45 @@ mod tests {
         // Idempotent when nothing changed.
         let after2 = commit_all(&info.path, "[phase: implementer] test").unwrap();
         assert_eq!(after, after2);
+    }
+
+    #[test]
+    fn commit_all_preserves_merge_parent_for_collision_resolution() {
+        let repo = init_repo();
+        let info = create_worktree(repo.path(), "01MERGE", "main").unwrap();
+
+        std::fs::write(info.path.join("README"), "task\n").unwrap();
+        commit_all(&info.path, "[phase: implementer] task").unwrap();
+
+        std::fs::write(repo.path().join("README"), "parent\n").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "parent"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .args(["merge", "--no-commit", "--no-ff", "main"])
+            .current_dir(&info.path)
+            .output()
+            .unwrap();
+        std::fs::write(info.path.join("README"), "resolved\n").unwrap();
+        let after = commit_all(&info.path, "[phase: implementer] resolve").unwrap();
+
+        let worktree_repo = Repository::open(&info.path).unwrap();
+        let commit = worktree_repo
+            .find_commit(git2::Oid::from_str(&after).unwrap())
+            .unwrap();
+        assert_eq!(commit.parent_count(), 2);
+        assert!(!worktree_repo.path().join("MERGE_HEAD").exists());
+
+        let analysis = crate::merge::analyze_merge(repo.path(), "orca/01MERGE").unwrap();
+        assert!(analysis.conflicts.is_empty());
     }
 
     #[test]

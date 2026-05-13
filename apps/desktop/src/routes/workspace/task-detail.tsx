@@ -9,8 +9,16 @@ import { Disclosure } from "@/components/layout/disclosure";
 import { HeaderSlot } from "@/components/layout/header-slot";
 import { Markdown } from "@/components/markdown";
 import { workspaceLayoutRoute } from "./layout";
-import { useTask } from "@/features/tasks/hooks";
-import { TaskStatusBadge } from "@/features/tasks/presentation";
+import {
+  useCancelTaskCatchUp,
+  useRequestCollisionResolution,
+  useTask,
+  useTaskCollisions,
+} from "@/features/tasks/hooks";
+import {
+  TaskReviewStateBadge,
+  TaskStatusBadge,
+} from "@/features/tasks/presentation";
 import { WorktreeInitSection } from "@/features/tasks/components/worktree-init-section";
 import { AuditorVerdictSection } from "@/features/tasks/components/auditor-verdict-section";
 import { TaskActionToolbar } from "@/features/tasks/components/task-action-toolbar";
@@ -28,12 +36,20 @@ import { useLatestMergeAttempt } from "@/features/tasks/merge-hooks";
 import { useRecentEvents } from "@/features/events/hooks";
 import { useActiveWorkspace } from "@/features/workspaces/hooks";
 import { usePhaseRuns } from "@/features/phase-runs/hooks";
+import type { PhaseRun } from "@/features/phase-runs/types";
 import { TaskEventList } from "@/features/events/components/task-event-list";
 import { PhaseRunsTrail } from "@/features/phase-runs/components/phase-runs-trail";
-import { DiffModal } from "@/features/diff/components/diff-modal";
 import { diffModalController } from "@/features/diff/modal-controller";
+import { ProposalReviewSurface } from "@/features/diff/proposal-review-surface";
 import { formatRelativeTime } from "@/lib/format";
 import type { Task } from "@/features/tasks/types";
+import { deriveTaskReviewState } from "@/features/tasks/task-domain";
+import type {
+  CollisionFileView,
+  CollisionHunkView,
+  CollisionSide,
+} from "@/features/tasks/api";
+import { Button } from "@/components/ui/button";
 
 function TaskDetailPage() {
   const { workspaceId, taskId } = useParams({
@@ -56,7 +72,7 @@ function TaskDetailPage() {
 
 /**
  * Task detail layout: scrolling main column on the left, fixed-width
- * reference sidebar on the right, and the review diff available as a modal.
+ * reference sidebar on the right, and the proposal available inline.
  *
  * Reading order top-to-bottom: action toolbar → title + status → auditor
  * verdict (the thing the user came to read) → spec / audit trail as
@@ -73,6 +89,13 @@ function TaskDetailView({
 }) {
   const phaseRuns = usePhaseRuns(workspaceId, task.id);
   const runs = phaseRuns.data ?? [];
+  const activeRun = runs.find((r) => r.status === "running");
+  const latestRun = runs[0] ?? null;
+  const reviewState = deriveTaskReviewState({
+    task,
+    activeRun,
+    latestRun,
+  });
   const {
     closeTerminal: closeStoredTerminal,
     group,
@@ -85,23 +108,18 @@ function TaskDetailView({
   } = useTerminalStore();
   const terminalGroup = group(workspaceId, task.id);
 
-  const [modalOpen, setModalOpen] = useState(false);
-  const [modalConcernIdx, setModalConcernIdx] = useState<number | undefined>(
-    undefined,
-  );
+  const [reviewOpen, setReviewOpen] = useState(false);
 
-  const openDiffModal = (concernIdx?: number) => {
-    setModalConcernIdx(concernIdx);
-    setModalOpen(true);
+  const openProposal = (_concernIdx?: number) => {
+    setReviewOpen(true);
   };
 
   // Bridge: anything calling `diffModalController.open` (e.g. verdict concern
-  // rows) opens the modal here, scoped to the right task.
+  // rows) opens the inline proposal here, scoped to the right task.
   useEffect(() => {
     return diffModalController.subscribe((req) => {
       if (req.taskId !== task.id) return;
-      setModalConcernIdx(req.concernIndex);
-      setModalOpen(true);
+      openProposal(req.concernIndex);
     });
   }, [task.id]);
 
@@ -146,7 +164,7 @@ function TaskDetailView({
         <ArtifactsSidebarBody
           task={task}
           phaseRuns={runs}
-          onOpenDiff={() => openDiffModal()}
+          onOpenDiff={() => openProposal()}
         />
       ),
     },
@@ -154,11 +172,18 @@ function TaskDetailView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {reviewOpen && (
+        <ProposalReviewSurface
+          task={task}
+          workspaceId={workspaceId}
+          onExit={() => setReviewOpen(false)}
+        />
+      )}
       <HeaderSlot>
         <TaskActionToolbar
           task={task}
           workspaceId={workspaceId}
-          onOpenDiff={() => openDiffModal()}
+          onOpenDiff={() => openProposal()}
           onOpenTerminal={openTerminal}
         />
       </HeaderSlot>
@@ -172,7 +197,12 @@ function TaskDetailView({
                     <h1 className="truncate text-[22px] font-medium tracking-tight font-body">
                       {task.title}
                     </h1>
-                    <TaskStatusBadge status={task.status} />
+                    {reviewState === "needs_catch_up" ||
+                    reviewState === "has_collisions" ? (
+                      <TaskReviewStateBadge state={reviewState} />
+                    ) : (
+                      <TaskStatusBadge status={task.status} />
+                    )}
                     {task.is_blocked && (
                       <BlockedByBadge count={task.depends_on.length} />
                     )}
@@ -191,10 +221,19 @@ function TaskDetailView({
                   </p>
                 )}
                 <MergeAttemptInline taskId={task.id} task={task} />
+                <CatchUpBanner task={task} />
               </ContentColumn>
 
               <ContentColumn className="mx-auto">
-                <AuditorVerdictPromoted taskId={task.id} />
+                {task.catch_up_state === "colliding" ? (
+                  <CollisionsView task={task} onOpenTerminal={openTerminal} />
+                ) : (
+                  <AuditorVerdictPromoted task={task} activeRun={activeRun} />
+                )}
+              </ContentColumn>
+
+              <ContentColumn className="mx-auto">
+                <OldParentProposalNote task={task} />
               </ContentColumn>
 
               <ContentColumn className="mx-auto">
@@ -230,14 +269,6 @@ function TaskDetailView({
         </div>
         <DetailSidebar sections={sidebarSections} />
       </div>
-
-      <DiffModal
-        workspaceId={workspaceId}
-        taskId={task.id}
-        open={modalOpen}
-        onOpenChange={setModalOpen}
-        initialConcernIndex={modalConcernIdx}
-      />
     </div>
   );
 }
@@ -249,8 +280,241 @@ function TaskDetailView({
  * visible heading-equivalent in the new layout (it already renders one
  * internally — kept here as a hook for future tweaks).
  */
-function AuditorVerdictPromoted({ taskId }: { taskId: string }) {
-  return <AuditorVerdictSection taskId={taskId} />;
+function AuditorVerdictPromoted({
+  task,
+  activeRun,
+}: {
+  task: Task;
+  activeRun?: PhaseRun | null;
+}) {
+  if (activeRun || task.status === "running") {
+    const phase = activeRun?.phase ?? "task";
+    const label =
+      phase === "auditor"
+        ? "Auditor running"
+        : phase === "implementer"
+          ? "Implementation running"
+          : "Task running";
+    const detail =
+      phase === "auditor"
+        ? "A fresh auditor verdict is being produced for this proposal."
+        : "The previous auditor verdict is in the audit trail and no longer applies to this rerun.";
+    return (
+      <section className="border-border bg-muted/20 space-y-1 border px-3 py-2">
+        <h2 className="text-sm font-medium">{label}</h2>
+        <p className="text-muted-foreground text-xs">{detail}</p>
+      </section>
+    );
+  }
+  return <AuditorVerdictSection taskId={task.id} />;
+}
+
+function CatchUpBanner({ task }: { task: Task }) {
+  if (task.catch_up_state !== "clean" && task.catch_up_state !== "dirty") {
+    return null;
+  }
+  return (
+    <div className="border-warning/40 bg-warning/10 text-warning space-y-1 border px-3 py-2 text-xs">
+      <p className="font-medium">
+        Parent has moved. Catch up to re-evaluate this proposal against current
+        state.
+      </p>
+      <p className="text-muted-foreground text-[11px]">
+        New parent revision{" "}
+        {task.catch_up_target_sha ? (
+          <code className="font-mono">
+            {task.catch_up_target_sha.slice(0, 8)}
+          </code>
+        ) : (
+          "detected"
+        )}
+        . The previous auditor verdict does not carry over.
+      </p>
+    </div>
+  );
+}
+
+function OldParentProposalNote({ task }: { task: Task }) {
+  if (task.catch_up_state !== "clean" && task.catch_up_state !== "dirty") {
+    return null;
+  }
+  return (
+    <p className="text-muted-foreground border-border/70 bg-muted/20 mt-2 border px-3 py-2 text-[11px]">
+      These changes are shown against the old parent. Catch up to see them
+      against current state.
+    </p>
+  );
+}
+
+function CollisionsView({
+  task,
+  onOpenTerminal,
+}: {
+  task: Task;
+  onOpenTerminal: () => void;
+}) {
+  const requestResolution = useRequestCollisionResolution();
+  const cancelCatchUp = useCancelTaskCatchUp();
+  const collisionsQ = useTaskCollisions(task.id);
+  const collisions = collisionsQ.data ?? [];
+  const fallbackConflicts = task.catch_up_conflicts;
+  return (
+    <section className="border-destructive/30 bg-background border rounded-sm">
+      <div className="border-destructive/30 flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
+        <div>
+          <h2 className="text-sm font-medium">Collisions</h2>
+          <p className="text-muted-foreground text-[11px]">
+            Catch-up needs help before this proposal can be reviewed again.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          <Button
+            type="button"
+            className="bg-primary text-primary-foreground hover:bg-primary/90 h-8 px-3 text-xs"
+            onClick={() => requestResolution.mutate(task.id)}
+            disabled={requestResolution.isPending}
+          >
+            {requestResolution.isPending
+              ? "Requesting resolution"
+              : "Ask implementer to resolve"}
+          </Button>
+          <Button
+            variant={"secondary"}
+            type="button"
+            className="border-border hover:bg-muted h-8 border px-3 text-xs"
+            onClick={onOpenTerminal}
+          >
+            Resolve in terminal
+          </Button>
+          <Button
+            variant={"link"}
+            type="button"
+            className="text-muted-foreground hover:bg-muted h-8 border border-transparent px-3 text-xs"
+            onClick={() => cancelCatchUp.mutate(task.id)}
+            disabled={cancelCatchUp.isPending}
+          >
+            Cancel catch-up
+          </Button>
+        </div>
+      </div>
+      <div className="divide-border divide-y">
+        {collisionsQ.isLoading ? (
+          <p className="text-muted-foreground p-3 text-xs">
+            Loading collision details…
+          </p>
+        ) : collisions.length > 0 ? (
+          collisions.map((collision) => (
+            <CollisionFile key={collision.path} collision={collision} />
+          ))
+        ) : fallbackConflicts.length > 0 ? (
+          fallbackConflicts.map((path) => (
+            <div key={path} className="p-3">
+              <code className="font-mono text-xs">{path}</code>
+              <p className="text-muted-foreground mt-2 text-xs">
+                Three-way contents are unavailable for this collision.
+              </p>
+            </div>
+          ))
+        ) : (
+          <p className="text-muted-foreground p-3 text-xs">
+            Collision details are unavailable. Resolve in terminal or retry
+            catch-up.
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function CollisionFile({ collision }: { collision: CollisionFileView }) {
+  const hunks =
+    collision.collisions.length > 0
+      ? collision.collisions
+      : [
+          {
+            index: 1,
+            current_parent: collision.current_parent,
+            this_proposal: collision.this_proposal,
+            common_ancestor: collision.common_ancestor,
+          },
+        ];
+  return (
+    <div className="p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <code className="font-mono text-xs">{collision.path}</code>
+        <span className="text-muted-foreground text-[10px]">
+          {collision.collision_count} collision
+          {collision.collision_count === 1 ? "" : "s"}
+        </span>
+      </div>
+      <div className="space-y-3">
+        {hunks.map((hunk) => (
+          <CollisionHunk key={hunk.index} hunk={hunk} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CollisionHunk({ hunk }: { hunk: CollisionHunkView }) {
+  return (
+    <div className="border-border/80 border">
+      <div className="border-border bg-muted/20 border-b px-2 py-1.5">
+        <p className="text-muted-foreground text-[10px] font-medium">
+          Collision {hunk.index}
+        </p>
+      </div>
+      <div className="grid gap-2 xl:grid-cols-3">
+        <CollisionSidePane side={hunk.current_parent} />
+        <CollisionSidePane side={hunk.this_proposal} />
+        <CollisionSidePane side={hunk.common_ancestor} muted />
+      </div>
+    </div>
+  );
+}
+
+function CollisionSidePane({
+  side,
+  muted = false,
+}: {
+  side: CollisionSide;
+  muted?: boolean;
+}) {
+  return (
+    <div className="bg-muted/20 min-h-36 min-w-0 border">
+      <div className="border-border flex items-center justify-between gap-2 border-b px-2 py-1.5">
+        <p className="text-muted-foreground text-[10px] font-medium">
+          {side.label}
+        </p>
+        {side.revision && (
+          <code className="text-muted-foreground font-mono text-[10px]">
+            {side.revision.slice(0, 8)}
+          </code>
+        )}
+      </div>
+      {side.line_start !== null && side.line_end !== null ? (
+        <div className="border-border bg-background/60 flex flex-wrap items-center justify-between gap-2 border-b px-2 py-1">
+          <code className="text-muted-foreground font-mono text-[10px]">
+            lines {side.line_start}
+            {side.line_end === side.line_start ? "" : `-${side.line_end}`}
+          </code>
+          {side.attribution ? (
+            <span className="border-border bg-muted/40 text-muted-foreground border px-1.5 py-0.5 text-[10px]">
+              From: {side.attribution.title}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      <pre
+        className={[
+          "scrollbar-styled max-h-72 overflow-auto whitespace-pre-wrap p-2 font-mono text-[11px] leading-relaxed",
+          muted ? "text-muted-foreground" : "text-foreground",
+        ].join(" ")}
+      >
+        {side.content}
+      </pre>
+    </div>
+  );
 }
 
 /**
@@ -337,11 +601,11 @@ function TaskHeaderMeta({ task }: { task: Task }) {
   if (task.status === "merged" && task.merged_commit_sha) {
     return (
       <p className="text-muted-foreground text-[12px] tabular-nums">
-        Merged into{" "}
+        Landed into{" "}
         <code className="font-mono">{task.merge_target_branch ?? "main"}</code>{" "}
         as <CopyableSha sha={task.merged_commit_sha} />
         {task.merged_at != null && <> · {formatRelativeTime(task.merged_at)}</>}
-        {task.worktree_status === "removed" && <> · worktree removed</>}
+        {task.worktree_status === "removed" && <> · task files removed</>}
       </p>
     );
   }
@@ -363,7 +627,7 @@ function CopyableSha({ sha }: { sha: string }) {
     <button
       type="button"
       onClick={onClick}
-      title="Copy commit SHA"
+      title="Copy revision SHA"
       className="hover:text-foreground font-mono underline-offset-2 hover:underline"
     >
       <code>{sha.slice(0, 8)}</code>
@@ -386,8 +650,8 @@ function MergeAttemptInline({ taskId, task }: { taskId: string; task: Task }) {
     a.conflicts.length > 3 ? `, +${a.conflicts.length - 3} more` : "";
   return (
     <p className="border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200 border px-3 py-2 text-xs">
-      Last merge attempt blocked by conflicts{" "}
-      {formatRelativeTime(a.attempted_at)}. {a.conflicts.length} file
+      Last land attempt has collisions {formatRelativeTime(a.attempted_at)}.{" "}
+      {a.conflicts.length} file
       {a.conflicts.length === 1 ? "" : "s"}:{" "}
       <code className="bg-amber-500/15 rounded-sm px-1 py-0.5 font-mono text-[0.9em]">
         {truncated}

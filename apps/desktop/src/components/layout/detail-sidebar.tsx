@@ -40,7 +40,7 @@ export function DetailSidebar({
   return (
     <aside
       className={cn(
-        "scrollbar-styled bg-sidebar h-full w-[280px] shrink-0 overflow-y-auto border-l",
+        "scrollbar-styled h-full w-[280px] shrink-0 overflow-y-auto border-l",
         className,
       )}
       aria-label="Reference information"

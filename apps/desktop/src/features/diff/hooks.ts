@@ -29,14 +29,14 @@ export const diffKeys = {
  * shouldn't be refetching on remount or focus changes, only on explicit
  * invalidation. The live-update polling below adds a safety net.
  */
-export function useTaskDiff(taskId: string | undefined) {
+export function useTaskDiff(taskId: string | undefined, enabled = true) {
   const theme = useThemeMode();
   return useQuery<TaskDiffWithMappings>({
     queryKey: taskId
       ? diffKeys.byTask(taskId, theme)
       : ["task-diff", "__pending__"],
     queryFn: () => diffApi.getTaskDiff(taskId!, theme),
-    enabled: !!taskId,
+    enabled: !!taskId && enabled,
     staleTime: Infinity,
   });
 }

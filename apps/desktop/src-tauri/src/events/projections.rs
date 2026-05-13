@@ -234,6 +234,10 @@ CREATE TABLE IF NOT EXISTS task_projection (
     current_phase_config TEXT NOT NULL DEFAULT '{}', -- latest effective phase config after applying TaskPhaseConfigChanged events; phase runners read from this
     relevant_files      TEXT NOT NULL DEFAULT '[]', -- RelevantFile[] JSON populated by briefing flow; empty for other paths
     task_base_commit    TEXT,                 -- diff anchor for the task (TaskBaseCommitRecorded)
+    catch_up_state      TEXT NOT NULL DEFAULT 'none', -- none | clean | dirty | colliding
+    catch_up_checked_at INTEGER,
+    catch_up_target_sha TEXT,
+    catch_up_conflicts_json TEXT NOT NULL DEFAULT '[]',
     created_at          INTEGER NOT NULL,
     updated_at          INTEGER NOT NULL
 );
@@ -312,9 +316,22 @@ CREATE TABLE IF NOT EXISTS auditor_verdict_projection (
     confidence      REAL NOT NULL,
     summary         TEXT NOT NULL,
     concerns_json   TEXT NOT NULL,            -- JSON array of concern objects
+    criterion_mappings_json TEXT NOT NULL DEFAULT '[]',
+    unmapped_hunks_json TEXT NOT NULL DEFAULT '[]',
     created_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_auditor_verdict_task ON auditor_verdict_projection (task_id);
+
+CREATE TABLE IF NOT EXISTS proposal_reviews (
+    user_id              TEXT NOT NULL,
+    proposal_revision_id TEXT NOT NULL,
+    criterion_id         TEXT NOT NULL,
+    reviewed_at          INTEGER NOT NULL,
+    mode                 TEXT NOT NULL,
+    total_time_seconds   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, proposal_revision_id, criterion_id)
+);
+CREATE INDEX IF NOT EXISTS idx_proposal_reviews_revision ON proposal_reviews (proposal_revision_id);
 
 CREATE TABLE IF NOT EXISTS briefing_projection (
     id                      TEXT PRIMARY KEY,
@@ -392,6 +409,10 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
         "ALTER TABLE task_projection ADD COLUMN is_queued INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE task_projection ADD COLUMN unblocked_at INTEGER",
         "ALTER TABLE task_projection ADD COLUMN last_unblocking_task_id TEXT",
+        "ALTER TABLE task_projection ADD COLUMN catch_up_state TEXT NOT NULL DEFAULT 'none'",
+        "ALTER TABLE task_projection ADD COLUMN catch_up_checked_at INTEGER",
+        "ALTER TABLE task_projection ADD COLUMN catch_up_target_sha TEXT",
+        "ALTER TABLE task_projection ADD COLUMN catch_up_conflicts_json TEXT NOT NULL DEFAULT '[]'",
         // Briefing background-generation flags. See briefing_projection DDL above
         // for semantics. Additive — pre-existing rows default to not-generating
         // with NULL kind/error, which is the correct historical state.
@@ -406,6 +427,8 @@ pub fn apply_workspace_db_projection_ddl(conn: &Connection) -> rusqlite::Result<
         "ALTER TABLE briefing_projection ADD COLUMN persona_config_json TEXT",
         "ALTER TABLE briefing_projection ADD COLUMN persona_artifacts_json TEXT NOT NULL DEFAULT '[]'",
         "ALTER TABLE briefing_projection ADD COLUMN active_persona_json TEXT",
+        "ALTER TABLE auditor_verdict_projection ADD COLUMN criterion_mappings_json TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE auditor_verdict_projection ADD COLUMN unmapped_hunks_json TEXT NOT NULL DEFAULT '[]'",
     ];
     for sql in migrations {
         match conn.execute(sql, []) {
@@ -638,6 +661,14 @@ pub struct TaskProjection {
     #[serde(default)]
     pub relevant_files: serde_json::Value,
     pub task_base_commit: Option<String>,
+    #[serde(default = "default_catch_up_state")]
+    pub catch_up_state: String,
+    #[serde(default)]
+    pub catch_up_checked_at: Option<i64>,
+    #[serde(default)]
+    pub catch_up_target_sha: Option<String>,
+    #[serde(default)]
+    pub catch_up_conflicts: Vec<String>,
     /// 'initialized' (success or user-skipped) | 'failed' | 'running' (init in
     /// flight) | NULL (not yet run). Phase runners check this before running;
     /// if NULL the runner triggers init, if 'failed' the runner refuses until
@@ -675,6 +706,10 @@ pub struct TaskProjection {
     pub last_unblocking_task_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+fn default_catch_up_state() -> String {
+    "none".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -760,6 +795,10 @@ struct AuditorVerdictRenderedPayload {
     confidence: f64,
     summary: String,
     concerns: serde_json::Value,
+    #[serde(default)]
+    criterion_mappings: serde_json::Value,
+    #[serde(default)]
+    unmapped_hunks: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -815,6 +854,16 @@ struct TaskMergeAttemptedPayload {
     source_branch: String,
     conflicts: Vec<String>,
     target_head_sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatchUpStatePayload {
+    #[serde(default = "default_catch_up_state")]
+    state: String,
+    #[serde(default)]
+    target_head_sha: Option<String>,
+    #[serde(default)]
+    conflicts: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1063,7 +1112,15 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
         "TaskApproved" => {
             let p: TaskApprovedPayload = serde_json::from_str(&event.payload)?;
             tx.execute(
-                "UPDATE task_projection SET status = 'approved', approved_by = ?1, updated_at = ?2 WHERE id = ?3",
+                "UPDATE task_projection
+                 SET status = 'approved',
+                     approved_by = ?1,
+                     catch_up_state = 'none',
+                     catch_up_checked_at = NULL,
+                     catch_up_target_sha = NULL,
+                     catch_up_conflicts_json = '[]',
+                     updated_at = ?2
+                 WHERE id = ?3",
                 params![p.by, event.created_at, event.aggregate_id],
             )?;
         }
@@ -1076,6 +1133,10 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                      merge_strategy = ?2,
                      merge_target_branch = ?3,
                      merged_at = ?4,
+                     catch_up_state = 'none',
+                     catch_up_checked_at = NULL,
+                     catch_up_target_sha = NULL,
+                     catch_up_conflicts_json = '[]',
                      updated_at = ?4
                  WHERE id = ?5",
                 params![
@@ -1162,6 +1223,82 @@ pub fn apply_task_event(tx: &Transaction, event: &AppendedEvent) -> Result<(), P
                     conflicts_json,
                 ],
             )?;
+            tx.execute(
+                "UPDATE task_projection SET updated_at = ?1 WHERE id = ?2",
+                params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        "CatchUpStateChecked" => {
+            let p: CatchUpStatePayload = serde_json::from_str(&event.payload)?;
+            let conflicts_json = serde_json::to_string(&p.conflicts)?;
+            tx.execute(
+                "UPDATE task_projection
+                 SET catch_up_state = ?1,
+                     catch_up_checked_at = ?2,
+                     catch_up_target_sha = ?3,
+                     catch_up_conflicts_json = ?4,
+                     updated_at = ?2
+                 WHERE id = ?5",
+                params![
+                    p.state,
+                    event.created_at,
+                    p.target_head_sha,
+                    conflicts_json,
+                    event.aggregate_id,
+                ],
+            )?;
+        }
+        "CatchUpStarted" => {
+            tx.execute(
+                "UPDATE task_projection SET updated_at = ?1 WHERE id = ?2",
+                params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        "CatchUpSucceeded" => {
+            let p: CatchUpStatePayload = serde_json::from_str(&event.payload)?;
+            tx.execute(
+                "UPDATE task_projection
+                 SET status = 'awaiting_review',
+                     catch_up_state = 'none',
+                     catch_up_checked_at = ?1,
+                     catch_up_target_sha = ?2,
+                     catch_up_conflicts_json = '[]',
+                     task_base_commit = ?2,
+                     updated_at = ?1
+                 WHERE id = ?3",
+                params![event.created_at, p.target_head_sha, event.aggregate_id],
+            )?;
+        }
+        "CollisionsDetected" => {
+            let p: CatchUpStatePayload = serde_json::from_str(&event.payload)?;
+            let conflicts_json = serde_json::to_string(&p.conflicts)?;
+            tx.execute(
+                "UPDATE task_projection
+                 SET catch_up_state = 'colliding',
+                     catch_up_checked_at = ?1,
+                     catch_up_target_sha = ?2,
+                     catch_up_conflicts_json = ?3,
+                     updated_at = ?1
+                 WHERE id = ?4",
+                params![
+                    event.created_at,
+                    p.target_head_sha,
+                    conflicts_json,
+                    event.aggregate_id,
+                ],
+            )?;
+        }
+        "CatchUpCancelled" => {
+            tx.execute(
+                "UPDATE task_projection
+                 SET catch_up_state = 'clean',
+                     catch_up_conflicts_json = '[]',
+                     updated_at = ?1
+                 WHERE id = ?2",
+                params![event.created_at, event.aggregate_id],
+            )?;
+        }
+        "ResolutionRequested" => {
             tx.execute(
                 "UPDATE task_projection SET updated_at = ?1 WHERE id = ?2",
                 params![event.created_at, event.aggregate_id],
@@ -1395,9 +1532,29 @@ pub fn apply_phase_run_event(
                 "UPDATE task_projection
                  SET latest_phase_run_id = ?1,
                      is_queued = 0,
+                     status = CASE
+                         WHEN status IN ('merged', 'cancelled', 'archived') THEN status
+                         ELSE 'running'
+                     END,
+                     catch_up_state = CASE
+                         WHEN status IN ('merged', 'cancelled', 'archived') THEN catch_up_state
+                         ELSE 'none'
+                     END,
+                     catch_up_conflicts_json = CASE
+                         WHEN status IN ('merged', 'cancelled', 'archived') THEN catch_up_conflicts_json
+                         ELSE '[]'
+                     END,
+                     approved_by = CASE
+                         WHEN status = 'approved' THEN NULL
+                         ELSE approved_by
+                     END,
                      updated_at = ?2
                  WHERE id = ?3",
                 params![event.aggregate_id, event.created_at, p.task_id],
+            )?;
+            tx.execute(
+                "DELETE FROM task_merge_attempt_projection WHERE task_id = ?1",
+                params![p.task_id],
             )?;
             // Cross-aggregate: bump the plan's running counter.
             tx.execute(
@@ -1500,6 +1657,18 @@ pub fn apply_phase_run_event(
                  )",
                 params![event.created_at, event.aggregate_id],
             )?;
+            tx.execute(
+                "UPDATE task_projection
+                 SET status = CASE
+                     WHEN status IN ('merged', 'cancelled', 'archived') THEN status
+                     ELSE 'failed'
+                 END,
+                 updated_at = ?1
+                 WHERE id = (
+                     SELECT task_id FROM phase_run_projection WHERE id = ?2
+                 )",
+                params![event.created_at, event.aggregate_id],
+            )?;
         }
         "AuditorVerdictRendered" => {
             let p: AuditorVerdictRenderedPayload = serde_json::from_str(&event.payload)?;
@@ -1513,8 +1682,9 @@ pub fn apply_phase_run_event(
                 .unwrap_or_default();
             tx.execute(
                 "INSERT OR REPLACE INTO auditor_verdict_projection
-                    (phase_run_id, task_id, verdict, confidence, summary, concerns_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    (phase_run_id, task_id, verdict, confidence, summary, concerns_json,
+                     criterion_mappings_json, unmapped_hunks_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     p.phase_run_id,
                     task_id,
@@ -1522,8 +1692,41 @@ pub fn apply_phase_run_event(
                     p.confidence,
                     p.summary,
                     p.concerns.to_string(),
+                    p.criterion_mappings.to_string(),
+                    p.unmapped_hunks.to_string(),
                     event.created_at,
                 ],
+            )?;
+            tx.execute(
+                "UPDATE task_projection
+                 SET status = CASE
+                     WHEN status IN ('merged', 'cancelled', 'archived') THEN status
+                     ELSE 'awaiting_review'
+                 END,
+                 task_base_commit = CASE
+                     WHEN status IN ('merged', 'cancelled', 'archived') THEN task_base_commit
+                     WHEN ?3 = 'approve' THEN COALESCE(catch_up_target_sha, task_base_commit)
+                     ELSE task_base_commit
+                 END,
+                 catch_up_state = CASE
+                     WHEN status IN ('merged', 'cancelled', 'archived') THEN catch_up_state
+                     ELSE 'none'
+                 END,
+                 catch_up_target_sha = CASE
+                     WHEN status IN ('merged', 'cancelled', 'archived') THEN catch_up_target_sha
+                     ELSE NULL
+                 END,
+                 catch_up_conflicts_json = CASE
+                     WHEN status IN ('merged', 'cancelled', 'archived') THEN catch_up_conflicts_json
+                     ELSE '[]'
+                 END,
+                 updated_at = ?1
+                 WHERE id = ?2",
+                params![event.created_at, task_id, p.verdict],
+            )?;
+            tx.execute(
+                "DELETE FROM task_merge_attempt_projection WHERE task_id = ?1",
+                params![task_id],
             )?;
         }
         "GateRan" => {
@@ -1552,7 +1755,7 @@ pub fn apply_phase_run_event(
     Ok(())
 }
 
-fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
+pub(crate) fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
     let phase_config_str: String = r.get(18)?;
     let phase_config =
         serde_json::from_str(&phase_config_str).unwrap_or_else(|_| serde_json::json!({}));
@@ -1562,7 +1765,10 @@ fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
     let relevant_files_str: String = r.get(20)?;
     let relevant_files = serde_json::from_str(&relevant_files_str)
         .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
-    let depends_on_str: String = r.get(28)?;
+    let catch_up_conflicts_str: String = r.get(25)?;
+    let catch_up_conflicts: Vec<String> =
+        serde_json::from_str(&catch_up_conflicts_str).unwrap_or_default();
+    let depends_on_str: String = r.get(32)?;
     let depends_on: Vec<String> = serde_json::from_str(&depends_on_str).unwrap_or_default();
     Ok(TaskProjection {
         id: r.get(0)?,
@@ -1587,23 +1793,27 @@ fn read_task(r: &rusqlite::Row) -> rusqlite::Result<TaskProjection> {
         current_phase_config,
         relevant_files,
         task_base_commit: r.get(21)?,
-        worktree_init_status: r.get(22)?,
-        worktree_init_command: r.get(23)?,
-        worktree_init_exit_code: r.get(24)?,
-        worktree_init_duration_ms: r.get(25)?,
-        worktree_init_detection_kind: r.get(26)?,
-        worktree_init_output: r.get(27)?,
+        catch_up_state: r.get(22)?,
+        catch_up_checked_at: r.get(23)?,
+        catch_up_target_sha: r.get(24)?,
+        catch_up_conflicts,
+        worktree_init_status: r.get(26)?,
+        worktree_init_command: r.get(27)?,
+        worktree_init_exit_code: r.get(28)?,
+        worktree_init_duration_ms: r.get(29)?,
+        worktree_init_detection_kind: r.get(30)?,
+        worktree_init_output: r.get(31)?,
         depends_on,
-        is_blocked: r.get::<_, i64>(29)? != 0,
-        is_queued: r.get::<_, i64>(30)? != 0,
-        unblocked_at: r.get(31)?,
-        last_unblocking_task_id: r.get(32)?,
-        created_at: r.get(33)?,
-        updated_at: r.get(34)?,
+        is_blocked: r.get::<_, i64>(33)? != 0,
+        is_queued: r.get::<_, i64>(34)? != 0,
+        unblocked_at: r.get(35)?,
+        last_unblocking_task_id: r.get(36)?,
+        created_at: r.get(37)?,
+        updated_at: r.get(38)?,
     })
 }
 
-const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, merge_target_branch, merged_at, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, phase_config, current_phase_config, relevant_files, task_base_commit, worktree_init_status, worktree_init_command, worktree_init_exit_code, worktree_init_duration_ms, worktree_init_detection_kind, worktree_init_output, depends_on, is_blocked, is_queued, unblocked_at, last_unblocking_task_id, created_at, updated_at";
+pub(crate) const TASK_COLUMNS: &str = "id, workspace_id, plan_id, title, spec_markdown, status, cancel_reason, approved_by, merged_commit_sha, merge_strategy, merge_target_branch, merged_at, latest_phase_run_id, worktree_path, worktree_branch, worktree_base_commit, worktree_status, worktree_removal_reason, phase_config, current_phase_config, relevant_files, task_base_commit, catch_up_state, catch_up_checked_at, catch_up_target_sha, catch_up_conflicts_json, worktree_init_status, worktree_init_command, worktree_init_exit_code, worktree_init_duration_ms, worktree_init_detection_kind, worktree_init_output, depends_on, is_blocked, is_queued, unblocked_at, last_unblocking_task_id, created_at, updated_at";
 
 pub fn list_tasks_in_plan(
     conn: &Connection,
@@ -1730,6 +1940,8 @@ pub struct AuditorVerdictProjection {
     pub summary: String,
     /// JSON array of concerns; the frontend parses these.
     pub concerns: serde_json::Value,
+    pub criterion_mappings: serde_json::Value,
+    pub unmapped_hunks: serde_json::Value,
     pub created_at: i64,
 }
 
@@ -1737,6 +1949,12 @@ fn read_verdict(r: &rusqlite::Row) -> rusqlite::Result<AuditorVerdictProjection>
     let concerns_str: String = r.get(5)?;
     let concerns =
         serde_json::from_str(&concerns_str).unwrap_or(serde_json::Value::Array(Vec::new()));
+    let criterion_mappings_str: String = r.get(6)?;
+    let criterion_mappings = serde_json::from_str(&criterion_mappings_str)
+        .unwrap_or(serde_json::Value::Array(Vec::new()));
+    let unmapped_hunks_str: String = r.get(7)?;
+    let unmapped_hunks =
+        serde_json::from_str(&unmapped_hunks_str).unwrap_or(serde_json::Value::Array(Vec::new()));
     Ok(AuditorVerdictProjection {
         phase_run_id: r.get(0)?,
         task_id: r.get(1)?,
@@ -1744,7 +1962,9 @@ fn read_verdict(r: &rusqlite::Row) -> rusqlite::Result<AuditorVerdictProjection>
         confidence: r.get(3)?,
         summary: r.get(4)?,
         concerns,
-        created_at: r.get(6)?,
+        criterion_mappings,
+        unmapped_hunks,
+        created_at: r.get(8)?,
     })
 }
 
@@ -1754,7 +1974,8 @@ pub fn get_auditor_verdict(
     phase_run_id: &str,
 ) -> rusqlite::Result<Option<AuditorVerdictProjection>> {
     let mut stmt = conn.prepare(
-        "SELECT phase_run_id, task_id, verdict, confidence, summary, concerns_json, created_at
+        "SELECT phase_run_id, task_id, verdict, confidence, summary, concerns_json,
+                criterion_mappings_json, unmapped_hunks_json, created_at
          FROM auditor_verdict_projection WHERE phase_run_id = ?1",
     )?;
     let mut rows = stmt.query(params![phase_run_id])?;
@@ -1770,7 +1991,8 @@ pub fn list_auditor_verdicts_for_task(
     task_id: &str,
 ) -> rusqlite::Result<Vec<AuditorVerdictProjection>> {
     let mut stmt = conn.prepare(
-        "SELECT phase_run_id, task_id, verdict, confidence, summary, concerns_json, created_at
+        "SELECT phase_run_id, task_id, verdict, confidence, summary, concerns_json,
+                criterion_mappings_json, unmapped_hunks_json, created_at
          FROM auditor_verdict_projection WHERE task_id = ?1 ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map(params![task_id], read_verdict)?;
@@ -2307,6 +2529,25 @@ mod tests {
         }
     }
 
+    fn phase_event(
+        seq: i64,
+        phase_run_id: &str,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) -> AppendedEvent {
+        AppendedEvent {
+            id: format!("phase_ev_{seq}"),
+            aggregate_type: "phase_run".into(),
+            aggregate_id: phase_run_id.into(),
+            seq,
+            event_type: event_type.into(),
+            version: 1,
+            payload: payload.to_string(),
+            metadata: "{}".into(),
+            created_at: 100 * seq,
+        }
+    }
+
     #[test]
     fn task_merge_attempted_inserts_attempt_row() {
         let mut conn = db();
@@ -2334,6 +2575,123 @@ mod tests {
         // Task itself stays approved — TaskMergeAttempted is not a state transition.
         let task = get_task(&conn, "task1").unwrap().unwrap();
         assert_eq!(task.status, "approved");
+    }
+
+    #[test]
+    fn phase_run_started_clears_stale_collision_state() {
+        let mut conn = db();
+        conn.execute(
+            "UPDATE task_projection
+             SET catch_up_state = 'colliding',
+                 catch_up_target_sha = 'abc123',
+                 catch_up_conflicts_json = '[\"src/main.rs\"]',
+                 task_base_commit = 'oldbase'
+             WHERE id = 'task1'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO task_merge_attempt_projection
+                (task_id, attempted_at, target_branch, source_branch, target_head_sha, conflicts_json)
+             VALUES ('task1', 50, 'main', 'orca/task1', 'abc123', '[\"src/main.rs\"]')",
+            [],
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let ev = phase_event(
+            1,
+            "phase1",
+            "PhaseRunStarted",
+            json!({
+                "task_id": "task1",
+                "phase": "implementer",
+                "provider": "codex",
+                "model": "test-model",
+                "permission_mode": "acceptEdits",
+            }),
+        );
+        apply_phase_run_event(&tx, &ev).unwrap();
+        tx.commit().unwrap();
+
+        let task = get_task(&conn, "task1").unwrap().unwrap();
+        assert_eq!(task.status, "running");
+        assert_eq!(task.catch_up_state, "none");
+        assert_eq!(task.catch_up_target_sha.as_deref(), Some("abc123"));
+        assert!(task.catch_up_conflicts.is_empty());
+        assert!(latest_merge_attempt_for_task(&conn, "task1")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn auditor_verdict_rendered_clears_stale_collision_state() {
+        let mut conn = db();
+        conn.execute(
+            "UPDATE task_projection
+             SET catch_up_state = 'colliding',
+                 catch_up_target_sha = 'abc123',
+                 catch_up_conflicts_json = '[\"src/main.rs\"]',
+                 task_base_commit = 'oldbase'
+             WHERE id = 'task1'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO task_merge_attempt_projection
+                (task_id, attempted_at, target_branch, source_branch, target_head_sha, conflicts_json)
+             VALUES ('task1', 50, 'main', 'orca/task1', 'abc123', '[\"src/main.rs\"]')",
+            [],
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let started = phase_event(
+            1,
+            "phase1",
+            "PhaseRunStarted",
+            json!({
+                "task_id": "task1",
+                "phase": "auditor",
+                "provider": "codex",
+                "model": "test-model",
+                "permission_mode": "plan",
+            }),
+        );
+        apply_phase_run_event(&tx, &started).unwrap();
+        tx.execute(
+            "UPDATE task_projection
+             SET catch_up_state = 'colliding',
+                 catch_up_target_sha = 'abc123',
+                 catch_up_conflicts_json = '[\"src/main.rs\"]'
+             WHERE id = 'task1'",
+            [],
+        )
+        .unwrap();
+        let verdict = phase_event(
+            2,
+            "phase1",
+            "AuditorVerdictRendered",
+            json!({
+                "phase_run_id": "phase1",
+                "verdict": "approve",
+                "confidence": 0.9,
+                "summary": "Looks good.",
+                "concerns": [],
+            }),
+        );
+        apply_phase_run_event(&tx, &verdict).unwrap();
+        tx.commit().unwrap();
+
+        let task = get_task(&conn, "task1").unwrap().unwrap();
+        assert_eq!(task.status, "awaiting_review");
+        assert_eq!(task.task_base_commit.as_deref(), Some("abc123"));
+        assert_eq!(task.catch_up_state, "none");
+        assert_eq!(task.catch_up_target_sha, None);
+        assert!(task.catch_up_conflicts.is_empty());
+        assert!(latest_merge_attempt_for_task(&conn, "task1")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

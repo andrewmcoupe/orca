@@ -57,6 +57,15 @@ export function useProjectionInvalidation() {
           qc.invalidateQueries({ queryKey: ["task_events"] });
           qc.invalidateQueries({ queryKey: ["task_pipeline"] });
         }
+        if (aggregate_type === "phase_run") {
+          // Phase-run events also mutate task_projection: starting a phase
+          // marks the task running, auditor verdicts move it back under
+          // review, and collision-resolution runs clear stale collision
+          // blockers. The projection event is keyed to the phase run id, so
+          // invalidate task queries broadly to refresh detail/toolbars and
+          // task-scoped derived queries such as latest land attempt.
+          qc.invalidateQueries({ queryKey: ["task"] });
+        }
       },
     );
     return () => {
