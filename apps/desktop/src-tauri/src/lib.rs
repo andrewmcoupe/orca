@@ -109,6 +109,18 @@ pub fn run() {
             // Detect providers once on startup; the result populates the cache for the
             // session and is refreshed on demand from the Settings panel.
             app.manage(ProviderCache(Mutex::new(providers::detect_providers())));
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
+                    if let Err(e) = commands::check_active_workspace_catch_up(&app_handle) {
+                        if e != "no active workspace" {
+                            eprintln!("catch-up watcher failed: {}", e);
+                        }
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -168,6 +180,10 @@ pub fn run() {
             commands::analyze_task_merge,
             commands::execute_task_merge,
             commands::get_latest_merge_attempt_for_task,
+            commands::check_task_catch_up,
+            commands::catch_up_task,
+            commands::cancel_task_catch_up,
+            commands::request_collision_resolution,
             commands::cancel_task,
             commands::delete_task,
             commands::pass_back_to_implementer,

@@ -6,6 +6,8 @@ export type TaskReviewState =
   | "under_review"
   | "approved"
   | "ready_to_land"
+  | "needs_catch_up"
+  | "has_collisions"
   | "landed"
   | "rejected"
   | "failed";
@@ -13,7 +15,10 @@ export type TaskReviewState =
 type PhaseRunLike = Pick<PhaseRun, "phase" | "status">;
 
 export type TaskStateInput = {
-  task: Pick<Task, "status" | "worktree_status" | "worktree_init_status">;
+  task: Pick<
+    Task,
+    "status" | "worktree_status" | "worktree_init_status" | "catch_up_state"
+  >;
   activeRun?: PhaseRunLike | null;
   latestRun?: PhaseRunLike | null;
 };
@@ -23,6 +28,8 @@ export const TASK_REVIEW_STATE_LABELS: Record<TaskReviewState, string> = {
   under_review: "Under review",
   approved: "Approved",
   ready_to_land: "Ready to land",
+  needs_catch_up: "Needs catch-up",
+  has_collisions: "Has collisions",
   landed: "Landed",
   rejected: "Rejected",
   failed: "Failed",
@@ -45,6 +52,9 @@ export const TASK_REVIEW_STATE_STYLES: Record<TaskReviewState, string> = {
     "bg-warning/15 text-warning border-warning/40 dark:text-warning",
   approved: "bg-success/15 text-success border-success/40",
   ready_to_land: "bg-emerald-500/15 text-emerald-700 border-emerald-500/40 dark:text-emerald-300",
+  needs_catch_up:
+    "bg-warning/15 text-warning border-warning/40 dark:text-warning",
+  has_collisions: "bg-destructive/15 text-destructive border-destructive/40",
   landed: "bg-primary/10 text-primary border-primary/30",
   rejected: "bg-muted text-muted-foreground border-border",
   failed: "bg-destructive/15 text-destructive border-destructive/40",
@@ -60,6 +70,10 @@ export function deriveTaskReviewState({
     return "rejected";
   }
   if (task.status === "failed") return "failed";
+  if (task.catch_up_state === "colliding") return "has_collisions";
+  if (task.catch_up_state === "clean" || task.catch_up_state === "dirty") {
+    return "needs_catch_up";
+  }
   if (task.worktree_init_status === "running") return "drafting";
   if (activeRun) {
     return activeRun.phase === "auditor" ? "under_review" : "drafting";
@@ -82,4 +96,3 @@ export function displayTaskStatus(status: TaskStatus | string): string {
     status.replace(/_/g, " ")
   );
 }
-

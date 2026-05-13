@@ -39,6 +39,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   useApproveTaskAnyway,
+  useCatchUpTask,
   useDeleteTask,
   useDeleteWorktree,
   useLatestAuditorVerdict,
@@ -101,6 +102,9 @@ function computePrimary(s: ToolbarState): PrimaryActionId {
     return null;
   }
   if (phaseRunning) return null;
+  if (task.catch_up_state === "clean" || task.catch_up_state === "dirty") {
+    return null;
+  }
   if (task.status === "approved" && s.worktreeActive) return "merge";
   const kind = verdict?.verdict as AuditorVerdictKind | undefined;
   if (kind === "revise" || kind === "reject") return "pass_back";
@@ -159,6 +163,7 @@ export function TaskActionToolbar({
     [
       task.id,
       task.status,
+      task.catch_up_state,
       task.worktree_status,
       runs.length,
       phaseRunning?.id,
@@ -176,6 +181,7 @@ export function TaskActionToolbar({
   const deleteTask = useDeleteTask();
   const deleteWorktree = useDeleteWorktree();
   const unqueueTask = useUnqueueTask();
+  const catchUpTask = useCatchUpTask();
   const tasksInPlanQ = useTasksInPlan(task.plan_id);
   const workspaceSettingsQ = useWorkspaceSettings(workspaceId);
   const previewStatusQ = usePreviewServerStatus();
@@ -197,6 +203,9 @@ export function TaskActionToolbar({
   const isMerged = task.status === "merged";
   const isCancelled = task.status === "cancelled";
   const isApproved = task.status === "approved";
+  const needsCatchUp =
+    task.catch_up_state === "clean" || task.catch_up_state === "dirty";
+  const hasCollisions = task.catch_up_state === "colliding";
 
   // Brief 4 / M6: dependency-aware run button. Three render states:
   //   1. Not blocked → "Run" / "Restart" (existing behaviour).
@@ -353,9 +362,18 @@ export function TaskActionToolbar({
       ? latestLandAttemptQ.data
       : null;
   const mergeDisabled =
-    !isApproved || !worktreeActive || isMerged || !!currentCollisionAttempt;
+    !isApproved ||
+    !worktreeActive ||
+    isMerged ||
+    needsCatchUp ||
+    hasCollisions ||
+    !!currentCollisionAttempt;
   const mergeTooltip = isMerged
     ? "Task is already landed."
+    : needsCatchUp
+      ? "Catch up before landing."
+      : hasCollisions
+        ? "Resolve collisions before landing."
     : currentCollisionAttempt
       ? `Has collisions with parent in ${currentCollisionAttempt.conflicts.length} file${currentCollisionAttempt.conflicts.length === 1 ? "" : "s"}. Resolve them before landing.`
     : !isApproved
@@ -435,8 +453,20 @@ export function TaskActionToolbar({
     tooltip: mergeTooltip,
     onClick: () => setMergeOpen(true),
   };
+  const catchUpAction = {
+    icon: <ArrowUUpLeft />,
+    label: catchUpTask.isPending ? "Catching up" : "Catch up",
+    isPrimary: needsCatchUp,
+    disabled: !needsCatchUp || catchUpTask.isPending,
+    tooltip: needsCatchUp
+      ? "Bring this proposal in line with the current parent and re-run the auditor."
+      : "No catch-up needed.",
+    onClick: () => catchUpTask.mutate(task.id),
+  };
   const primaryAction =
-    primary === "approve"
+    needsCatchUp
+      ? catchUpAction
+      : primary === "approve"
       ? approveAction
       : primary === "pass_back"
         ? passBackAction
@@ -444,11 +474,17 @@ export function TaskActionToolbar({
           ? mergeAction
           : null;
   const secondaryInlineActions = [
+    catchUpAction,
     approveAction,
     passBackAction,
     mergeAction,
   ].filter((action) => !action.isPrimary && !action.disabled);
-  const overflowActions = [approveAction, passBackAction, mergeAction].filter(
+  const overflowActions = [
+    catchUpAction,
+    approveAction,
+    passBackAction,
+    mergeAction,
+  ].filter(
     (action) => !action.isPrimary && action.disabled,
   );
 

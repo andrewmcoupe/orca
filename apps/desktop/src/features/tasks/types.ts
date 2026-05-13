@@ -8,6 +8,8 @@ export type TaskStatus =
   | "archived"
   | "failed";
 
+export type TaskCatchUpState = "none" | "clean" | "dirty" | "colliding";
+
 export type PhaseType = "test_author" | "implementer" | "auditor";
 
 export type ModelChoice = {
@@ -136,6 +138,10 @@ export type Task = {
    * to surface the customisation indicator on phase cards. */
   current_phase_config: PhaseConfig;
   task_base_commit: string | null;
+  catch_up_state: TaskCatchUpState | string;
+  catch_up_checked_at: number | null;
+  catch_up_target_sha: string | null;
+  catch_up_conflicts: string[];
   /** Brief 4: task dependency declarations (other task IDs in the same plan). */
   depends_on: string[];
   /** Computed by the backend: any dep not in `merged` state. */

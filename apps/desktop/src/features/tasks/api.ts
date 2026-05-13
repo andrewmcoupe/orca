@@ -85,4 +85,11 @@ export const tasksApi = {
     }),
   resetPhaseConfig: (taskId: string, phase: PhaseType) =>
     invoke<Task>("reset_task_phase_config", { taskId, phase }),
+  checkCatchUp: (taskId: string) =>
+    invoke<Task>("check_task_catch_up", { taskId }),
+  catchUp: (taskId: string) => invoke<Task>("catch_up_task", { taskId }),
+  cancelCatchUp: (taskId: string) =>
+    invoke<Task>("cancel_task_catch_up", { taskId }),
+  requestResolution: (taskId: string) =>
+    invoke<void>("request_collision_resolution", { taskId }),
 };

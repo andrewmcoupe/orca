@@ -172,3 +172,43 @@ export function useUnqueueTask() {
     },
   });
 }
+
+export function useCheckTaskCatchUp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.checkCatchUp(taskId),
+    onSuccess: (task) => {
+      qc.invalidateQueries({ queryKey: taskKeys.detail(task.id) });
+      qc.invalidateQueries({ queryKey: taskKeys.list(task.plan_id) });
+    },
+  });
+}
+
+export function useCatchUpTask() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.catchUp(taskId),
+    onSuccess: (task) => {
+      qc.invalidateQueries({ queryKey: taskKeys.detail(task.id) });
+      qc.invalidateQueries({ queryKey: taskKeys.list(task.plan_id) });
+      qc.invalidateQueries({ queryKey: ["task_pipeline"] });
+    },
+  });
+}
+
+export function useCancelTaskCatchUp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.cancelCatchUp(taskId),
+    onSuccess: (task) => {
+      qc.invalidateQueries({ queryKey: taskKeys.detail(task.id) });
+      qc.invalidateQueries({ queryKey: taskKeys.list(task.plan_id) });
+    },
+  });
+}
+
+export function useRequestCollisionResolution() {
+  return useMutation({
+    mutationFn: (taskId: string) => tasksApi.requestResolution(taskId),
+  });
+}

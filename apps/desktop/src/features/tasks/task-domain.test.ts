@@ -9,6 +9,7 @@ const baseTask = {
   status: "draft",
   worktree_status: "active",
   worktree_init_status: null,
+  catch_up_state: "none",
 };
 
 describe("task domain vocabulary", () => {
@@ -67,5 +68,22 @@ describe("task domain vocabulary", () => {
       }),
     ).toBe("rejected");
   });
-});
 
+  it("uses catch-up vocabulary when an approved proposal is stale", () => {
+    expect(
+      deriveTaskReviewState({
+        task: { ...baseTask, status: "approved", catch_up_state: "clean" },
+      }),
+    ).toBe("needs_catch_up");
+    expect(TASK_REVIEW_STATE_LABELS.needs_catch_up).toBe("Needs catch-up");
+  });
+
+  it("uses collisions vocabulary when catch-up cannot proceed cleanly", () => {
+    expect(
+      deriveTaskReviewState({
+        task: { ...baseTask, status: "approved", catch_up_state: "colliding" },
+      }),
+    ).toBe("has_collisions");
+    expect(TASK_REVIEW_STATE_LABELS.has_collisions).toBe("Has collisions");
+  });
+});

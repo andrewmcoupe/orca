@@ -2507,6 +2507,224 @@ fn lookup_task_workspace_and_branch(
     Ok((aw.id.clone(), aw.path.clone(), branch))
 }
 
+fn task_catch_up_base(task: &projections::TaskProjection) -> Option<String> {
+    task.task_base_commit
+        .clone()
+        .or_else(|| task.worktree_base_commit.clone())
+}
+
+fn task_from_active(
+    task_id: &str,
+    active: &State<'_, ActiveWorkspaceState>,
+) -> Result<projections::TaskProjection, String> {
+    let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+    let aw = require_active_workspace(&mut guard)?;
+    projections::get_task(&aw.conn, task_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("task not found: {}", task_id))
+}
+
+fn check_task_catch_up_inner(
+    app: &AppHandle,
+    workspace_id: &str,
+    workspace_path: &str,
+    task: &projections::TaskProjection,
+) -> Result<(), String> {
+    if task.status != "approved" || task.worktree_status.as_deref() != Some("active") {
+        return Ok(());
+    }
+    let Some(source_branch) = task.worktree_branch.as_deref() else {
+        return Ok(());
+    };
+    let analysis = crate::merge::analyze_merge(std::path::Path::new(workspace_path), source_branch)
+        .map_err(|e| e.to_string())?;
+    let Some(base) = task_catch_up_base(task) else {
+        return Ok(());
+    };
+    let state = if base == analysis.target_head_sha {
+        "none"
+    } else if !analysis.conflicts.is_empty() {
+        "colliding"
+    } else {
+        // v1 intentionally stores the distinction but surfaces clean/dirty the same way.
+        "clean"
+    };
+    if task.catch_up_state == state
+        && task.catch_up_target_sha.as_deref() == Some(analysis.target_head_sha.as_str())
+    {
+        return Ok(());
+    }
+    append_task_event_simple(
+        app,
+        workspace_id,
+        &task.id,
+        "CatchUpStateChecked",
+        json!({
+            "state": state,
+            "target_head_sha": analysis.target_head_sha,
+            "conflicts": analysis.conflicts,
+        }),
+    )
+}
+
+#[tauri::command]
+pub fn check_task_catch_up(
+    app: AppHandle,
+    task_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<projections::TaskProjection, String> {
+    let (workspace_id, workspace_path, task) = {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        let task = projections::get_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("task not found: {}", task_id))?;
+        (aw.id.clone(), aw.path.clone(), task)
+    };
+    check_task_catch_up_inner(&app, &workspace_id, &workspace_path, &task)?;
+    task_from_active(&task_id, &active)
+}
+
+pub fn check_active_workspace_catch_up(app: &AppHandle) -> Result<(), String> {
+    let active = app.state::<ActiveWorkspaceState>();
+    let (workspace_id, workspace_path, tasks) = {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        let mut stmt = aw
+            .conn
+            .prepare(&format!(
+                "SELECT {} FROM task_projection
+                 WHERE status = 'approved' AND worktree_status = 'active'",
+                projections::TASK_COLUMNS
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], projections::read_task)
+            .map_err(|e| e.to_string())?;
+        let mut tasks = Vec::new();
+        for row in rows {
+            tasks.push(row.map_err(|e| e.to_string())?);
+        }
+        (aw.id.clone(), aw.path.clone(), tasks)
+    };
+    for task in tasks {
+        if let Err(e) = check_task_catch_up_inner(app, &workspace_id, &workspace_path, &task) {
+            eprintln!("catch-up check failed for {}: {}", task.id, e);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn catch_up_task(
+    app: AppHandle,
+    task_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<projections::TaskProjection, String> {
+    let (workspace_id, workspace_path, source_branch) = {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        let task = projections::get_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("task not found: {}", task_id))?;
+        let branch = task
+            .worktree_branch
+            .ok_or_else(|| "task has no worktree branch recorded".to_string())?;
+        (aw.id.clone(), aw.path.clone(), branch)
+    };
+
+    append_task_event_simple(&app, &workspace_id, &task_id, "CatchUpStarted", json!({}))?;
+
+    let analysis =
+        crate::merge::analyze_merge(std::path::Path::new(&workspace_path), &source_branch)
+            .map_err(|e| e.to_string())?;
+    if !analysis.conflicts.is_empty() {
+        append_task_event_simple(
+            &app,
+            &workspace_id,
+            &task_id,
+            "CollisionsDetected",
+            json!({
+                "target_head_sha": analysis.target_head_sha,
+                "conflicts": analysis.conflicts,
+            }),
+        )?;
+        return task_from_active(&task_id, &active);
+    }
+
+    append_task_event_simple(
+        &app,
+        &workspace_id,
+        &task_id,
+        "CatchUpSucceeded",
+        json!({
+            "target_head_sha": analysis.target_head_sha,
+            "conflicts": [],
+        }),
+    )?;
+    let _ = crate::pipeline::dispatch_task_phase(app.clone(), task_id.clone(), PhaseType::Auditor)
+        .await
+        .map_err(|e| e.to_string())?;
+    task_from_active(&task_id, &active)
+}
+
+#[tauri::command]
+pub fn cancel_task_catch_up(
+    app: AppHandle,
+    task_id: String,
+    active: State<'_, ActiveWorkspaceState>,
+) -> Result<projections::TaskProjection, String> {
+    let workspace_id = {
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        aw.id.clone()
+    };
+    append_task_event_simple(&app, &workspace_id, &task_id, "CatchUpCancelled", json!({}))?;
+    task_from_active(&task_id, &active)
+}
+
+#[tauri::command]
+pub async fn request_collision_resolution(app: AppHandle, task_id: String) -> Result<(), String> {
+    let (workspace_id, retry_context) = {
+        let active = app.state::<ActiveWorkspaceState>();
+        let mut guard = active.0.lock().map_err(|e| e.to_string())?;
+        let aw = require_active_workspace(&mut guard)?;
+        let task = projections::get_task(&aw.conn, &task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("task not found: {}", task_id))?;
+        if task.catch_up_state != "colliding" {
+            return Err("task does not currently have collisions".to_string());
+        }
+        let context = json!({
+            "kind": "resolution",
+            "instruction": "Produce a resolution that preserves the original acceptance criteria while integrating cleanly with the current parent. Where the parent has introduced changes that conflict with the original proposal's approach, prefer the parent's approach unless it breaks the original acceptance criteria.",
+            "conflicting_files": task.catch_up_conflicts,
+            "target_head_sha": task.catch_up_target_sha,
+        })
+        .to_string();
+        (aw.id.clone(), context)
+    };
+    append_task_event_simple(
+        &app,
+        &workspace_id,
+        &task_id,
+        "ResolutionRequested",
+        json!({ "context": retry_context }),
+    )?;
+    let _ = start_real_phase(
+        app,
+        task_id,
+        "implementer".to_string(),
+        None,
+        None,
+        Some(true),
+        Some(retry_context),
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Read-side: inspect what a merge would do. Side effects:
 /// - If the analysis surfaces conflicts, append `TaskMergeAttempted` so the audit trail
 ///   records the failed attempt (and so the UI can show it inline near the Merge button

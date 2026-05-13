@@ -9,8 +9,15 @@ import { Disclosure } from "@/components/layout/disclosure";
 import { HeaderSlot } from "@/components/layout/header-slot";
 import { Markdown } from "@/components/markdown";
 import { workspaceLayoutRoute } from "./layout";
-import { useTask } from "@/features/tasks/hooks";
-import { TaskStatusBadge } from "@/features/tasks/presentation";
+import {
+  useCancelTaskCatchUp,
+  useRequestCollisionResolution,
+  useTask,
+} from "@/features/tasks/hooks";
+import {
+  TaskReviewStateBadge,
+  TaskStatusBadge,
+} from "@/features/tasks/presentation";
 import { WorktreeInitSection } from "@/features/tasks/components/worktree-init-section";
 import { AuditorVerdictSection } from "@/features/tasks/components/auditor-verdict-section";
 import { TaskActionToolbar } from "@/features/tasks/components/task-action-toolbar";
@@ -38,6 +45,7 @@ import {
 } from "@/features/diff/proposal-review-storage";
 import { formatRelativeTime } from "@/lib/format";
 import type { Task } from "@/features/tasks/types";
+import { deriveTaskReviewState } from "@/features/tasks/task-domain";
 
 function TaskDetailPage() {
   const { workspaceId, taskId } = useParams({
@@ -77,6 +85,13 @@ function TaskDetailView({
 }) {
   const phaseRuns = usePhaseRuns(workspaceId, task.id);
   const runs = phaseRuns.data ?? [];
+  const activeRun = runs.find((r) => r.status === "running");
+  const latestRun = runs[0] ?? null;
+  const reviewState = deriveTaskReviewState({
+    task,
+    activeRun,
+    latestRun,
+  });
   const {
     closeTerminal: closeStoredTerminal,
     group,
@@ -180,7 +195,12 @@ function TaskDetailView({
                     <h1 className="truncate text-[22px] font-medium tracking-tight font-body">
                       {task.title}
                     </h1>
-                    <TaskStatusBadge status={task.status} />
+                    {reviewState === "needs_catch_up" ||
+                    reviewState === "has_collisions" ? (
+                      <TaskReviewStateBadge state={reviewState} />
+                    ) : (
+                      <TaskStatusBadge status={task.status} />
+                    )}
                     {task.is_blocked && (
                       <BlockedByBadge count={task.depends_on.length} />
                     )}
@@ -199,10 +219,18 @@ function TaskDetailView({
                   </p>
                 )}
                 <MergeAttemptInline taskId={task.id} task={task} />
+                <CatchUpBanner task={task} />
               </ContentColumn>
 
               <ContentColumn className="mx-auto">
-                <AuditorVerdictPromoted taskId={task.id} />
+                {task.catch_up_state === "colliding" ? (
+                  <CollisionsView
+                    task={task}
+                    onOpenTerminal={openTerminal}
+                  />
+                ) : (
+                  <AuditorVerdictPromoted taskId={task.id} />
+                )}
               </ContentColumn>
 
               <ContentColumn className="mx-auto">
@@ -213,6 +241,7 @@ function TaskDetailView({
                   lastReviewedBeforeOpen={lastReviewedBeforeOpen}
                   initialConcernIndex={proposalConcernIdx}
                 />
+                <OldParentProposalNote task={task} />
               </ContentColumn>
 
               <ContentColumn className="mx-auto">
@@ -261,6 +290,129 @@ function TaskDetailView({
  */
 function AuditorVerdictPromoted({ taskId }: { taskId: string }) {
   return <AuditorVerdictSection taskId={taskId} />;
+}
+
+function CatchUpBanner({ task }: { task: Task }) {
+  if (task.catch_up_state !== "clean" && task.catch_up_state !== "dirty") {
+    return null;
+  }
+  return (
+    <div className="border-warning/40 bg-warning/10 text-warning space-y-1 border px-3 py-2 text-xs">
+      <p className="font-medium">
+        Parent has moved. Catch up to re-evaluate this proposal against current
+        state.
+      </p>
+      <p className="text-muted-foreground text-[11px]">
+        New parent revision{" "}
+        {task.catch_up_target_sha ? (
+          <code className="font-mono">{task.catch_up_target_sha.slice(0, 8)}</code>
+        ) : (
+          "detected"
+        )}
+        . The previous auditor verdict does not carry over.
+      </p>
+    </div>
+  );
+}
+
+function OldParentProposalNote({ task }: { task: Task }) {
+  if (task.catch_up_state !== "clean" && task.catch_up_state !== "dirty") {
+    return null;
+  }
+  return (
+    <p className="text-muted-foreground border-border/70 bg-muted/20 mt-2 border px-3 py-2 text-[11px]">
+      These changes are shown against the old parent. Catch up to see them
+      against current state.
+    </p>
+  );
+}
+
+function CollisionsView({
+  task,
+  onOpenTerminal,
+}: {
+  task: Task;
+  onOpenTerminal: () => void;
+}) {
+  const requestResolution = useRequestCollisionResolution();
+  const cancelCatchUp = useCancelTaskCatchUp();
+  const conflicts = task.catch_up_conflicts;
+  return (
+    <section className="border-destructive/30 bg-background border">
+      <div className="border-destructive/30 flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
+        <div>
+          <h2 className="text-sm font-medium">Collisions</h2>
+          <p className="text-muted-foreground text-[11px]">
+            Catch-up needs help before this proposal can be reviewed again.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          <button
+            type="button"
+            className="bg-primary text-primary-foreground hover:bg-primary/90 h-8 px-3 text-xs"
+            onClick={() => requestResolution.mutate(task.id)}
+            disabled={requestResolution.isPending}
+          >
+            {requestResolution.isPending
+              ? "Requesting resolution"
+              : "Ask agent to resolve"}
+          </button>
+          <button
+            type="button"
+            className="border-border hover:bg-muted h-8 border px-3 text-xs"
+            onClick={onOpenTerminal}
+          >
+            Resolve in terminal
+          </button>
+          <button
+            type="button"
+            className="text-muted-foreground hover:bg-muted h-8 border border-transparent px-3 text-xs"
+            onClick={() => cancelCatchUp.mutate(task.id)}
+            disabled={cancelCatchUp.isPending}
+          >
+            Cancel catch-up
+          </button>
+        </div>
+      </div>
+      <div className="divide-border divide-y">
+        {conflicts.length > 0 ? (
+          conflicts.map((path) => (
+            <div key={path} className="p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <code className="font-mono text-xs">{path}</code>
+                <span className="text-muted-foreground text-[10px]">
+                  1 collision
+                </span>
+              </div>
+              <div className="grid gap-2 md:grid-cols-3">
+                {["Current parent", "This proposal", "Common ancestor"].map(
+                  (label) => (
+                    <div
+                      key={label}
+                      className="bg-muted/20 min-h-28 border p-2"
+                    >
+                      <p className="text-muted-foreground mb-2 text-[10px] font-medium">
+                        {label}
+                      </p>
+                      <p className="text-muted-foreground text-[11px]">
+                        File contents are available in the task worktree. The
+                        GUI view is read-only for this iteration.
+                      </p>
+                    </div>
+                  ),
+                )}
+              </div>
+            </div>
+          ))
+        ) : (
+          <p className="text-muted-foreground p-3 text-xs">
+            Collision details are unavailable. Resolve in terminal or retry
+            catch-up.
+          </p>
+        )}
+      </div>
+    </section>
+  );
 }
 
 /**
